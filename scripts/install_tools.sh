@@ -26,7 +26,7 @@ for arg in "$@"; do
     esac
 done
 
-INSTALL_LOG="$HOME/.bounty_install.log"
+INSTALL_LOG="$HOME/.oneinfinity_install.log"
 FAILED_TOOLS=()
 INSTALLED_TOOLS=()
 
@@ -591,7 +591,7 @@ main() {
     echo "  Add to your shell config if not already present:"
     echo "    export PATH=\$PATH:/usr/local/go/bin:\$HOME/go/bin:\$HOME/.cargo/bin"
     echo ""
-    echo "  Verify installations with: bounty toolcheck"
+    echo "  Verify installations with: oneinfinity toolcheck"
     echo ""
 }
 

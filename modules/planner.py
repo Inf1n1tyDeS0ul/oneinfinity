@@ -185,10 +185,10 @@ class HuntPlanner:
         banner("Hunt Plan Generator")
         if not has_data:
             warn("No recon analysis data found in ~/.oneinfinity/raw/<target>/recon/")
-            info("Run: bounty analyze subdomains ~/.oneinfinity/raw/<target>/recon/subdomains.txt")
-            info("     bounty analyze responses  ~/.oneinfinity/raw/<target>/recon/httpx_output.json")
-            info("     bounty analyze js         ~/.oneinfinity/raw/<target>/recon/*.js")
-            info("     bounty analyze nuclei     ~/.oneinfinity/raw/<target>/recon/nuclei_output.json")
+            info("Run: oneinfinity analyze subdomains ~/.oneinfinity/raw/<target>/recon/subdomains.txt")
+            info("     oneinfinity analyze responses  ~/.oneinfinity/raw/<target>/recon/httpx_output.json")
+            info("     oneinfinity analyze js         ~/.oneinfinity/raw/<target>/recon/*.js")
+            info("     oneinfinity analyze nuclei     ~/.oneinfinity/raw/<target>/recon/nuclei_output.json")
 
         tests = {1: [], 2: [], 3: []}  # priority → items
 
@@ -228,13 +228,13 @@ class HuntPlanner:
         lines.append("\n## Scripts Available\n")
         lines.append("Generate ready-to-run test scripts with:\n")
         lines.append("```")
-        lines.append("bounty script cors          # CORS misconfiguration test")
-        lines.append("bounty script sqli          # SQL injection fuzzing")
-        lines.append("bounty script ssrf          # SSRF probe")
-        lines.append("bounty script idor          # IDOR enumeration")
-        lines.append("bounty script headers       # Security headers audit")
-        lines.append("bounty script redirect      # Open redirect test")
-        lines.append("bounty script subdomain-takeover  # Takeover check")
+        lines.append("oneinfinity script cors          # CORS misconfiguration test")
+        lines.append("oneinfinity script sqli          # SQL injection fuzzing")
+        lines.append("oneinfinity script ssrf          # SSRF probe")
+        lines.append("oneinfinity script idor          # IDOR enumeration")
+        lines.append("oneinfinity script headers       # Security headers audit")
+        lines.append("oneinfinity script redirect      # Open redirect test")
+        lines.append("oneinfinity script subdomain-takeover  # Takeover check")
         lines.append("```")
 
         plan = "\n".join(lines)

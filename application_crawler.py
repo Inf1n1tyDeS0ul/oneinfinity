@@ -306,7 +306,7 @@ class ApplicationCrawler:
         self.timeout = timeout
         self._user_agent = (
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 BountyBot/1.0"
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 OneInfinity/1.0"
         )
 
     # ── Public API ────────────────────────────────────────────────────────────

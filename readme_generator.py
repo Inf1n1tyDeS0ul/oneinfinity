@@ -184,7 +184,7 @@ class ReadmeGenerator:
             ],
             "Attack Graph": [
                 CLICommand("attack-graph <target>", "Build + view attack graph"),
-                CLICommand("agents run <target> --yes", "Multi-agent pentest (legacy)"),
+                CLICommand("agents run <target> --yes", "Multi-agent pentest"),
             ],
             "Self-Evolving Architecture": [
                 CLICommand("arch-status",     "Show evolution engine status + recent changes"),
@@ -266,8 +266,6 @@ class ReadmeGenerator:
         self._extras["data_dir"] = (
             "## Data Directory\n\n"
             "Default: `~/.oneinfinity`\n\n"
-            "Backward compatibility: if `~/.bounty_assistant` exists and `~/.oneinfinity` does not, "
-            "the legacy directory is used.\n\n"
             "Override: `ONEINFINITY_HOME` or `ONEINFINITY_DATA_DIR` environment variables.\n"
         )
 
@@ -377,7 +375,7 @@ class ReadmeGenerator:
                 lines.append(c.to_md() + "\n")
             lines.append("```\n\n")
 
-        lines.append("Legacy: `python3 bounty.py ...` (deprecated alias)\n\n---\n\n")
+        lines.append("---\n\n")
 
         lines.append("## Web UI\n\nStart backend + frontend:\n\n```bash\n./web/start.sh\n```\n\n")
         lines.append("| Service | URL |\n|---------|-----|\n")

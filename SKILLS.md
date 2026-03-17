@@ -274,10 +274,10 @@ All capabilities above are also available via the React web interface at `http:/
 
 | Skill | CLI Command | Module | Details |
 |---|---|---|---|
-| Platform event emission | `bounty arch-emit <type> [--name N --desc D]` | `auto_architecture_engine.py` | Emit 13 EventType values: FEATURE_ADDED, SCAN_COMPLETED, VULNERABILITY_DISCOVERED, etc. |
-| Architecture status | `bounty arch-status` | `auto_architecture_engine.py` | Show engine state, recent changelog, active capabilities |
-| Recent events log | `bounty arch-events [--limit N]` | `auto_architecture_engine.py` | List recent ArchEvents from the evolution engine |
-| Learning insights | `bounty arch-insights [--type T]` | `memory_manager.py` | Query distilled learning insights with confidence scores |
+| Platform event emission | `oneinfinity arch-emit <type> [--name N --desc D]` | `auto_architecture_engine.py` | Emit 13 EventType values: FEATURE_ADDED, SCAN_COMPLETED, VULNERABILITY_DISCOVERED, etc. |
+| Architecture status | `oneinfinity arch-status` | `auto_architecture_engine.py` | Show engine state, recent changelog, active capabilities |
+| Recent events log | `oneinfinity arch-events [--limit N]` | `auto_architecture_engine.py` | List recent ArchEvents from the evolution engine |
+| Learning insights | `oneinfinity arch-insights [--type T]` | `memory_manager.py` | Query distilled learning insights with confidence scores |
 | Attack pattern EMA | (automatic) | `memory_manager.py` | Track per-vuln-type success rate with exponential moving average (α=0.3) |
 | Exploit chain storage | (automatic) | `memory_manager.py` | Persist multi-step chains with CVSS scores to `evolution.db` |
 | Auto-update ARCHITECTURE.md | (automatic on FEATURE_ADDED) | `architecture_updater.py` | Parse into `ArchSection` objects, add components, atomic rewrite |
@@ -295,10 +295,10 @@ All capabilities above are also available via the React web interface at `http:/
 
 | Skill | CLI Command | Module | Details |
 |---|---|---|---|
-| Start daemon | `bounty daemon-start <target> [...]` | `intelligence_daemon.py` | Start always-on daemon, subscribe 9 workers to event bus |
-| Stop daemon | `bounty daemon-stop` | `intelligence_daemon.py` | Graceful shutdown — cancel all worker tasks, flush event bus |
-| Daemon status | `bounty daemon-status` | `intelligence_daemon.py` | Worker table (runs/findings/errors), bus stats, uptime |
-| Add live target | `bounty daemon-add-target <target>` | `intelligence_daemon.py` | Add target to running daemon without restart |
+| Start daemon | `oneinfinity daemon-start <target> [...]` | `intelligence_daemon.py` | Start always-on daemon, subscribe 9 workers to event bus |
+| Stop daemon | `oneinfinity daemon-stop` | `intelligence_daemon.py` | Graceful shutdown — cancel all worker tasks, flush event bus |
+| Daemon status | `oneinfinity daemon-status` | `intelligence_daemon.py` | Worker table (runs/findings/errors), bus stats, uptime |
+| Add live target | `oneinfinity daemon-add-target <target>` | `intelligence_daemon.py` | Add target to running daemon without restart |
 | Vulnerability hypothesis | (automatic) | `HypothesisWorker` | On NEW_TARGET/NEW_ENDPOINT → AppModel → VulnTheory via theory engine |
 | Attack graph expansion | (automatic) | `GraphExpansionWorker` | On NEW_ENDPOINT/OSINT_RESULT → add nodes/edges to AttackGraphEngine |
 | Exploit chain detection | (automatic) | `ExploitChainWorker` | On NEW_VULNERABILITY → check 16 chain patterns, publish CHAIN_DETECTED |
@@ -320,11 +320,11 @@ All capabilities above are also available via the React web interface at `http:/
 
 | Skill | CLI Command | Module | Details |
 |---|---|---|---|
-| Start graph brain | `bounty brain-start <target> [...]` | `attack_graph_brain.py` | Start AttackGraphBrain + EDE + AgentFabric in one shot |
-| Stop graph brain | `bounty brain-stop` | `attack_graph_brain.py` | Graceful shutdown of all components |
-| Brain status | `bounty brain-status` | `attack_graph_brain.py` | Priority node table, queue depth, EDE/fabric counters |
-| Generate decision plan | `bounty brain-decide <target>` | `autonomous_decision_engine.py` | Ranked (node, agent) decisions with scoring rationale |
-| Trigger engine | `bounty brain-triggers [--evaluate]` | `graph_trigger_engine.py` | List rules or evaluate all graph nodes |
+| Start graph brain | `oneinfinity brain-start <target> [...]` | `attack_graph_brain.py` | Start AttackGraphBrain + EDE + AgentFabric in one shot |
+| Stop graph brain | `oneinfinity brain-stop` | `attack_graph_brain.py` | Graceful shutdown of all components |
+| Brain status | `oneinfinity brain-status` | `attack_graph_brain.py` | Priority node table, queue depth, EDE/fabric counters |
+| Generate decision plan | `oneinfinity brain-decide <target>` | `autonomous_decision_engine.py` | Ranked (node, agent) decisions with scoring rationale |
+| Trigger engine | `oneinfinity brain-triggers [--evaluate]` | `graph_trigger_engine.py` | List rules or evaluate all graph nodes |
 | Node priority scoring | (automatic) | `AttackGraphBrain._score_node()` | type_weight × connectivity × vuln_bonus × tested_discount |
 | Graph-event routing | (automatic) | `EventDrivenEngine._route_event()` | Routes 8 bus event types into brain node/finding integration |
 | Trigger rules (15) | (automatic on graph update) | `GraphTriggerEngine` | PARAMETER→inject, API→IDOR, AUTH→bypass, CRED→ATO, admin→priv, SSRF sink, redirect param, etc. |

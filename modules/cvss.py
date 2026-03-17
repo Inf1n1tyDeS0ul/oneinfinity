@@ -281,4 +281,4 @@ class CVSSCalculator:
         print(f"  {bold('Suggested Score:')} {sev(label.lower(), str(score))} ({label})")
         print(f"  {bold('Suggested Vector:')} {vec_str}")
         print()
-        warn("Use 'bounty cvss' for precise interactive scoring.")
+        warn("Use 'oneinfinity cvss' for precise interactive scoring.")

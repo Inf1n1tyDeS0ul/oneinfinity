@@ -4,7 +4,7 @@ Mobile Upload Manager
 Handles APK/IPA file upload, storage, extraction, and metadata tracking.
 
 Storage layout:
-    ~/.oneinfinity/raw/mobile/ (legacy: ~/.bounty_assistant/mobile/)
+    ~/.oneinfinity/raw/mobile/
         uploads/          ← raw APK/IPA files
         extracted/        ← extracted package contents
         analysis/         ← analysis results JSON

@@ -1,8 +1,6 @@
 # One&Infinity — Autonomous Penetration Testing Assistant
 
 > **AI-Powered Offensive Security Research Framework**
->
-> _This project was previously known as **bounty-assistant**._
 
 An autonomous, AI-driven platform for offensive security research, bug bounty automation, mobile security testing, AI security testing, swarm-intelligence–driven vulnerability discovery, and attack graph analysis.
 
@@ -80,7 +78,7 @@ oneinfinity hunter-scan <target>                 # single-target pipeline
 
 # Attack Graph
 oneinfinity attack-graph <target>                # build + view attack graph
-oneinfinity agents run <target> --yes            # multi-agent pentest (legacy)
+oneinfinity agents run <target> --yes            # multi-agent pentest
 
 # Utilities
 oneinfinity toolcheck                            # check tool availability
@@ -88,8 +86,6 @@ oneinfinity learn stats                          # learning system stats
 oneinfinity profile list                         # list scan profiles
 oneinfinity cache stats                          # recon cache statistics
 ```
-
-Legacy compatibility: `python3 bounty.py ...` still works but is deprecated.
 
 ---
 
@@ -173,8 +169,6 @@ oneinfinity.py (CLI, 55 commands)
 ## Data Directory
 
 Default: `~/.oneinfinity`
-
-Backward compatibility: if `~/.bounty_assistant` exists and `~/.oneinfinity` does not, the legacy directory is used.
 
 Override: `ONEINFINITY_HOME` or `ONEINFINITY_DATA_DIR` environment variables.
 

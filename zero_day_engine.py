@@ -546,7 +546,7 @@ class ZeroDayEngine:
         t0 = time.time()
         try:
             req = urllib.request.Request(url, method=method)
-            req.add_header("User-Agent", "Mozilla/5.0 (BountyResearch/1.0)")
+            req.add_header("User-Agent", "Mozilla/5.0 (OneInfinity/1.0)")
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 raw = resp.read(8192).decode("utf-8", errors="replace")
                 status = resp.getcode()

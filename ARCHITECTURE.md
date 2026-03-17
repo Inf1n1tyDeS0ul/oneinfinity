@@ -941,7 +941,7 @@ class FindingValidationEngine:
             return self._validate_pattern_match(url, parameter, payload, vuln_type)
 
     def _validate_xss(self, url, param, payload) -> ValidationResult:
-        canary = f"BOUNTY{uuid4().hex[:8].upper()}"
+        canary = f"OI{uuid4().hex[:8].upper()}"
         probe = payload.replace("XSSCANARY", canary)
         response = self._send(url, {param: probe})
         validated = canary in response.text
@@ -1108,7 +1108,7 @@ Phase 2: STATIC ANALYSIS
   ├── apktool_wrapper.py  → smali decompile, manifest parse, resource extract
   ├── jadx_wrapper.py     → Java source decompile, 14 vulnerability patterns
   └── mobsf_wrapper.py    → MobSF REST API (if server running)
-  + mobile_static_analyzer.py (legacy: androguard fallback)
+  + mobile_static_analyzer.py (androguard fallback)
      │
      ▼
 Phase 3: AI REVERSE ENGINEERING
@@ -1726,7 +1726,7 @@ Phase 5: EXPLOIT  [_phase_exploit]   (if --auto-exploit)
   ├─ Sort VulnCandidates by CVSS score
   ├─ ExploitGenerator.generate(vuln_type, context)  → [ExploitPayload × N]
   ├─ FindingValidationEngine.validate(url, param, payload)
-  │   ├─ XSS: inject BOUNTYCANARY → check reflection
+  │   ├─ XSS: inject OICANARY → check reflection
   │   ├─ SQLi: measure time delay / check error messages
   │   └─ SSRF: interactsh OOB callback
   └─ ExploitSession{confirmed_findings: [...]}
@@ -2064,8 +2064,8 @@ oneinfinity.py (CLI)
          │
          ▼
 [autonomous_exploit_engine]
-  SQLi validated:  BOUNTYCANARY reflected → confirmed
-  XSS validated:   canary B0UNTY9F2A in response → confirmed
+  SQLi validated:  OICANARY reflected → confirmed
+  XSS validated:   canary OI9F2A in response → confirmed
   IDOR validated:  user B's order returned for user A → confirmed
          │
          ▼

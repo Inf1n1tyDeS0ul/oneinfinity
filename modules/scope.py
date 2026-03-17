@@ -163,7 +163,7 @@ class ScopeManager:
     def load(self) -> "ScopeManager":
         if not self.scope_file.exists():
             err(f"scope.yaml not found at {self.scope_file}")
-            err("Run: bounty setup <program-name>")
+            err("Run: oneinfinity setup <program-name>")
             sys.exit(1)
         self._data = _yaml_load(str(self.scope_file))
         return self

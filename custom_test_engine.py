@@ -1184,7 +1184,7 @@ def main_cli(args):
     # Load theories
     theories_file = Path(output) / "theories.json"
     if not theories_file.exists():
-        warn("No theories.json found. Run: bounty generate-theories <domain> first")
+        warn("No theories.json found. Run: oneinfinity generate-theories <domain> first")
         return
 
     from vulnerability_theory_engine import TheorySet, VulnTheory

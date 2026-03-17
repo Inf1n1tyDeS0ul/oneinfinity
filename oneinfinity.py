@@ -139,7 +139,7 @@ def cmd_scan(args):
     oneinfinity scan <target> [--yes]
 
     With --yes: runs the full autonomous 9-phase scan pipeline via unified_scan_engine.
-    Without --yes: generates a recon shell script for manual review (legacy mode).
+    Without --yes: generates a recon shell script for manual review.
     """
     from modules.utils import banner, section, ok, info, warn, err, bold
 
@@ -194,7 +194,7 @@ def cmd_scan(args):
                 sys.exit(1)
         return
 
-    # ── Legacy mode (generate recon script, manual execution) ───────────────
+    # ── Script mode (generate recon script, manual execution) ───────────────
     _cmd_scan_legacy(args)
 
 
@@ -3203,7 +3203,7 @@ def cmd_daemon_start(args):
     targets = [t.strip() for t in targets if t.strip()]
 
     if not targets:
-        print("Usage: bounty daemon-start <target> [target2 ...]")
+        print("Usage: oneinfinity daemon-start <target> [target2 ...]")
         return
 
     try:
@@ -3276,7 +3276,7 @@ def cmd_daemon_add_target(args):
     """oneinfinity daemon-add-target <target> — add a target to the running daemon."""
     raw = getattr(args, 'args', [])
     if not raw:
-        print("Usage: bounty daemon-add-target <target>")
+        print("Usage: oneinfinity daemon-add-target <target>")
         return
     target = raw[0].strip()
     try:
@@ -3402,7 +3402,7 @@ def cmd_brain_start(args):
     raw     = getattr(args, 'args', [])
     targets = [t.strip() for r in raw for t in r.split(',') if t.strip()]
     if not targets:
-        print("Usage: bounty brain-start <target> [target2 ...]")
+        print("Usage: oneinfinity brain-start <target> [target2 ...]")
         return
     try:
         from attack_graph_brain import get_brain
@@ -3476,7 +3476,7 @@ def cmd_brain_decide(args):
     """oneinfinity brain-decide <target> — generate and display a decision plan."""
     raw = getattr(args, 'args', [])
     if not raw:
-        print("Usage: bounty brain-decide <target>")
+        print("Usage: oneinfinity brain-decide <target>")
         return
     target = raw[0].strip()
     try:

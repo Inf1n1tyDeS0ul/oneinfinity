@@ -1,1 +1,1 @@
-# Bug Bounty Research Assistant — modules package
+# One&Infinity — modules package

@@ -342,8 +342,8 @@ class PayloadKB:
             vulns = list(WAF_BYPASSES[waf].keys())
             print(f"  {bold(waf):<20} {', '.join(vulns)}")
         print()
-        info("Usage: bounty payloads <type> [context]")
-        info("Usage: bounty waf-bypass <waf> <vuln-type>")
+        info("Usage: oneinfinity payloads <type> [context]")
+        info("Usage: oneinfinity waf-bypass <waf> <vuln-type>")
 
     def get(self, vuln_type: str, context: str = None):
         key = vuln_type.lower()

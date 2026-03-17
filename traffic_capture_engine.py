@@ -3,7 +3,7 @@ Traffic Capture Engine
 ======================
 Captures, stores, and queries all HTTP requests/responses produced by the platform.
 
-Storage: SQLite at ~/.oneinfinity/databases/traffic.db (legacy: ~/.bounty_assistant/traffic.db)
+Storage: SQLite at ~/.oneinfinity/databases/traffic.db
 Schema:  captured_requests table
 
 Features:

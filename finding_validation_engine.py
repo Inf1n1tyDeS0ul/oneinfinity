@@ -24,7 +24,7 @@ EVIDENCE_PATTERNS = {
     ],
     "xss": [
         re.compile(r"<script[^>]*>alert|onerror\s*=\s*alert|onload\s*=\s*alert", re.I),
-        re.compile(r"BOUNTY_[A-Z]{8}"),  # Canary pattern
+        re.compile(r"OI_[A-Z]{8}"),  # Canary pattern
         re.compile(r"<svg\s+onload|<img\s+src=x\s+onerror"),
     ],
     "ssrf": [
@@ -48,7 +48,7 @@ EVIDENCE_PATTERNS = {
         re.compile(r"total \d+\ndrwx"),             # ls output
     ],
     "open_redirect": [
-        re.compile(r"evil\.bountyassistant\.test"),
+        re.compile(r"evil\.oneinfinity\.test"),
         re.compile(r"Location:\s*https?://evil"),
     ],
     "xxe": [
@@ -196,7 +196,7 @@ class FindingValidationEngine:
         import random, string
         from exploit_generator import XSS_PAYLOADS
 
-        canary = "BOUNTYXSS" + "".join(random.choices(string.ascii_uppercase, k=6))
+        canary = "OIXSS" + "".join(random.choices(string.ascii_uppercase, k=6))
         test_payload = f"<script>alert('{canary}')</script>"
 
         resp = self._send(url, method, param, test_payload)
@@ -317,11 +317,11 @@ class FindingValidationEngine:
 
     def _validate_open_redirect(self, result: ValidationResult, finding: dict,
                                  url: str, payload: str, param: str, method: str) -> bool:
-        evil = "https://evil.bountyassistant.test"
+        evil = "https://evil.oneinfinity.test"
         resp = self._send(url, method, param, evil, follow_redirects=False)
         if resp:
             location = resp.get("headers", {}).get("Location", "")
-            if evil in location or "evil.bountyassistant" in resp["body"]:
+            if evil in location or "evil.oneinfinity" in resp["body"]:
                 result.evidence = f"Open redirect to {evil}"
                 result.evidence_type = "redirect"
                 result.confidence = 0.92

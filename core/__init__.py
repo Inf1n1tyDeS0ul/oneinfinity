@@ -1,5 +1,5 @@
 """
-Core infrastructure for the bounty assistant.
+Core infrastructure for One&Infinity.
 Provides: plugin registry, async task queue, recon cache,
 scope validator, scan profiles, deduplicator, and reporter.
 """

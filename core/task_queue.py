@@ -98,7 +98,7 @@ class TaskQueue:
     async def start(self) -> None:
         if self._running:
             return
-        self._executor = ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="bounty")
+        self._executor = ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="oneinfinity")
         self._running = True
         for i in range(self._max_workers):
             t = asyncio.create_task(self._worker(i), name=f"tq-worker-{i}")

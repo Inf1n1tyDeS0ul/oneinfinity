@@ -899,10 +899,8 @@ async def _run_scan(scan_id: str, req: ScanRequest):
     scan["status"] = "running"
     _add_log(f"Scan started: {req.scan_type} on {req.target}", "info", "scanner", scan_id)
 
-    # Build CLI command (prefer the new entry point, keep legacy fallback).
+    # Build CLI command.
     cli_script = ROOT / "oneinfinity.py"
-    if not cli_script.exists():
-        cli_script = ROOT / "bounty.py"
     cli_cmd = str(cli_script)
     cmd_map = {
         "recon": [sys.executable, cli_cmd, "recon", req.target, "--yes"],
@@ -1272,7 +1270,7 @@ def _demo_traffic():
             "id": "req_demo01",
             "method": "GET",
             "url": "https://testphp.vulnweb.com/search.php?q=test",
-            "headers": {"User-Agent": "Bounty-Assistant/1.0", "Accept": "*/*"},
+            "headers": {"User-Agent": "OneInfinity/1.0", "Accept": "*/*"},
             "body": "",
             "response": {"status": 200, "headers": {"Content-Type": "text/html"}, "body": "<html>Search results for: test</html>"},
             "source": "scan",

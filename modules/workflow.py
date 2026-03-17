@@ -918,6 +918,6 @@ class WorkflowEngine:
 
         print()
         info("All output saved to: " + str(self.output_dir))
-        info("Next: bounty findings log  — record confirmed findings")
+        info("Next: oneinfinity findings log  — record confirmed findings")
         info("      bounty report         — generate report for a finding")
         print()

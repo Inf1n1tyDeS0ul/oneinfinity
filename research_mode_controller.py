@@ -1125,7 +1125,7 @@ def main_cli(args):
         return
 
     if not target:
-        warn("Specify a target: bounty research <domain>")
+        warn("Specify a target: oneinfinity research <domain>")
         return
 
     output = resolve_output_dir(getattr(args, "output", None), target)
@@ -1206,7 +1206,7 @@ def main_cli(args):
     if not discoveries:
         info("No confirmed findings in this session.")
         info("Try: --active flag for destructive test coverage")
-        info("Or:  bounty zero-day <domain> for anomaly analysis")
+        info("Or:  oneinfinity zero-day <domain> for anomaly analysis")
 
     if learning_system:
         learning_system.close()

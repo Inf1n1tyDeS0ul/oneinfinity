@@ -298,8 +298,8 @@ class FrameworkOrchestrator:
                 ok(r)
 
         print()
-        info("Run: bounty findings   — to review all findings")
-        info("Run: bounty findings stats — for statistics")
+        info("Run: oneinfinity findings   — to review all findings")
+        info("Run: oneinfinity findings stats — for statistics")
         print()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
