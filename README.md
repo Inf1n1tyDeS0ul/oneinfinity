@@ -1,185 +1,238 @@
-# One&Infinity — Autonomous Penetration Testing Assistant
+# 🚀 One&Infinity
 
-> **AI-Powered Offensive Security Research Framework**
+### Autonomous Penetration Testing Assistant
 
-An autonomous, AI-driven platform for offensive security research, bug bounty automation, mobile security testing, AI security testing, swarm-intelligence–driven vulnerability discovery, and attack graph analysis.
+<p align="center">
+  <b>AI-powered offensive security system that discovers, prioritizes, and exploits vulnerabilities autonomously.</b>
+</p>
 
----
-
-## 🚀 Quick Start (3 Steps)
-
-1. **Setup:** `python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt`
-2. **Config:** Copy `.env.example` to `.env` and add your API keys.
-3. **Launch:** `oneinfinity scan example.com --yes`
-
----
-
-## 🛠️ Features
-
-### 💻 CLI Features
-- **Full Autonomous Scan:** `oneinfinity scan <target>` runs the entire 7-phase pipeline.
-- **Swarm Intelligence:** `oneinfinity swarm-scan <target>` parallelizes 8 specialized security agents.
-- **Mobile Analysis:** `oneinfinity mobile-analyze app.apk` runs a comprehensive 12-phase mobile pipeline.
-- **AI Security:** `oneinfinity ai-test <target> --all` orchestrates LLM/AI vulnerability scanners.
-- **Attack Graph:** `oneinfinity attack-graph <target>` builds and prioritizes lateral movement paths.
-
-### 🌐 Web UI Features
-- **Dashboard:** Real-time visualization of findings, scans, and system health.
-- **Graph Explorer:** Interactive ForceGraph2D for exploring attack paths and risk.
-- **Bounty Hunter:** Dashboard for managing autonomous bug bounty programs and auto-reports.
-- **Traffic Explorer:** Intercept and replay HTTP traffic with mutation fuzzing.
-- **AI Red Team:** Build and track adversarial prompt campaigns.
-
-### 🔌 API Features
-- **FastAPI Backend:** 54+ routes exposing all core engines for external integration.
-- **Event Bus:** Asynchronous inter-module communication for decentralized intelligence.
-- **Intelligence Daemon:** Always-on background scanner for continuous monitoring.
+<p align="center">
+  <img src="https://img.shields.io/badge/AI-Autonomous-red">
+  <img src="https://img.shields.io/badge/Security-Offensive-black">
+  <img src="https://img.shields.io/badge/License-MIT-green">
+  <img src="https://img.shields.io/badge/Status-Active-blue">
+</p>
 
 ---
 
-## 🏗️ Architecture Summary
+## ⚡ Why One&Infinity?
 
-One&Infinity is built on a **multi-layer, event-driven intelligence fabric**. 
+Most tools **scan**.
+Some tools **exploit**.
 
-- **Core Engines:** Recon, Application Intelligence, Theory Generation, Exploit Generator.
-- **Autonomous Layer:** Scan Pipeline, Swarm Coordinator, Attack Graph Brain.
-- **Intelligence Layer:** EMA Learning System, Decision Engine, Graph Trigger Engine.
-- **Presentation Layer:** React 18 + Vite + Zustand + Recharts dashboard.
+👉 **One&Infinity thinks.**
+
+It simulates a real attacker:
+
+* Maps attack surface
+* Prioritizes high-value targets
+* Executes multi-step exploit chains
+* Learns from success & failure
 
 ---
 
-## CLI
+## 🧠 Core Capabilities
 
-Primary command: `oneinfinity` (55 top-level commands)
+### 🔗 Autonomous Exploit Chaining
+
+* Multi-step attack execution
+* Token/credential reuse across nodes
+* Real-world attack path simulation
+
+```
+Insecure Storage → Extract JWT → API Access → Privilege Escalation
+```
+
+---
+
+### 🧠 AI Decision Engine
+
+* Graph-based prioritization
+* Dynamic agent routing (XSS / SQLi / API / Mobile)
+* Context-aware attack selection
+
+---
+
+### 🕸️ Adaptive Recon Engine
+
+* Subdomain + API discovery
+* JS endpoint extraction
+* Cloud asset intelligence
+
+---
+
+### 🛡️ Intelligent WAF Bypass
+
+* Detects WAF (Cloudflare, Akamai, etc.)
+* Applies mutation strategies automatically
+* Retries attacks with adaptive payloads
+
+---
+
+### 📱 Mobile Security Engine
+
+* Static + dynamic analysis
+* Secret extraction (API keys, tokens)
+* Frida script generation
+* API reverse engineering
+
+---
+
+### 📡 Traffic Capture & Replay
+
+* Full HTTP interception
+* Replay + fuzz requests
+* Business logic flaw detection
+
+---
+
+### 🧬 Learning System
+
+* Tracks successful attack patterns
+* Improves future scans
+* Prioritizes high-yield vulnerabilities
+
+---
+
+## 🖥️ Control Panel (Web UI)
+
+| Module         | Description                        |
+| -------------- | ---------------------------------- |
+| 🧠 Brain       | AI decision + attack orchestration |
+| ⚡ Intelligence | Live event stream                  |
+| 🐝 Swarm       | Multi-agent execution              |
+| 🔗 Chains      | Exploit chain visualization        |
+| 📡 Traffic     | HTTP capture & replay              |
+| 📱 Mobile      | APK/IPA analysis                   |
+| 🧬 Evolution   | Learning insights                  |
+| 🏆 Hunter      | Bug bounty automation              |
+
+---
+
+## 🎥 Demo
+
+<p align="center">
+  <img src="docs/demo.gif" width="900">
+</p>
+
+---
+
+## ⚙️ Architecture
+
+```text
+Target → Recon → Attack Graph → AI Decision Engine
+        ↓
+   Agent Swarm (XSS / SQLi / API / Mobile)
+        ↓
+   Exploit Chain Engine → Validation → Reporting
+        ↓
+   Learning System → Improves next scan
+```
+
+---
+
+## 🚀 Quick Start
+
+### Clone
 
 ```bash
-# Core scanning
-oneinfinity scan <target>                        # full autonomous pentest
-oneinfinity adaptive-recon <target>              # tech detect + JS + cloud assets
-oneinfinity research <target> --yes              # autonomous research loop
-
-# Swarm Intelligence
-oneinfinity swarm-scan <target> [--agents xss,sqli,ssrf] [--yes]
-oneinfinity simulate-attacks <target>            # Monte Carlo path simulation
-oneinfinity simulate-workflow <target> [--workflow checkout|login|password_reset|fund_transfer]
-
-# Mobile
-oneinfinity mobile-analyze app.apk               # full 12-phase mobile pipeline
-oneinfinity mobile-static app.apk                # static analysis only
-oneinfinity mobile-secrets app.apk               # secret/credential scanning
-
-# AI Security
-oneinfinity ai-test <target> --all               # all AI security tools
-oneinfinity ai-redteam <target> --campaign jailbreak --prompts 5000 --parallel 20
-
-# Autonomous Hunter
-oneinfinity hunter-start                         # discover programs + auto-scan
-oneinfinity hunter-scan <target>                 # single-target pipeline
-
-# Attack Graph
-oneinfinity attack-graph <target>                # build + view attack graph
-oneinfinity agents run <target> --yes            # multi-agent pentest
-
-# Utilities
-oneinfinity toolcheck                            # check tool availability
-oneinfinity learn stats                          # learning system stats
-oneinfinity profile list                         # list scan profiles
-oneinfinity cache stats                          # recon cache statistics
+git clone https://github.com/Inf1n1tyDeS0ul/oneinfinity.git
+cd oneinfinity
 ```
 
 ---
 
-## Web UI
-
-Start backend + frontend:
+### Setup
 
 ```bash
-./web/start.sh
-```
-
-| Service | URL |
-|---------|-----|
-| React dashboard | `http://localhost:3000` |
-| FastAPI REST | `http://localhost:8000` |
-| OpenAPI docs | `http://localhost:8000/docs` |
-
-### Pages
-
-| Page | Route | Description |
-|------|-------|-------------|
-| Dashboard | `/dashboard` | Overview metrics, recent findings |
-| Targets | `/targets` | Target management |
-| Results | `/results` | Scan history and live progress |
-| Attack Graph | `/attack-graph` | Graph visualization and paths |
-| Exploit Chains | `/chains` | Step-by-step chain viewer with I/O and WAF feedback |
-| Traffic Explorer | `/traffic` | HTTP capture, replay, WAF intelligence |
-| Brain Dashboard | `/brain` | Central intelligence node, priority queue, decisions |
-| Live Intelligence | `/intelligence` | Real-time monitoring of triggers and alerts |
-| Swarm Intelligence | `/swarm` | Parallel agent execution, workflow simulation |
-| System Evolution | `/evolution` | EMA learning system, success rates, payloads |
-| Orchestrator | `/orchestrator` | AI Model budget management and routing |
-| Mobile Security | `/mobile` | 12-phase mobile pipeline analysis |
-| Bounty Hunter | `/hunter` | Autonomous hacker pipelines |
-| System Control | `/system` | Platform telemetry and daemon configuration |
-
----
-
-## Architecture
-
-```
-oneinfinity.py (CLI, 55 commands)
-    │
-    ├── Swarm Intelligence Layer (NEW)
-    │   ├── swarm_intelligence_engine.py   — 8 specialized agents + EMA learning
-    │   ├── agent_swarm_coordinator.py     — parallel orchestration + event bus
-    │   ├── attack_simulation_engine.py    — Monte Carlo N=200 simulations
-    │   └── workflow_simulation_engine.py  — business logic attack simulation
-    │
-    ├── Core Agents
-    │   ├── agents/coordinator.py          — orchestrator, sequential phases
-    │   ├── agents/recon_agent.py          — subfinder/httpx/katana/waybackurls
-    │   ├── agents/scan_agent.py           — nuclei/dalfox/sqlmap/trufflehog
-    │   ├── agents/exploit_agent.py        — exploit chain detection
-    │   └── agents/report_agent.py         — HackerOne/Bugcrowd reports
-    │
-    ├── Intelligence Engines
-    │   ├── adaptive_recon_engine.py       — tech detect, JS endpoints, cloud
-    │   ├── application_intelligence.py    — AppModel: auth flows, API structure
-    │   ├── vulnerability_theory_engine.py — 23 rule-based vuln theories
-    │   ├── zero_day_engine.py             — anomaly detection
-    │   └── attack_graph_core/             — graph engine, risk analyzer, planner
-    │
-    ├── Mobile Security
-    │   ├── mobile_security_engine.py      — 12-phase pipeline
-    │   ├── mobile_static_analysis.py      — APKTool + JADX + MobSF
-    │   ├── mobile_ai_reverse_engineer.py  — AI-driven analysis
-    │   ├── frida_script_generator.py      — auto-generate Frida JS
-    │   └── mobile_dynamic_analysis.py     — Frida + Objection runtime
-    │
-    ├── AI Security
-    │   └── ai_security/                   — Garak, PyRIT, prompt injection, campaigns
-    │
-    └── Web Layer
-        ├── web/backend/main.py            — FastAPI, 54+ routes, WebSocket
-        └── web/frontend/src/              — React 18, Tailwind, Recharts, Zustand
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
 
 ---
 
-## Data Directory
+### Run Backend
 
-Default: `~/.oneinfinity`
-
-Override: `ONEINFINITY_HOME` or `ONEINFINITY_DATA_DIR` environment variables.
+```bash
+python3 oneinfinity.py
+```
 
 ---
 
-## Tool Requirements
+### Run UI
 
-**Go tools** (`~/go/bin/`): dalfox, crlfuzz, kxss, dnsx, naabu, gobuster, ffuf, anew, gf, qsreplace, httpx, waybackurls, gauplus, katana, hakrawler, subfinder, assetfinder, amass, nuclei
+```bash
+cd web/frontend
+npm install
+npm run dev
+```
 
-**Binaries** (`~/.local/bin/`): trufflehog, gitleaks, findomain
+---
 
-**Git clones** (`~/.local/`): sqlmap, xssstrike, jwt_tool, commix, paramspider, dirsearch
+## 🧪 Example
 
-**Python packages**: arjun, s3scanner, sublist3r, whatweb, nikto, garak, pyrit
+```bash
+python3 oneinfinity.py scan --target example.com
+```
+
+---
+
+## 🔥 What Makes This Different?
+
+| Capability   | Traditional Tools | One&Infinity |
+| ------------ | ----------------- | ------------ |
+| Scanning     | Static            | Adaptive     |
+| Exploitation | Manual            | Autonomous   |
+| Chaining     | ❌                 | ✅            |
+| AI Decision  | ❌                 | ✅            |
+| Learning     | ❌                 | ✅            |
+
+---
+
+## 🔐 Safety
+
+* Scope validation enforced
+* Rate limiting built-in
+* Safe execution guardrails
+* Controlled exploitation
+
+---
+
+## 📊 Output
+
+* Structured findings
+* Exploit chains
+* Risk scoring
+* Bug bounty-ready reports
+
+---
+
+## 🏆 Built For
+
+* Bug bounty hunters
+* Red teamers
+* Security researchers
+* Offensive engineers
+
+---
+
+## 📜 License
+
+MIT License
+
+---
+
+## ⭐ Support
+
+If you like this project:
+
+👉 Star the repo
+👉 Share with the community
+
+---
+
+## 🧠 Philosophy
+
+> "Automation finds bugs.
+> Intelligence finds impact."
