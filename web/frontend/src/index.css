@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-bg-primary text-slate-200 font-mono;
+    font-size: 13px;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-bg-card border border-bg-border rounded-lg;
+  }
+  .card-header {
+    @apply px-4 py-3 border-b border-bg-border flex items-center justify-between;
+  }
+  .btn {
+    @apply px-3 py-1.5 rounded text-xs font-medium transition-all duration-150 cursor-pointer select-none;
+  }
+  .btn-primary {
+    @apply btn bg-accent-primary/20 border border-accent-primary/40 text-accent-primary hover:bg-accent-primary/30 hover:border-accent-primary/60;
+  }
+  .btn-danger {
+    @apply btn bg-red-500/20 border border-red-500/40 text-red-400 hover:bg-red-500/30;
+  }
+  .btn-success {
+    @apply btn bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/30;
+  }
+  .btn-secondary {
+    @apply btn bg-slate-700/50 border border-slate-600/50 text-slate-300 hover:bg-slate-600/50;
+  }
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
+  }
+  .badge-critical { @apply badge bg-red-500/20 text-red-400 border border-red-500/30; }
+  .badge-high     { @apply badge bg-orange-500/20 text-orange-400 border border-orange-500/30; }
+  .badge-medium   { @apply badge bg-yellow-500/20 text-yellow-400 border border-yellow-500/30; }
+  .badge-low      { @apply badge bg-blue-500/20 text-blue-400 border border-blue-500/30; }
+  .badge-info     { @apply badge bg-slate-500/20 text-slate-400 border border-slate-500/30; }
+  .badge-running  { @apply badge bg-cyan-500/20 text-cyan-400 border border-cyan-500/30; }
+  .badge-completed{ @apply badge bg-emerald-500/20 text-emerald-400 border border-emerald-500/30; }
+  .badge-failed   { @apply badge bg-red-500/20 text-red-400 border border-red-500/30; }
+  .badge-queued   { @apply badge bg-slate-500/20 text-slate-400 border border-slate-500/30; }
+  .input {
+    @apply bg-bg-secondary border border-bg-border rounded px-3 py-1.5 text-xs text-slate-200
+           focus:outline-none focus:border-accent-primary/60 focus:ring-1 focus:ring-accent-primary/20
+           placeholder-slate-500 w-full;
+  }
+  .select {
+    @apply input cursor-pointer;
+  }
+  .label {
+    @apply text-xs text-slate-400 mb-1 block;
+  }
+  .stat-card {
+    @apply card p-4 flex flex-col gap-1;
+  }
+  .stat-value {
+    @apply text-2xl font-bold text-accent-primary;
+  }
+  .stat-label {
+    @apply text-xs text-slate-400 uppercase tracking-wider;
+  }
+  .glow-cyan {
+    box-shadow: 0 0 20px rgba(0, 212, 255, 0.15);
+  }
+  .glow-red {
+    box-shadow: 0 0 20px rgba(239, 68, 68, 0.15);
+  }
+}

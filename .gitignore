@@ -1,0 +1,15 @@
+.env
+*.db
+*.sqlite
+__pycache__/
+node_modules/
+dist/
+build/
+.venv/
+venv/
+*.log
+.oneinfinity/
+recon/
+uploads/
+tmp/
+.claude/

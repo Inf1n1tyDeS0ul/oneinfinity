@@ -1,0 +1,147 @@
+# agents.yaml — Multi-Agent Autonomous Pentesting System Configuration
+# ─────────────────────────────────────────────────────────────────────
+
+coordinator:
+  default_timeout: 3600         # seconds — total pentest timeout
+  result_poll_interval: 2       # seconds between completion checks
+  knowledge_db: "~/.oneinfinity/databases/knowledge_base.db"
+  attack_graph_dir: "~/.oneinfinity/raw/graphs"
+
+agents:
+
+  recon_agent:
+    enabled: true
+    max_parallel_tasks: 1
+    tool_timeout_multiplier: 1.0
+    subdomain_tools:            # preference order
+      - subfinder
+      - assetfinder
+      - findomain
+      - amass
+      - sublist3r
+    subdomain_limit: 500        # max subdomains before truncation
+    crawl_depth: 3
+    url_limit: 5000
+
+  scan_agent:
+    enabled: true
+    max_parallel_tasks: 1
+    nuclei_severity: "info,low,medium,high,critical"  # include info — misconfig chains are info-severity
+    nuclei_tags:
+      # Original
+      - xss
+      - ssrf
+      - cors
+      - lfi
+      - ssti
+      # High-yield additions
+      - sqli                   # SQL injection templates
+      - rce                    # Remote code execution
+      - open-redirect          # Redirect bugs
+      - xxe                    # XML external entities
+      - crlf                   # Header injection
+      - idor                   # Insecure direct object reference
+      - auth-bypass            # Authentication bypass
+      - default-login          # Default credentials
+      - exposed-panel          # Admin panels, dashboards
+      - misconfig              # Misconfiguration checks
+      - token                  # Token/session issues
+      - api                    # API-specific templates
+      - graphql                # GraphQL introspection/injection
+      - jwt                    # JWT vulnerabilities
+      - oauth                  # OAuth misconfigurations
+      - takeover               # Subdomain takeover
+      - exposure               # File/path exposure
+      - cloud                  # Cloud metadata / S3 / GCS
+      - tech-detect            # Tech fingerprinting (feeds learning)
+    xss_candidate_limit: 15     # was 5 — more coverage
+    sqli_candidate_limit: 10    # was 3
+    ssrf_candidate_limit: 10    # was 3
+    gf_patterns:
+      - sqli
+      - xss
+      - ssrf
+      - redirect
+      - rce
+      - idor
+      - lfi
+      - ssti
+      - interestingparams      # generic interesting params
+      - aws-keys               # inline AWS credential patterns
+      - s3-buckets             # S3 bucket references
+      - takeovers              # subdomain takeover candidates
+      - debug
+    kxss_candidate_limit: 200
+    trufflehog_enabled: true
+    gitleaks_enabled: true
+
+  exploit_agent:
+    enabled: true
+    max_parallel_tasks: 1
+    chain_confidence_threshold: 0.60   # only report chains above this
+    generate_pocs: true
+    escalate_severity: true
+
+  validation_agent:
+    enabled: true
+    max_parallel_tasks: 1
+    verify_live_endpoints: true
+    endpoint_timeout: 8         # seconds
+    cvss_overrides:             # override base CVSS for specific types
+      OS Command Injection: 9.0
+      SQL Injection: 7.5
+      Subdomain Takeover: 8.0
+    fp_rules:
+      min_secret_length: 8
+      require_xss_reflection: true
+      require_redirect_location: true
+
+  report_agent:
+    enabled: true
+    max_parallel_tasks: 1
+    default_platform: "HackerOne"   # HackerOne | Bugcrowd | generic
+    include_poc: true
+    include_remediation: true
+    summary_report: true
+
+# ── Tool availability configuration ──────────────────────────────────
+tools:
+  go_bin_path: "~/go/bin"
+  cargo_bin_path: "~/.cargo/bin"
+  npm_bin_path: "~/.npm-global/bin"
+  local_bin_path: "~/.local/bin"
+
+  # Tools classified as high-noise (require explicit authorisation)
+  high_noise:
+    - sqlmap
+    - nikto
+    - commix
+    - wfuzz
+
+  # Tools that require root / elevated privileges
+  needs_root:
+    - masscan
+
+  # Default rate limiting (requests per second)
+  rate_limits:
+    nuclei: 150
+    dalfox: 50
+    sqlmap: 10
+    httpx: 300
+    katana: 200
+
+# ── Attack graph settings ─────────────────────────────────────────────
+attack_graph:
+  auto_build: true              # build graph from recon output automatically
+  save_json: true
+  save_dot: false               # requires graphviz
+  save_mermaid: true
+  criticality_threshold: 0.5   # nodes above this are highlighted
+
+# ── Learning system settings ──────────────────────────────────────────
+learning:
+  enabled: true
+  db_path: "~/.oneinfinity/databases/knowledge_base.db"
+  seed_patterns: true           # seed with built-in known patterns on first run
+  record_tool_performance: true
+  min_runs_for_recommendation: 3  # require at least N runs before recommending

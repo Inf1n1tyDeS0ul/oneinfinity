@@ -1,0 +1,149 @@
+# models.yaml — Model Orchestration Registry
+#
+# Each entry defines a model's cost, capabilities, and tier.
+# The orchestrator reads this at startup; no code changes needed to add a model.
+#
+# tiers:     FAST (1) → STANDARD (2) → PREMIUM (3)
+# providers: openai, anthropic, local
+#
+# capabilities map to TaskCategory enum values in task_classifier.py
+
+models:
+
+  # ── OpenAI ──────────────────────────────────────────────────────────────────
+
+  gpt-4o-mini:
+    provider: openai
+    tier: FAST
+    cost_per_1k_input: 0.00015       # USD per 1k input tokens
+    cost_per_1k_output: 0.00060      # USD per 1k output tokens
+    max_context_tokens: 128000
+    latency_class: INTERACTIVE
+    enabled: true
+    capabilities:
+      - RECON
+      - HYPOTHESIS
+      - PAYLOAD_MUTATION
+      - REPORT_WRITING
+      - OSINT
+      - GENERAL
+      - VULN_ANALYSIS
+      - CHAIN_DETECTION
+
+  gpt-4o:
+    provider: openai
+    tier: STANDARD
+    cost_per_1k_input: 0.00250
+    cost_per_1k_output: 0.01000
+    max_context_tokens: 128000
+    latency_class: INTERACTIVE
+    enabled: true
+    capabilities:
+      - RECON
+      - VULN_ANALYSIS
+      - EXPLOIT_GEN
+      - HYPOTHESIS
+      - CHAIN_DETECTION
+      - PAYLOAD_MUTATION
+      - CODE_ANALYSIS
+      - REPORT_WRITING
+      - OSINT
+      - BIZ_LOGIC
+      - GENERAL
+
+  # ── Anthropic ───────────────────────────────────────────────────────────────
+
+  claude-haiku-4-5:
+    provider: anthropic
+    tier: FAST
+    cost_per_1k_input: 0.00080
+    cost_per_1k_output: 0.00400
+    max_context_tokens: 200000
+    latency_class: REAL_TIME
+    enabled: false                   # set to true when ANTHROPIC_API_KEY is configured
+    capabilities:
+      - RECON
+      - HYPOTHESIS
+      - PAYLOAD_MUTATION
+      - REPORT_WRITING
+      - OSINT
+      - CHAIN_DETECTION
+      - GENERAL
+
+  claude-sonnet-4-6:
+    provider: anthropic
+    tier: STANDARD
+    cost_per_1k_input: 0.00300
+    cost_per_1k_output: 0.01500
+    max_context_tokens: 200000
+    latency_class: INTERACTIVE
+    enabled: false
+    capabilities:
+      - RECON
+      - VULN_ANALYSIS
+      - EXPLOIT_GEN
+      - HYPOTHESIS
+      - CHAIN_DETECTION
+      - PAYLOAD_MUTATION
+      - CODE_ANALYSIS
+      - REPORT_WRITING
+      - OSINT
+      - BIZ_LOGIC
+      - GENERAL
+
+  claude-opus-4-6:
+    provider: anthropic
+    tier: PREMIUM
+    cost_per_1k_input: 0.01500
+    cost_per_1k_output: 0.07500
+    max_context_tokens: 200000
+    latency_class: INTERACTIVE
+    enabled: false
+    capabilities:
+      - RECON
+      - VULN_ANALYSIS
+      - EXPLOIT_GEN
+      - HYPOTHESIS
+      - CHAIN_DETECTION
+      - PAYLOAD_MUTATION
+      - CODE_ANALYSIS
+      - REPORT_WRITING
+      - OSINT
+      - BIZ_LOGIC
+      - GENERAL
+
+# ── Budget limits ────────────────────────────────────────────────────────────
+
+budget:
+  daily_limit_usd: 5.00
+  monthly_limit_usd: 50.00
+  alert_threshold: 0.80            # alert at 80% of limit
+  per_model_daily_limit:
+    gpt-4o: 2.00
+    claude-opus-4-6: 2.00
+  per_category_daily_limit:
+    EXPLOIT_GEN: 1.00
+    BIZ_LOGIC: 0.50
+
+# ── Routing policy ────────────────────────────────────────────────────────────
+
+routing:
+  # confidence thresholds — below these, escalate to next tier
+  escalation_thresholds:
+    FAST_to_STANDARD: 0.65
+    STANDARD_to_PREMIUM: 0.75
+
+  # minimum tier per importance level (overrides complexity)
+  min_tier_by_importance:
+    CRITICAL: STANDARD          # never use FAST for CRITICAL tasks
+    HIGH: FAST                  # allow FAST but escalate quickly
+
+  # max retries before failover to next model in same tier
+  max_retries_same_model: 2
+  retry_backoff_base_s: 1.0
+
+  # temperature per tier
+  temperature:
+    FAST: 0.2
+    STANDARD: 0.3
+    PREMIUM: 0.4
