@@ -462,38 +462,44 @@ class ApplicationIntelligenceEngine:
     # ── Private helpers ───────────────────────────────────────────────────────
 
     def _load_urls(self) -> list[str]:
+        search_dirs = [self.output_dir, self.output_dir / "recon"]
         for fname in ["urls.json", "endpoints.json"]:
-            f = self.output_dir / fname
+            for d in search_dirs:
+                f = d / fname
+                if f.exists():
+                    try:
+                        data = json.loads(f.read_text())
+                        if isinstance(data, list):
+                            return data
+                        return data.get("urls", data.get("endpoints", []))
+                    except Exception:
+                        pass
+        return []
+
+    def _load_alive_hosts(self) -> list[dict]:
+        search_dirs = [self.output_dir, self.output_dir / "recon"]
+        for d in search_dirs:
+            f = d / "alive_hosts.json"
             if f.exists():
                 try:
                     data = json.loads(f.read_text())
-                    if isinstance(data, list):
-                        return data
-                    return data.get("urls", data.get("endpoints", []))
+                    if isinstance(data, dict):
+                        return data.get("hosts", [])
+                    return data if isinstance(data, list) else []
                 except Exception:
                     pass
         return []
 
-    def _load_alive_hosts(self) -> list[dict]:
-        f = self.output_dir / "alive_hosts.json"
-        if not f.exists():
-            return []
-        try:
-            data = json.loads(f.read_text())
-            if isinstance(data, dict):
-                return data.get("hosts", [])
-            return data if isinstance(data, list) else []
-        except Exception:
-            return []
-
     def _load_tech_profile(self) -> dict:
+        search_dirs = [self.output_dir, self.output_dir / "recon"]
         for fname in ["tech_profile.json", "adaptive_recon.json"]:
-            f = self.output_dir / fname
-            if f.exists():
-                try:
-                    return json.loads(f.read_text())
-                except Exception:
-                    pass
+            for d in search_dirs:
+                f = d / fname
+                if f.exists():
+                    try:
+                        return json.loads(f.read_text())
+                    except Exception:
+                        pass
         return {}
 
     def _ingest_tech_profile(self, tech: dict, alive_hosts: list[dict]):
