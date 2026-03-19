@@ -5,7 +5,7 @@ import {
   Bell,
   ChevronLeft, ChevronRight, Play, Zap, Terminal,
   AlertTriangle, CheckCircle2, Info,
-  Brain, Activity, Users, GitBranch, Cpu, Smartphone, Trophy,
+  Brain, Activity, Users, GitBranch, Cpu, Smartphone, Trophy, Key
 } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import ScanLauncher from './ScanLauncher'
@@ -27,6 +27,7 @@ const NAV_ITEMS = [
   { path: '/orchestrator', label: 'Orchestrator', icon: Cpu },
   { path: '/mobile',       label: 'Mobile',       icon: Smartphone },
   { path: '/hunter',       label: 'Hunter',       icon: Trophy },
+  { path: '/secrets',      label: 'Secrets',      icon: Key },
 ]
 
 export default function Layout({ children }) {

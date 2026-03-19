@@ -172,7 +172,7 @@ class BountyReportGenerator:
             payload=raw.get("payload") or "",
             evidence=raw.get("evidence") or raw.get("output") or raw.get("description") or "",
             poc_steps=raw.get("poc_steps") or [],
-            validated=bool(raw.get("validated", False)),
+            validated=bool(raw.get("validated", False) or raw.get("status") == "confirmed"),
         )
 
     def _enrich_finding(self, f: ReportFinding) -> ReportFinding:

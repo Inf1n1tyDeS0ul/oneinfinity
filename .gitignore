@@ -1,15 +1,116 @@
+# ── Secrets & credentials ─────────────────────────────────────────────────────
 .env
+.env.*
+!.env.example
+secrets.*
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+*.jks
+*.keystore
+*_rsa
+*_dsa
+*_ecdsa
+id_rsa
+id_dsa
+id_ecdsa
+*.ppk
+jwt_secret*
+auth_token*
+
+# ── Token / config files ───────────────────────────────────────────────────────
+git_token.txt
+*_token.txt
+*_credentials.json
+service_account*.json
+gcp_key*.json
+aws_credentials
+.aws/
+
+# ── Scope & user-specific target files ────────────────────────────────────────
+scope.txt
+targets.txt
+*.scope
+
+# ── Generated state & doctor reports ──────────────────────────────────────────
+.doctor_state.json
+*.state.json
+
+# ── Scan outputs, reports & artifacts ─────────────────────────────────────────
+output/
+reports/
+*.html
+!web/frontend/index.html
+!web/frontend/dist/index.html
+*.log
+*.log.*
+debug_*.json
+raw_*.json
+scan_results/
+recon/
+
+# ── Database files ─────────────────────────────────────────────────────────────
 *.db
 *.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.sql
+*.bak
+*.dump
+
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
-node_modules/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
 dist/
 build/
-.venv/
+*.so
+*.dylib
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# ── Virtual environments ───────────────────────────────────────────────────────
 venv/
-*.log
+.venv/
+env/
+.env_dir/
+web/backend/.venv/
+
+# ── Node / Frontend ────────────────────────────────────────────────────────────
+node_modules/
+web/frontend/node_modules/
+web/frontend/dist/
+
+# ── OS artifacts ───────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+
+# ── IDE & editor ──────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# ── OneInfinity runtime data ───────────────────────────────────────────────────
 .oneinfinity/
-recon/
+.claude/
 uploads/
 tmp/
-.claude/

@@ -11,6 +11,7 @@ A complete reference of all capabilities (skills) the platform provides, organiz
 | Subdomain enumeration | `oneinfinity scan <target>` (phase 1) | `autonomous_scan_pipeline.py` | subfinder, amass, assetfinder, findomain, dnsx |
 | Certificate transparency monitoring | `oneinfinity plugins run crtsh_monitor` | `plugins/recon/crtsh_monitor.py` | crt.sh API |
 | ASN / IP range enumeration | `oneinfinity plugins run asn_enum` | `plugins/recon/asn_enum.py` | BGP / ASN APIs |
+| Org-domain intelligence | `oneinfinity org-intel <org>` | `org_intel_mapper.py` | GitHub org → domains from repo metadata |
 | HTTP probing & fingerprinting | `oneinfinity scan <target>` (phase 2) | `modules/tool_wrappers.py` | httpx, naabu, whatweb |
 | Technology detection | `oneinfinity adaptive-recon <target>` | `adaptive_recon_engine.py` | httpx, Wappalyzer heuristics |
 | JS endpoint extraction | `oneinfinity adaptive-recon <target>` | `adaptive_recon_engine.py` | katana, regex on JS |
@@ -57,7 +58,7 @@ A complete reference of all capabilities (skills) the platform provides, organiz
 
 | Skill | Command | Engine | Description |
 |-------|---------|--------|-------------|
-| Exploit chain detection | `oneinfinity exploit <domain>` | `exploit_chains/engine.py` | 16 ChainPatterns (SSRF→Cloud, XSS→ATO, SQLi→RCE, etc.) with step-by-step UI tracking |
+| Exploit chain detection | `oneinfinity exploit <domain>` | `exploit_chains/engine.py` | 6 ChainPatterns (SSRF→Cloud, XSS→ATO, SQLi→RCE, IDOR→PrivEsc, CORS→CredTheft, OpenRedirect→OAuthHijack) with step-by-step PoC output |
 | PoC generation | `oneinfinity exploit <domain>` | `exploit_chains/poc_generator.py` | Produces executable PoC scripts per chain |
 | Auto-Reporting | `oneinfinity exploit <domain> --report` | `bounty_report_generator.py` | Generates HackerOne/Bugcrowd markdown reports automatically |
 | Bounty ROI Ranking | (automatic) | `core/reporter.py` | Ranks findings by payout potential (0-100 score + $$ estimate) |
@@ -344,3 +345,12 @@ All capabilities above are also available via the React web interface at `http:/
 | AI security agent | (fabric-triggered) | `AISecurityAgent` | AISecurityEngine endpoint scan |
 | Brain API | (backend) | `graph_brain_api.py` | 5 routers (brain/ede/triggers/decisions/fabric) + 21 endpoints |
 | Live graph dashboard | `/graph-brain` | `GraphBrainDashboard.jsx` | 5-tab UI: Overview/AttackGraph/Decisions/Triggers/AgentFabric |
+
+---
+
+## 20. Diagnostics
+
+| Skill | Command | Module | Details |
+|---|---|---|---|
+| System doctor (fast) | `oneinfinity doctor` | `core/doctor.py` | Simulated QA + audit + regression report |
+| System doctor (deep) | `oneinfinity doctor --deep` | `core/doctor.py` | Import-based audit with real module checks + tool registry/DB QA |

@@ -42,6 +42,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
+import logging
+log = logging.getLogger(__name__)
+
 # ── Weights & constants ────────────────────────────────────────────────────────
 
 # Base priority weight per node type (higher = more interesting)

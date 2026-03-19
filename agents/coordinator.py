@@ -9,12 +9,15 @@ multi-format reporting, scope validation, scan profiles, and plugin registry.
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 import queue
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import List, Optional
+
+log = logging.getLogger("oneinfinity.agents.coordinator")
 
 from agents.base import (
     AgentState, BaseAgent, Message, MessageType, Task, TaskResult
@@ -439,8 +442,11 @@ class AgentCoordinator:
 
     def abort_all(self):
         """Signal all agents to abort their current tasks."""
-        for agent in self._agents.values():
-            agent.abort()
+        for name, agent in self._agents.items():
+            try:
+                agent.abort_current()
+            except Exception as exc:
+                log.warning("abort_all: could not abort agent %s: %s", name, exc)
 
     def status(self) -> dict:
         return {

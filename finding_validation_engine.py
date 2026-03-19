@@ -11,6 +11,7 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import ssl
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -99,6 +100,8 @@ class FindingValidationEngine:
         self._ssl_ctx = ssl.create_default_context()
         self._ssl_ctx.check_hostname = False
         self._ssl_ctx.verify_mode = ssl.CERT_NONE
+        self._baseline_cache: OrderedDict = OrderedDict()
+        self._baseline_cache_limit = 128
 
     # ── Public Interface ──────────────────────────────────────────────────────
 
@@ -157,6 +160,7 @@ class FindingValidationEngine:
     def _validate_sqli(self, result: ValidationResult, finding: dict,
                        url: str, payload: str, param: str, method: str) -> bool:
         from exploit_generator import SQLI_PAYLOADS
+        baseline = self._baseline(url, method, param)
         # Try each category
         for category, payloads in SQLI_PAYLOADS.items():
             for p in payloads[:2]:
@@ -179,6 +183,9 @@ class FindingValidationEngine:
 
                 # Error-based detection
                 for pat in EVIDENCE_PATTERNS["sqli"]:
+                    # Suppress if baseline contains same SQL error (likely generic error page)
+                    if baseline and pat.search(baseline.get("body", "")):
+                        continue
                     m = pat.search(body)
                     if m:
                         result.evidence = m.group(0)[:200]
@@ -201,6 +208,8 @@ class FindingValidationEngine:
 
         resp = self._send(url, method, param, test_payload)
         if resp and canary in resp["body"]:
+            if not self._content_type_is_html(resp.get("headers", {})):
+                return False
             result.evidence = f"Canary reflected: {canary}"
             result.evidence_type = "reflection"
             result.confidence = 0.98
@@ -217,6 +226,8 @@ class FindingValidationEngine:
             if not resp:
                 continue
             body = resp["body"]
+            if not self._content_type_is_html(resp.get("headers", {})):
+                continue
             for pat in EVIDENCE_PATTERNS["xss"]:
                 if pat.search(body):
                     result.evidence = f"XSS payload reflected in response"
@@ -233,6 +244,7 @@ class FindingValidationEngine:
     def _validate_ssrf(self, result: ValidationResult, finding: dict,
                        url: str, payload: str, param: str, method: str) -> bool:
         from exploit_generator import SSRF_PAYLOADS
+        baseline = self._baseline(url, method, param)
 
         for variant, targets in SSRF_PAYLOADS.items():
             for target_url in targets[:2]:
@@ -241,6 +253,8 @@ class FindingValidationEngine:
                     continue
                 body = resp["body"]
                 for pat in EVIDENCE_PATTERNS["ssrf"]:
+                    if baseline and pat.search(baseline.get("body", "")):
+                        continue
                     m = pat.search(body)
                     if m:
                         result.evidence = f"SSRF confirmed: {m.group(0)[:100]}"
@@ -257,12 +271,15 @@ class FindingValidationEngine:
     def _validate_lfi(self, result: ValidationResult, finding: dict,
                       url: str, payload: str, param: str, method: str) -> bool:
         from exploit_generator import LFI_PAYLOADS
+        baseline = self._baseline(url, method, param)
         for p in LFI_PAYLOADS[:6]:
             resp = self._send(url, method, param, p)
             if not resp:
                 continue
             body = resp["body"]
             for pat in EVIDENCE_PATTERNS["lfi"]:
+                if baseline and pat.search(baseline.get("body", "")):
+                    continue
                 m = pat.search(body)
                 if m:
                     result.evidence = f"LFI confirmed: {m.group(0)[:100]}"
@@ -278,10 +295,12 @@ class FindingValidationEngine:
 
     def _validate_ssti(self, result: ValidationResult, finding: dict,
                        url: str, payload: str, param: str, method: str) -> bool:
+        baseline = self._baseline(url, method, param)
+        baseline_body = (baseline or {}).get("body", "")
         # Send probe payloads and check for 49 (7*7)
         for p in ["{{7*7}}", "${7*7}", "<%= 7*7 %>", "#{7*7}", "*{7*7}"]:
             resp = self._send(url, method, param, p)
-            if resp and "49" in resp["body"]:
+            if resp and "49" in resp["body"] and "49" not in baseline_body:
                 result.evidence = "SSTI: 7*7=49 evaluated"
                 result.evidence_type = "code_execution"
                 result.confidence = 0.97
@@ -296,12 +315,15 @@ class FindingValidationEngine:
     def _validate_cmdi(self, result: ValidationResult, finding: dict,
                        url: str, payload: str, param: str, method: str) -> bool:
         from exploit_generator import CMDI_PAYLOADS
+        baseline = self._baseline(url, method, param)
         for p in CMDI_PAYLOADS[:5]:
             resp = self._send(url, method, param, p)
             if not resp:
                 continue
             body = resp["body"]
             for pat in EVIDENCE_PATTERNS["cmdi"]:
+                if baseline and pat.search(baseline.get("body", "")):
+                    continue
                 m = pat.search(body)
                 if m:
                     result.evidence = f"CMDi: {m.group(0)[:100]}"
@@ -321,7 +343,7 @@ class FindingValidationEngine:
         resp = self._send(url, method, param, evil, follow_redirects=False)
         if resp:
             location = resp.get("headers", {}).get("Location", "")
-            if evil in location or "evil.oneinfinity" in resp["body"]:
+            if resp.get("status", 0) in (301, 302, 303, 307, 308) and evil in location:
                 result.evidence = f"Open redirect to {evil}"
                 result.evidence_type = "redirect"
                 result.confidence = 0.92
@@ -403,6 +425,9 @@ class FindingValidationEngine:
         """Generic validation: send original payload, check evidence string."""
         evidence_str = finding.get("evidence", "")
         resp = self._send(url, method, param, payload)
+        baseline = self._baseline(url, method, param)
+        if baseline and evidence_str and evidence_str.lower() in baseline.get("body", "").lower():
+            return False
         if resp and evidence_str and evidence_str.lower() in resp["body"].lower():
             result.evidence = f"Evidence found: {evidence_str[:100]}"
             result.evidence_type = "generic"
@@ -413,67 +438,105 @@ class FindingValidationEngine:
             return True
         return False
 
+    def _baseline(self, url: str, method: str, param: str) -> Optional[dict]:
+        """Send a benign request for baseline comparison to reduce false positives."""
+        key = (url, method.upper(), param)
+        if key in self._baseline_cache:
+            self._baseline_cache.move_to_end(key)
+            return self._baseline_cache[key]
+        # Use empty payload to avoid unintended effects
+        resp = self._send(url, method, param, "")
+        # LRU eviction
+        if resp is not None:
+            self._baseline_cache[key] = resp
+            self._baseline_cache.move_to_end(key)
+            if len(self._baseline_cache) > self._baseline_cache_limit:
+                self._baseline_cache.popitem(last=False)
+        return resp
+
+    @staticmethod
+    def _content_type_is_html(headers: dict) -> bool:
+        ct = (headers.get("Content-Type") or headers.get("content-type") or "").lower()
+        return "text/html" in ct or "application/xhtml+xml" in ct
+
     # ── HTTP Helpers ──────────────────────────────────────────────────────────
 
     def _send(self, url: str, method: str, param: str, payload: str,
-              follow_redirects: bool = True, content_type: str = None) -> Optional[dict]:
-        try:
-            from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
-            parsed = urlparse(url)
+              follow_redirects: bool = True, content_type: str = None,
+              retries: int = 2) -> Optional[dict]:
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        parsed = urlparse(url)
+
+        for attempt in range(retries + 1):
             t0 = time.time()
-
-            if method.upper() == "GET":
-                qs = parse_qs(parsed.query)
-                qs[param] = [payload]
-                new_query = urlencode(qs, doseq=True)
-                new_url = urlunparse(parsed._replace(query=new_query))
-                req = urllib.request.Request(new_url, method="GET")
-            else:
-                body_data = urlencode({param: payload}).encode()
-                req = urllib.request.Request(url, data=body_data, method=method.upper())
-                req.add_header("Content-Type", content_type or "application/x-www-form-urlencoded")
-
-            req.add_header("User-Agent", "Mozilla/5.0 (compatible; SecurityBot/1.0)")
-
-            if not follow_redirects:
-                opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
-                opener.handlers = [h for h in opener.handlers if not isinstance(h, urllib.request.HTTPRedirectHandler)]
-
-            with urllib.request.urlopen(req, timeout=self.timeout, context=self._ssl_ctx) as resp:
-                duration = (time.time() - t0) * 1000
-                body = resp.read(65536).decode("utf-8", errors="replace")
-                return {
-                    "status": resp.status,
-                    "body": body,
-                    "headers": dict(resp.headers),
-                    "duration_ms": duration,
-                }
-        except urllib.error.HTTPError as e:
-            duration = (time.time() - t0) * 1000
             try:
-                body = e.read(65536).decode("utf-8", errors="replace")
-            except Exception:
-                body = ""
-            return {"status": e.code, "body": body, "headers": {}, "duration_ms": duration}
-        except Exception as e:
-            logger.debug(f"HTTP send error: {e}")
-            return None
+                if method.upper() == "GET":
+                    qs = parse_qs(parsed.query)
+                    qs[param] = [payload]
+                    new_query = urlencode(qs, doseq=True)
+                    new_url = urlunparse(parsed._replace(query=new_query))
+                    req = urllib.request.Request(new_url, method="GET")
+                else:
+                    body_data = urlencode({param: payload}).encode()
+                    req = urllib.request.Request(url, data=body_data, method=method.upper())
+                    req.add_header("Content-Type", content_type or "application/x-www-form-urlencoded")
 
-    def _send_with_headers(self, url: str, headers: dict) -> Optional[dict]:
-        try:
-            t0 = time.time()
-            req = urllib.request.Request(url)
-            for k, v in headers.items():
-                req.add_header(k, v)
-            req.add_header("User-Agent", "Mozilla/5.0")
-            with urllib.request.urlopen(req, timeout=self.timeout, context=self._ssl_ctx) as resp:
+                req.add_header("User-Agent", "Mozilla/5.0 (compatible; SecurityBot/1.0)")
+
+                opener = urllib.request.build_opener()
+                if not follow_redirects:
+                    opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
+                    opener.handlers = [h for h in opener.handlers if not isinstance(h, urllib.request.HTTPRedirectHandler)]
+
+                with opener.open(req, timeout=self.timeout, context=self._ssl_ctx) as resp:
+                    duration = (time.time() - t0) * 1000
+                    body = resp.read(65536).decode("utf-8", errors="replace")
+                    return {
+                        "status": resp.status,
+                        "body": body,
+                        "headers": dict(resp.headers),
+                        "duration_ms": duration,
+                    }
+            except urllib.error.HTTPError as e:
                 duration = (time.time() - t0) * 1000
-                body = resp.read(32768).decode("utf-8", errors="replace")
-                return {"status": resp.status, "body": body, "headers": dict(resp.headers), "duration_ms": duration}
-        except urllib.error.HTTPError as e:
-            return {"status": e.code, "body": "", "headers": {}, "duration_ms": 0}
-        except Exception:
-            return None
+                try:
+                    body = e.read(65536).decode("utf-8", errors="replace")
+                except Exception:
+                    body = ""
+                return {"status": e.code, "body": body, "headers": {}, "duration_ms": duration}
+            except urllib.error.URLError as e:
+                logger.debug(f"HTTP send URLError (attempt {attempt + 1}): {e}")
+                time.sleep(0.2 * (attempt + 1))
+                continue
+            except Exception as e:
+                logger.debug(f"HTTP send error (attempt {attempt + 1}): {e}")
+                time.sleep(0.2 * (attempt + 1))
+                continue
+        return None
+
+    def _send_with_headers(self, url: str, headers: dict, retries: int = 2) -> Optional[dict]:
+        for attempt in range(retries + 1):
+            try:
+                t0 = time.time()
+                req = urllib.request.Request(url)
+                for k, v in headers.items():
+                    req.add_header(k, v)
+                req.add_header("User-Agent", "Mozilla/5.0")
+                with urllib.request.urlopen(req, timeout=self.timeout, context=self._ssl_ctx) as resp:
+                    duration = (time.time() - t0) * 1000
+                    body = resp.read(32768).decode("utf-8", errors="replace")
+                    return {"status": resp.status, "body": body, "headers": dict(resp.headers), "duration_ms": duration}
+            except urllib.error.HTTPError as e:
+                return {"status": e.code, "body": "", "headers": {}, "duration_ms": 0}
+            except urllib.error.URLError as e:
+                logger.debug(f"HTTP header send URLError (attempt {attempt + 1}): {e}")
+                time.sleep(0.2 * (attempt + 1))
+                continue
+            except Exception as e:
+                logger.debug(f"HTTP header send error (attempt {attempt + 1}): {e}")
+                time.sleep(0.2 * (attempt + 1))
+                continue
+        return None
 
     def _build_poc(self, result: ValidationResult, url: str, param: str, payload: str, method: str):
         encoded = urllib.parse.quote(payload)

@@ -393,36 +393,85 @@ class ResultIngestionEngine:
                      finding.confidence, confidence_threshold, finding.vuln_type)
             return None
 
-        # 2. Enhanced Deduplication
-        if self._is_duplicate(finding):
-            log.debug("ingest: duplicate skipped [%s @ %s]", finding.vuln_type, finding.url)
-            return None
-
+        # 2. Check-then-store atomically under the write lock to avoid TOCTOU.
         try:
-            self._store_finding(finding)
-            self._update_graph(finding)
-            self._broadcast(finding)
-            return finding
+            stored = self._check_and_store(finding)
         except Exception as exc:
             log.error("ingest: DB write failed: %s", exc)
             return None
 
-    def _is_duplicate(self, finding: NormalizedFinding) -> bool:
-        """Robust deduplication: check scan_id OR global duplicate (same url + type)."""
-        try:
-            with sqlite3.connect(str(self._db_path), timeout=10) as conn:
-                # Check for identical finding in same scan OR globally identical within 24h
-                row = conn.execute(
-                    "SELECT 1 FROM findings "
-                    "WHERE (scan_id=? AND vuln_type=? AND url=?) "
-                    "OR (vuln_type=? AND url=? AND created_at > datetime('now', '-1 day')) "
-                    "LIMIT 1",
-                    (finding.scan_id, finding.vuln_type, finding.url, 
-                     finding.vuln_type, finding.url),
-                ).fetchone()
-                return row is not None
-        except Exception:
-            return False
+        if not stored:
+            log.debug("ingest: duplicate skipped [%s @ %s]", finding.vuln_type, finding.url)
+            return None
+
+        self._broadcast(finding)           # fire immediately — UI gets the event
+        import threading
+        threading.Thread(
+            target=self._update_graph,
+            args=(finding,),
+            daemon=True,
+            name=f"graph-update-{finding.finding_id[:8]}",
+        ).start()
+        return finding
+
+    def _check_and_store(self, finding: NormalizedFinding) -> bool:
+        """Atomically check for duplicate and store if new. Returns True if stored."""
+        last_exc: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                with self._lock:
+                    with sqlite3.connect(str(self._db_path), timeout=30) as conn:
+                        conn.execute("PRAGMA journal_mode=WAL;")
+                        conn.execute("PRAGMA synchronous=FULL;")
+                        # Duplicate check inside the lock — prevents TOCTOU race
+                        row = conn.execute(
+                            "SELECT 1 FROM findings "
+                            "WHERE (scan_id=? AND vuln_type=? AND url=?) "
+                            "OR (vuln_type=? AND url=? AND created_at > datetime('now', '-1 day')) "
+                            "LIMIT 1",
+                            (finding.scan_id, finding.vuln_type, finding.url,
+                             finding.vuln_type, finding.url),
+                        ).fetchone()
+                        if row is not None:
+                            return False
+                        conn.execute(
+                            "INSERT OR REPLACE INTO findings "
+                            "(finding_id, scan_id, target, title, severity, vuln_type, "
+                            " evidence, payload, url, tool, confidence, cvss, status, "
+                            " created_at, raw_json) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                finding.finding_id,
+                                finding.scan_id,
+                                finding.target,
+                                finding.title,
+                                finding.severity,
+                                finding.vuln_type,
+                                finding.evidence,
+                                finding.payload,
+                                finding.url,
+                                finding.tool,
+                                finding.confidence,
+                                finding.cvss,
+                                finding.status,
+                                finding.created_at,
+                                json.dumps(finding.raw),
+                            ),
+                        )
+                        conn.commit()
+                        return True
+            except sqlite3.OperationalError as exc:
+                last_exc = exc
+                if "locked" in str(exc).lower() and attempt < 2:
+                    time.sleep(0.2 * (2 ** attempt))
+                    continue
+                raise
+            except Exception as exc:
+                last_exc = exc
+                raise
+        if last_exc:
+            raise RuntimeError("Failed to store finding") from last_exc
+        return False
 
     def ingest_batch(self, results: List[RawResult]) -> List[NormalizedFinding]:
         """Ingest a list of RawResults; returns list of successfully parsed findings."""
@@ -438,9 +487,11 @@ class ResultIngestionEngine:
         scan_id: str,
         asset_type: str,
         value: str,
-        metadata: dict = {},
+        metadata: Optional[dict] = None,
     ) -> None:
         """Store a recon asset (subdomain, endpoint, service, technology) into SQLite."""
+        if metadata is None:
+            metadata = {}
         asset_id = str(uuid.uuid4())[:12]
         created_at = datetime.utcnow().isoformat()
         try:
@@ -526,6 +577,9 @@ class ResultIngestionEngine:
                 results = []
                 for row in rows:
                     d = dict(row)
+                    # Compatibility aliases for legacy code
+                    d["id"] = d.get("finding_id")
+                    d["cvss_score"] = d.get("cvss")
                     try:
                         d["raw"] = json.loads(d.pop("raw_json", "{}") or "{}")
                     except Exception:
@@ -593,6 +647,7 @@ class ResultIngestionEngine:
         return _parse_generic(result.raw, result.scan_id, source)
 
     def _store_finding(self, finding: NormalizedFinding) -> None:
+        """Unconditionally persist a finding (used by persist_finding, no dup check)."""
         last_exc: Optional[Exception] = None
         for attempt in range(3):
             try:

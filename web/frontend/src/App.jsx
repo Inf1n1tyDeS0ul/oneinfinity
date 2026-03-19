@@ -19,6 +19,7 @@ import SystemEvolution from './pages/SystemEvolution'
 import OrchestratorPanel from './pages/OrchestratorPanel'
 import MobileSecurity from './pages/MobileSecurity'
 import BountyHunter from './pages/BountyHunter'
+import SecretDashboard from './pages/SecretDashboard'
 
 export default function App() {
   const { addLog, setStats, setTargets, setScans, setVulnerabilities } = useStore()
@@ -75,6 +76,7 @@ export default function App() {
         <Route path="/orchestrator" element={<OrchestratorPanel />} />
         <Route path="/mobile" element={<MobileSecurity />} />
         <Route path="/hunter" element={<BountyHunter />} />
+        <Route path="/secrets" element={<SecretDashboard />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </Layout>

@@ -18,12 +18,27 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import os as _os_auth
+import secrets as _secrets
 import psutil
 import uvicorn
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException, UploadFile, File
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security.api_key import APIKeyHeader as _APIKeyHeader
 from pydantic import BaseModel, Field
+
+_API_KEY: str = _os_auth.environ.get("ONEINFINITY_API_KEY", "")
+if not _API_KEY:
+    _API_KEY = _secrets.token_urlsafe(32)
+    print("[WARN] ONEINFINITY_API_KEY not set. Generated ephemeral key for this session. "
+          "Set ONEINFINITY_API_KEY in your environment for a stable key.", flush=True)
+
+_key_header = _APIKeyHeader(name="X-API-Key", auto_error=False)
+
+async def _require_auth(key: str = Depends(_key_header)):
+    if key != _API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid or missing X-API-Key header")
 
 # ── Path setup ───────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.parent.parent  # oneinfinity/
@@ -371,7 +386,7 @@ async def get_target(target_id: str):
         raise HTTPException(404, "Target not found")
     return t
 
-@app.post("/api/targets")
+@app.post("/api/targets", dependencies=[Depends(_require_auth)])
 async def create_target(body: Dict[str, Any], background_tasks: BackgroundTasks):
     target_id = str(uuid.uuid4())[:8]
     domain = body.get("domain", "")
@@ -402,7 +417,7 @@ async def create_target(body: Dict[str, Any], background_tasks: BackgroundTasks)
     _add_log(f"Auto-scan queued for new target: {domain}", "info", "scanner", scan_id)
     return {**t, "scan_id": scan_id}
 
-@app.delete("/api/targets/{target_id}")
+@app.delete("/api/targets/{target_id}", dependencies=[Depends(_require_auth)])
 async def delete_target(target_id: str):
     if not _target_db.get(target_id):
         raise HTTPException(404, "Target not found")
@@ -421,7 +436,7 @@ async def get_scan(scan_id: str):
         raise HTTPException(404, "Scan not found")
     return SCANS[scan_id]
 
-@app.post("/api/scans")
+@app.post("/api/scans", dependencies=[Depends(_require_auth)])
 async def launch_scan(req: ScanRequest, background_tasks: BackgroundTasks):
     scan_id = str(uuid.uuid4())[:8]
     scan = {
@@ -461,6 +476,22 @@ async def stop_scan(scan_id: str):
     return scan
 
 # Vulnerabilities
+@app.get("/api/findings")
+async def list_findings(target: Optional[str] = None, severity: Optional[str] = None):
+    """Alias for vulnerabilities specifically tailored for Secret Intel dashboard."""
+    try:
+        from result_ingestion_engine import get_ingestion_engine
+        raw = get_ingestion_engine().get_findings(target=target, severity=severity)
+        return raw
+    except Exception as exc:
+        log.warning("ResultIngestionEngine unavailable, using in-memory: %s", exc)
+        res = list(VULNERABILITIES.values())
+        if target:
+            res = [v for v in res if v.get("target") == target]
+        if severity:
+            res = [v for v in res if v.get("severity") == severity]
+        return res
+
 @app.get("/api/vulnerabilities")
 async def list_vulnerabilities(target: Optional[str] = None, severity: Optional[str] = None):
     try:
@@ -1378,18 +1409,29 @@ def _get_mobile_engine():
         return None, None
 
 
-@app.post("/api/mobile/upload")
+@app.post("/api/mobile/upload", dependencies=[Depends(_require_auth)])
 async def mobile_upload(file: UploadFile, background_tasks: BackgroundTasks):
+    MAX_SIZE = 200 * 1024 * 1024  # 200 MB
+
     fname = file.filename or "app.apk"
-    ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else "apk"
+    ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
     if ext not in ("apk", "ipa"):
         raise HTTPException(400, "Only APK and IPA files are supported")
+
+    content = await file.read()
+    if len(content) > MAX_SIZE:
+        raise HTTPException(413, f"File exceeds 200 MB limit ({len(content)} bytes)")
+
+    # Path traversal prevention — strip directory components
+    safe_name = Path(fname).name.replace("..", "").lstrip("/").lstrip("\\")
+    if not safe_name:
+        raise HTTPException(400, "Invalid filename")
+
     upload_dir = raw_dir() / "mobile" / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
-    dest = upload_dir / fname
-    content = await file.read()
+    dest = upload_dir / safe_name
     dest.write_bytes(content)
-    app_id = f"mob_{len(MOBILE_APPS)+1:03d}_{Path(fname).stem}"
+    app_id = f"mob_{len(MOBILE_APPS)+1:03d}_{Path(safe_name).stem}"
     try:
         import sys as _sys, os as _os
         _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
@@ -1650,7 +1692,7 @@ def _get_report_generator():
     except Exception:
         return None
 
-@app.post("/api/hunter/start")
+@app.post("/api/hunter/start", dependencies=[Depends(_require_auth)])
 async def hunter_start(request: Request, background_tasks: BackgroundTasks):
     body = await request.json()
     session_id = f"hunt_{int(time.time())}"
@@ -1896,4 +1938,7 @@ except Exception as _e:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    _host = os.environ.get("API_HOST", "127.0.0.1")
+    _port = int(os.environ.get("API_PORT", "8000"))
+    _reload = os.environ.get("API_RELOAD", "false").lower() == "true"
+    uvicorn.run("main:app", host=_host, port=_port, reload=_reload)

@@ -24,6 +24,8 @@
 15. [Inter-Module Communication](#15-inter-module-communication)
 16. [Scalability Design](#16-scalability-design)
 17. [Architecture Diagrams](#17-architecture-diagrams)
+18. [Diagnostics and Audit Modes](#18-diagnostics-and-audit-modes)
+19. [Recon Asset Persistence](#19-recon-asset-persistence)
 
 ---
 
@@ -2696,3 +2698,38 @@ oneinfinity brain-triggers [--evaluate]             # List rules / trigger evalu
 | Decision Engine | Generate plan with rationale, agent outcome stats, recent decisions |
 | Trigger Engine | Rule list with cooldowns, evaluate graph, firing history |
 | Agent Fabric | Status, manual task submission, available agents |
+
+---
+
+## 18. Diagnostics and Audit Modes
+
+One&Infinity includes a built-in diagnostic system (`doctor`) composed of three engines:
+
+| Engine | Mode | What It Checks |
+|--------|------|----------------|
+| **QAEngine** | Real | 7 functional scenarios: scan engine, agent router, ingestion pipeline, API endpoint, tool registry (real tool probes), findings DB init, unified scan engine import |
+| **AuditEngine** | Simulate | Discovers 99 classes matching `*Engine`, `*Agent`, `*Manager` patterns; heuristic pass/fail based on class name. Import mode available for targeted debugging but not used by default (causes false "broken" reports for classes with required constructor args). |
+| **RegressionEngine** | State diff | Compares current audit results against `.doctor_state.json` to detect regressions |
+
+**Health score formula:**
+```
+score = 10.0
+score -= regressions × 2.0
+score -= QA_FAIL × 0.5 + QA_PARTIAL × 0.2
+score -= broken_features × 0.5 + partial_features × 0.2
+score = clamp(score, 0.0, 10.0)
+```
+
+QA scenarios include real checks (not mocked): tool registry availability reports 34 installed / 10 missing tools; findings DB verifies SQLite WAL initialization.
+
+---
+
+## 19. Recon Asset Persistence
+
+Adaptive recon now persists **subdomains**, **URLs**, and **technologies** into the findings database as recon assets. This enables:
+
+- Attack graph enrichment from reliable recon artifacts
+- Consistent asset tracking across scans
+- Faster correlation across runs
+
+Org-domain intelligence (`org-intel`) stores GitHub-derived domains as `org_domain` recon assets, enabling cross-program asset mapping.

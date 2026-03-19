@@ -52,11 +52,17 @@ class ScanAgent(BaseAgent):
         if not urls:
             f = out_dir / "urls.json"
             if f.exists():
-                urls = json.loads(f.read_text())
+                try:
+                    urls = json.loads(f.read_text())
+                except (json.JSONDecodeError, OSError):
+                    urls = []
         if not endpoints:
             f = out_dir / "endpoints.json"
             if f.exists():
-                endpoints = json.loads(f.read_text())
+                try:
+                    endpoints = json.loads(f.read_text())
+                except (json.JSONDecodeError, OSError):
+                    endpoints = []
         # Fallback: derive endpoints from urls
         if not endpoints and urls:
             endpoints = [u for u in urls if "?" in u]

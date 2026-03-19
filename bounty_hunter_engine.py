@@ -143,14 +143,8 @@ class BountyHunterEngine:
             pass
 
         try:
-            from autonomous_scan_pipeline import autonomous_scan_pipeline
-            self._pipeline = autonomous_scan_pipeline
-        except ImportError:
-            pass
-
-        try:
-            from autonomous_exploit_engine import autonomous_exploit_engine
-            self._exploit_engine = autonomous_exploit_engine
+            from unified_scan_engine import get_engine
+            self._pipeline = get_engine()
         except ImportError:
             pass
 
@@ -158,6 +152,7 @@ class BountyHunterEngine:
             from bounty_report_generator import bounty_report_generator
             self._report_gen = bounty_report_generator
         except ImportError:
+            pass
             pass
 
         try:
@@ -327,24 +322,19 @@ class BountyHunterEngine:
         """Run full pipeline on a single target, return HunterFindings."""
         findings = []
 
-        # Use autonomous scan pipeline if available
+        # Use unified scan engine if available
         if self._pipeline:
             try:
-                pipeline_result = self._pipeline.run(target)
-                raw_vulns = pipeline_result.get("vulnerabilities", [])
+                def on_progress(phase, pct, msg):
+                    session.log(f"[{pct}%] {phase}: {msg}")
 
-                # Exploit confirmed findings
-                if config.auto_exploit and self._exploit_engine and raw_vulns:
-                    exploit_session = self._exploit_engine.exploit_target(target, raw_vulns)
-                    for r in exploit_session.results:
-                        if r.exploited:
-                            findings.append(self._result_to_finding(r, target, program))
-                else:
-                    for v in raw_vulns:
-                        findings.append(self._vuln_to_finding(v, target, program))
+                scan_session = self._pipeline.scan(target, on_progress=on_progress)
+                
+                for v in scan_session.findings:
+                    findings.append(self._vuln_to_finding(v, target, program))
 
             except Exception as e:
-                session.log(f"Pipeline error for {target}: {e}", "error")
+                session.log(f"Scan error for {target}: {e}", "error")
         else:
             # Fallback: demo findings
             findings.extend(self._demo_findings(target, program))

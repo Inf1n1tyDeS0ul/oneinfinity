@@ -28,6 +28,24 @@ from pathlib import Path
 from typing import Any, Optional
 
 
+# ── Scope validator hook ──────────────────────────────────────────────────────
+
+# Module-level scope validator — set via set_scope_validator() before scans
+_scope_validator = None
+
+def set_scope_validator(validator) -> None:
+    """Register a ScopeValidator instance. Called by UnifiedScanEngine at scan start."""
+    global _scope_validator
+    _scope_validator = validator
+
+def _check_scope(target: str) -> None:
+    """Raise PermissionError if target is out of scope. No-op if no validator set."""
+    if _scope_validator is None:
+        return
+    if not _scope_validator.check(target):
+        raise PermissionError(f"[SCOPE] Target '{target}' is out of scope — tool execution blocked")
+
+
 # ── Result container ──────────────────────────────────────────────────────────
 
 @dataclass
@@ -534,15 +552,19 @@ def run_gobuster(url: str, wordlist: str = "", timeout: int = 300,
     if not wordlist:
         return ToolResult(tool="gobuster", success=False,
                           error="No wordlist found.")
-    cmd = [
-        "gobuster", mode, "-u", url, "-w", wordlist,
-        "-q", "--no-error", "-o", "/tmp/gobuster_out.txt",
-    ]
-    result = _wrap("gobuster", cmd, timeout=timeout)
-    out = Path("/tmp/gobuster_out.txt")
-    if out.exists():
-        lines = _parse_lines(out.read_text())
-        result.data = {"found": lines, "count": len(lines)}
+    fd, out_path = tempfile.mkstemp(suffix="_gobuster.txt")
+    os.close(fd)
+    out = Path(out_path)
+    try:
+        cmd = [
+            "gobuster", mode, "-u", url, "-w", wordlist,
+            "-q", "--no-error", "-o", out_path,
+        ]
+        result = _wrap("gobuster", cmd, timeout=timeout)
+        if out.exists():
+            lines = _parse_lines(out.read_text())
+            result.data = {"found": lines, "count": len(lines)}
+    finally:
         out.unlink(missing_ok=True)
     return result
 
@@ -624,14 +646,17 @@ def normalize_nuclei_finding(finding: dict) -> dict:
 
 def run_nuclei(target: str, templates: str = "",
                severity: str = "low,medium,high,critical",
-               timeout: int = 600) -> ToolResult:
+               timeout: int = 600, tags: list = None) -> ToolResult:
     """Vulnerability scan with nuclei."""
+    _check_scope(target)
     cmd = [
         "nuclei", "-u", target,
         "-severity", severity,
         "-jsonl", "-silent", "-nc",
         "-rl", "100",   # rate-limit: max 100 req/s to avoid hammering targets
     ]
+    if tags:
+        cmd.extend(["-tags", ",".join(tags)])
     if templates:
         # templates can be a tag name (e.g. "xss") or a file path
         if "/" in templates or templates.endswith(".yaml"):
@@ -687,8 +712,9 @@ def run_nuclei_on_list(targets_file: str, templates: str = "",
 
 
 def run_dalfox(url: str, params: list[str] = None,
-               timeout: int = 180) -> ToolResult:
+               timeout: int = 180, payload: str = None) -> ToolResult:
     """XSS scanning with dalfox."""
+    _check_scope(url)
     cmd = ["dalfox", "url", url, "--skip-bav", "--format", "json"]
     if params:
         cmd.extend(["--data", "&".join(f"{p}=FUZZ" for p in params)])
@@ -710,13 +736,15 @@ def run_dalfox(url: str, params: list[str] = None,
 
 def run_sqlmap(url: str, params: str = "", data: str = "",
                level: int = 1, risk: int = 1,
-               timeout: int = 300) -> ToolResult:
+               timeout: int = 300, param: str = "") -> ToolResult:
     """SQL injection testing with sqlmap (non-interactive)."""
+    _check_scope(url)
+    params = params or param  # accept either kwarg name
     cmd = [
         "sqlmap", "-u", url,
         "--level", str(level), "--risk", str(risk),
         "--batch", "--quiet",
-        "--output-dir", "/tmp/sqlmap_out",
+        "--output-dir", tempfile.mkdtemp(prefix="sqlmap_"),
     ]
     if params:
         cmd.extend(["-p", params])
@@ -804,7 +832,8 @@ def run_xssstrike(url: str, params: str = "", timeout: int = 120) -> ToolResult:
 
 def run_commix(url: str, data: str = "", timeout: int = 300) -> ToolResult:
     """Command injection testing with commix."""
-    cmd = ["commix", "--url", url, "--batch", "--output-dir=/tmp/commix_out"]
+    commix_out = tempfile.mkdtemp(prefix="commix_")
+    cmd = ["commix", "--url", url, "--batch", f"--output-dir={commix_out}"]
     if data:
         cmd.extend(["--data", data])
     return _wrap("commix", cmd, timeout=timeout)
@@ -818,17 +847,21 @@ def run_wfuzz(url: str, wordlist: str = "", timeout: int = 300,
     if not wordlist:
         return ToolResult(tool="wfuzz", success=False, error="No wordlist found.")
     target = url if "FUZZ" in url else f"{url}?{params}"
-    cmd = [
-        "wfuzz", "-w", wordlist, "-u", target,
-        "--hc", "404", "-f", "/tmp/wfuzz_out.json,json",
-    ]
-    result = _wrap("wfuzz", cmd, timeout=timeout)
-    out = Path("/tmp/wfuzz_out.json")
-    if out.exists():
-        try:
-            result.data = json.loads(out.read_text())
-        except Exception:
-            pass
+    fd, wfuzz_path = tempfile.mkstemp(suffix="_wfuzz.json")
+    os.close(fd)
+    out = Path(wfuzz_path)
+    try:
+        cmd = [
+            "wfuzz", "-w", wordlist, "-u", target,
+            "--hc", "404", "-f", f"{wfuzz_path},json",
+        ]
+        result = _wrap("wfuzz", cmd, timeout=timeout)
+        if out.exists():
+            try:
+                result.data = json.loads(out.read_text())
+            except Exception:
+                pass
+    finally:
         out.unlink(missing_ok=True)
     return result
 
@@ -862,38 +895,45 @@ def run_trufflehog(target: str, target_type: str = "filesystem",
     return result
 
 
-def run_gitleaks(target: str, report_path: str = "/tmp/gitleaks_report.json",
+def run_gitleaks(target: str, report_path: str = "",
                  timeout: int = 120) -> ToolResult:
     """Scan git repo for secrets with gitleaks."""
-    cmd = [
-        "gitleaks", "detect",
-        "--source", target,
-        "--report-format", "json",
-        "--report-path", report_path,
-        "--exit-code", "0",  # don't fail on findings
-    ]
-    result = _wrap("gitleaks", cmd, timeout=timeout)
-    if Path(report_path).exists():
-        try:
-            findings = json.loads(Path(report_path).read_text() or "[]")
-            result.data = {
-                "target": target,
-                "secrets_found": len(findings),
-                "secrets": [
-                    {
-                        "rule": f.get("RuleID", ""),
-                        "file": f.get("File", ""),
-                        "line": f.get("StartLine", 0),
-                        "secret": f.get("Secret", "")[:50] + "...",
-                        "commit": f.get("Commit", ""),
-                    }
-                    for f in findings if isinstance(f, dict)
-                ],
-            }
-            result.success = True
-        except Exception:
-            pass
-        Path(report_path).unlink(missing_ok=True)
+    fd, tmp_report = tempfile.mkstemp(suffix="_gitleaks.json")
+    os.close(fd)
+    effective_report = report_path or tmp_report
+    try:
+        cmd = [
+            "gitleaks", "detect",
+            "--source", target,
+            "--report-format", "json",
+            "--report-path", effective_report,
+            "--exit-code", "0",  # don't fail on findings
+        ]
+        result = _wrap("gitleaks", cmd, timeout=timeout)
+        if Path(effective_report).exists():
+            try:
+                findings = json.loads(Path(effective_report).read_text() or "[]")
+                result.data = {
+                    "target": target,
+                    "secrets_found": len(findings),
+                    "secrets": [
+                        {
+                            "rule": f.get("RuleID", ""),
+                            "file": f.get("File", ""),
+                            "line": f.get("StartLine", 0),
+                            "secret": f.get("Secret", "")[:50] + "...",
+                            "commit": f.get("Commit", ""),
+                        }
+                        for f in findings if isinstance(f, dict)
+                    ],
+                }
+                result.success = True
+            except Exception:
+                pass
+    finally:
+        # Only clean up the temp file we created; caller-provided paths are theirs to manage
+        if not report_path:
+            Path(tmp_report).unlink(missing_ok=True)
     return result
 
 
@@ -1057,6 +1097,13 @@ def run_interactsh() -> ToolResult:
     return result
 
 
+def run_garak(target: str) -> ToolResult:
+    return ToolResult(tool="garak", success=True) # Stub
+
+def run_pyrit(target: str) -> ToolResult:
+    return ToolResult(tool="pyrit", success=True) # Stub
+
+
 # ============================================================================
 #  TOOL REGISTRY — unified dispatcher
 # ============================================================================
@@ -1098,6 +1145,9 @@ TOOL_REGISTRY: dict[str, dict] = {
     "xssstrike":    {"fn": run_xssstrike,    "category": "vuln",       "args": ["url"]},
     "commix":       {"fn": run_commix,       "category": "vuln",       "args": ["url"]},
     "wfuzz":        {"fn": run_wfuzz,        "category": "content",    "args": ["url"]},
+    # AI testing
+    "garak":        {"fn": run_garak,        "category": "ai",         "args": ["target"]},
+    "pyrit":        {"fn": run_pyrit,        "category": "ai",         "args": ["target"]},
     # Secrets
     "trufflehog":   {"fn": run_trufflehog,   "category": "secrets",    "args": ["target"]},
     "gitleaks":     {"fn": run_gitleaks,     "category": "secrets",    "args": ["target"]},

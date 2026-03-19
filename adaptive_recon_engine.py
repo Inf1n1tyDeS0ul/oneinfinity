@@ -117,6 +117,7 @@ class ReconIntelligence:
     scan_duration_s:    float = 0.0
     technologies:       list[str] = field(default_factory=list)   # flat list for JSON compat
     tech_profile:       TechProfile = field(default_factory=TechProfile)
+    subdomains:         list[str] = field(default_factory=list)
     alive_hosts:        list[dict] = field(default_factory=list)  # httpx results
     all_urls:           list[str] = field(default_factory=list)   # discovered URLs
     apis:               list[str] = field(default_factory=list)   # base API paths
@@ -1178,6 +1179,7 @@ class AdaptiveReconEngine:
             target=self.target,
             scan_duration_s=round(time.time() - t0, 1),
             tech_profile=self._tech_profile,
+            subdomains=self._subdomains,
             alive_hosts=self._alive_hosts,
             all_urls=self._all_urls,
             api_map=self._api_map,
@@ -1198,6 +1200,14 @@ class AdaptiveReconEngine:
         _ok(f"Intelligence saved: {out_file}")
 
         return intel
+
+    @staticmethod
+    def health_check() -> dict:
+        """Lightweight audit check without network/tool execution."""
+        return {
+            "status": "ok",
+            "note": "AdaptiveReconEngine requires a target at runtime; audit skipped heavy execution."
+        }
 
     # ── Named public methods (as per spec) ───────────────────────────────────
 
@@ -1325,7 +1335,7 @@ class AdaptiveReconEngine:
             if katana_urls:
                 _ok(f"katana: {len(katana_urls)} URLs")
 
-        self._all_urls = sorted(all_urls)
+        self._all_urls = self._filter_urls(sorted(all_urls))
         (self.output_dir / "urls.json").write_text(
             json.dumps(self._all_urls, indent=2))
         _ok(f"Total URLs: {len(self._all_urls)}")
@@ -1358,6 +1368,25 @@ class AdaptiveReconEngine:
                 name = r.get("info", {}).get("name", "")
                 if name and name not in profile.raw_tech:
                     profile.raw_tech.append(name)
+
+    def _filter_urls(self, urls: list[str]) -> list[str]:
+        """Reduce recon noise by dropping common static assets and overly long URLs."""
+        if not urls:
+            return []
+        static_ext = (
+            ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp",
+            ".css", ".ico", ".woff", ".woff2", ".ttf", ".eot",
+            ".mp4", ".mp3", ".avi", ".mov", ".pdf", ".zip", ".tar", ".gz",
+        )
+        filtered = []
+        for u in urls:
+            lower = u.lower()
+            if len(u) > 300:
+                continue
+            if any(lower.split("?", 1)[0].endswith(ext) for ext in static_ext):
+                continue
+            filtered.append(u)
+        return filtered
 
         self._tech_profile = profile
 

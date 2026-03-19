@@ -120,12 +120,11 @@ def _make_fingerprint(
     vuln_type: str,
     url: str,
     parameter: str = "",
-    extra: str = "",
 ) -> str:
     canonical_type = _canonical_vuln_type(vuln_type)
     canonical_url = _normalize_url(url)
     canonical_param = parameter.strip().lower()
-    raw = f"{canonical_type}::{canonical_url}::{canonical_param}::{extra}"
+    raw = f"{canonical_type}::{canonical_url}::{canonical_param}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -205,8 +204,9 @@ class Deduplicator:
         vuln_type = finding.get("vuln_type") or finding.get("type") or finding.get("name") or "unknown"
         url = finding.get("url") or finding.get("endpoint") or ""
         parameter = finding.get("parameter") or finding.get("param") or ""
-        extra = finding.get("tool") or ""
-        return _make_fingerprint(str(vuln_type), str(url), str(parameter), str(extra))
+        # Do NOT include tool in fingerprint: same vuln found by different tools
+        # (e.g. dalfox + nuclei both finding XSS on same endpoint) must dedup.
+        return _make_fingerprint(str(vuln_type), str(url), str(parameter))
 
     def _endpoint_vuln_key(self, finding: Dict[str, Any]) -> str:
         vuln_type = finding.get("vuln_type") or finding.get("type") or finding.get("name") or "unknown"

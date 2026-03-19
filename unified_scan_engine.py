@@ -87,6 +87,8 @@ class PhaseResult:
     ended_at: float = 0.0
     error: str = ""
     meta: Dict = field(default_factory=dict)
+    degraded: bool = False
+    degraded_reason: str = ""
 
 
 @dataclass
@@ -494,17 +496,7 @@ class UnifiedScanEngine:
         ctx["recon_intel"] = intel
         
         # Extract data from intel
-        # ReconIntelligence doesn't expose subdomains directly, but alive_hosts has them
-        # However, engine._subdomains is private.
-        # But we can infer subdomains from alive_hosts or read the file.
-        # Actually, let's just use what's available or update ReconIntelligence again.
-        # Wait, ReconIntelligence doesn't have subdomains field either!
-        # It's better to update ReconIntelligence to include subdomains.
-        
-        subdomains = getattr(intel, "subdomains", [])
-        if not subdomains and intel.alive_hosts:
-             subdomains = [h.get("url", "").replace("https://", "").replace("http://", "") for h in intel.alive_hosts]
-        
+        subdomains = getattr(intel, "subdomains", []) or []
         urls = intel.all_urls
         log.info(
             "Recon complete for %s: %d subdomains, %d URLs",
@@ -514,6 +506,27 @@ class UnifiedScanEngine:
             "subdomains": len(subdomains),
             "urls": len(urls),
         })
+
+        # Persist recon assets (best-effort)
+        try:
+            from result_ingestion_engine import get_ingestion_engine
+            eng = get_ingestion_engine()
+            scan_id = session.scan_id
+
+            for sub in subdomains[:2000]:
+                if sub:
+                    eng.ingest_recon_asset(scan_id, "subdomain", sub, {"source": "adaptive_recon"})
+
+            for url in urls[:1000]:
+                if url:
+                    eng.ingest_recon_asset(scan_id, "url", url, {"source": "adaptive_recon"})
+
+            techs = getattr(intel, "technologies", []) or []
+            for t in techs[:200]:
+                if t:
+                    eng.ingest_recon_asset(scan_id, "technology", t, {"source": "adaptive_recon"})
+        except Exception as exc:
+            log.warning("Recon asset ingestion failed: %s", exc)
 
     def _phase_graph_update(self, session: ScanSession, ctx: dict) -> None:
         """Push recon findings into the attack graph brain."""
@@ -531,11 +544,7 @@ class UnifiedScanEngine:
             log.warning("No recon intel available for graph_update")
             return
 
-        # ReconIntelligence doesn't expose subdomains directly, infer from alive_hosts or just use empty list if not available
-        subdomains = getattr(intel, "subdomains", []) 
-        if not subdomains and getattr(intel, "alive_hosts", []):
-             subdomains = [h.get("url", "").replace("https://", "").replace("http://", "") for h in intel.alive_hosts]
-        
+        subdomains = getattr(intel, "subdomains", []) or []
         for sub in subdomains:
             try:
                 brain.integrate_node("SUBDOMAIN", sub, session.target, properties={"domain": sub})
@@ -566,7 +575,7 @@ class UnifiedScanEngine:
         elif t_type == "mobile":
             plan = ["nuclei"]
         elif t_type == "ai":
-            plan = ["nuclei"]
+            plan = ["garak", "pyrit"]
         else:
             plan = ["nuclei"]
 
@@ -637,7 +646,29 @@ class UnifiedScanEngine:
         for tool_name in plan:
             try:
                 log.info("Running tool '%s' against %s (%d URLs)", tool_name, session.target, len(urls))
-                if tool_name == "nuclei":
+                if tool_name in ("garak", "pyrit"):
+                    try:
+                        from ai_security_engine import AISecurityEngine, AISecurityScanConfig
+                        import asyncio
+                        ai_engine = AISecurityEngine()
+                        config = AISecurityScanConfig(
+                            target=session.target,
+                            tools=[tool_name],
+                        )
+                        res = asyncio.run(ai_engine.scan(config))
+                        for f in res.findings:
+                            findings.append({
+                                "tool": f.tool,
+                                "title": f.vulnerability,
+                                "severity": f.severity,
+                                "target": f.target,
+                                "evidence": f.evidence,
+                                "vuln_type": "ai",
+                                "url": session.target
+                            })
+                    except Exception as exc:
+                        log.error("AI Scan failed for %s: %s", tool_name, exc)
+                elif tool_name == "nuclei":
                     # Run in batches of 50 prioritized URLs
                     batches = [urls[i:i + 50] for i in range(0, len(urls), 50)] or [[]]
                     for batch_idx, batch in enumerate(batches):
@@ -730,6 +761,8 @@ class UnifiedScanEngine:
         result = registry.run(target_tool, **kwargs)
 
         # 3. WAF Feedback Loop with Control
+        _waf_budget_start = time.time()
+        _WAF_BUDGET_SEC = 60  # max 60s total across all retries
         if not result.success and retry and waf_retries > 0:
             from ai_security.response_analyzer import ResponseAnalyzer
             from ai_security.payload_mutator import PayloadMutator
@@ -741,11 +774,14 @@ class UnifiedScanEngine:
             waf_type = analyzer.detect_waf(raw_out, {})
             
             if waf_type:
+                if time.time() - _waf_budget_start > _WAF_BUDGET_SEC:
+                    log.warning("[WAF] retry budget exhausted for %s — skipping", tool_name)
+                    return [{"vuln_type": "tool_error", "error": "WAF retry budget exhausted"}]
                 WAF_STATS["detections"] += 1
                 WAF_STATS["mutations"] += 1
                 WAF_STATS["by_type"][waf_type] = WAF_STATS["by_type"].get(waf_type, 0) + 1
-                
-                logger.info(f"[WAF] mutation applied: Detected {waf_type}. Retrying ({waf_retries} left).")
+
+                log.info("[WAF] mutation applied: Detected %s. Retrying (%d left).", waf_type, waf_retries)
                 fallback_kwargs = kwargs.copy()
                 strategies = mutator.select_mutation_for_waf(waf_type)
                 
@@ -764,7 +800,7 @@ class UnifiedScanEngine:
                 return res
 
         if not result.success and waf_retries == 0:
-            logger.warning(f"[WAF] bypass failed for {tool_name} after max retries")
+            log.warning("[WAF] bypass failed for %s after max retries", tool_name)
 
         # 4. Result Deduplication & Noise Reduction
         # ... rest of the method logic ...
@@ -919,38 +955,50 @@ class UnifiedScanEngine:
             log.info("exploit_chaining: no multi-step attack paths found")
             return
 
-        # 3. Execute chains
+        # 3. Detect and execute chains via restored exploit_chains package
         try:
-            from autonomous_exploit_engine import AutonomousExploitEngine, ChainExecutor
-            engine = AutonomousExploitEngine()
-            executor = ChainExecutor(engine)
-            
-            chained_findings = []
-            for path in paths[:2]:   # execute top 2 paths
-                log.info(f"[CHAIN] Attempting path: {[n.label for n in path.nodes]}")
-                results = asyncio.run(executor.execute_path(path.nodes))
-                if results and any(r.exploited for r in results):
-                    # Convert results to findings and add to session
-                    chained_findings.extend(engine.session_to_findings(results))
+            from exploit_chains.engine import ExploitChainEngine
+        except ImportError as exc:
+            log.error("exploit_chaining: exploit_chains package unavailable: %s", exc)
+            session.phases["exploit_chaining"].degraded = True
+            session.phases["exploit_chaining"].degraded_reason = (
+                "exploit_chains package not found — run: git checkout exploit_chains/"
+            )
+            return
 
-            # Store context for API retrieval
-            CHAIN_CONTEXTS[session.scan_id] = {
-                "credentials": executor.context.credentials,
-                "tokens": executor.context.tokens,
-                "cookies": executor.context.cookies,
-                "extracted": executor.context.extracted,
-                "history": executor.context.history,
-            }
+        try:
+            engine = ExploitChainEngine(engine=brain)
+            chains = engine.detect_chains(
+                findings=ctx.get("validated_findings", findings),
+                target=session.target,
+            )
 
-            if chained_findings:
-                log.info("exploit_chaining: SUCCESS — %d chained vulnerabilities confirmed", len(chained_findings))
-                session.findings.extend(chained_findings)
-                session.phases["exploit_chaining"].meta["chains_succeeded"] = len(chained_findings)
+            if chains:
+                from result_ingestion_engine import NormalizedFinding
+                for chain in chains:
+                    nf = NormalizedFinding(
+                        scan_id=session.scan_id,
+                        target=session.target,
+                        title=f"Exploit Chain: {chain.chain_type.replace('_', ' ').title()}",
+                        severity=chain.severity_escalated,
+                        vuln_type="exploit_chain",
+                        evidence=chain.narrative,
+                        tool="exploit_chain_engine",
+                        confidence=chain.confidence,
+                        cvss=chain.cvss_escalated,
+                    )
+                    session.findings.append(nf.to_dict() if hasattr(nf, "to_dict") else nf.__dict__)
+
+                session.phases["exploit_chaining"].meta["chains_detected"] = len(chains)
+                session.phases["exploit_chaining"].meta["chain_types"] = [c.chain_type for c in chains]
+                log.info("exploit_chaining: %d chains detected on %s", len(chains), session.target)
             else:
-                log.info("exploit_chaining: finished, no successful chains executed")
+                log.info("exploit_chaining: no chains found for %s", session.target)
+                session.phases["exploit_chaining"].meta["chains_detected"] = 0
 
         except Exception as exc:
-            log.error("exploit_chaining: execution failed: %s", exc)
+            log.error("exploit_chaining: chain detection failed: %s", exc)
+            session.phases["exploit_chaining"].error = str(exc)
 
     def _phase_result_ingest(self, session: ScanSession, ctx: dict) -> None:
         """Push all findings into the result ingestion layer with integrity checks."""
