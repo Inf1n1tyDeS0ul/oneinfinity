@@ -1,0 +1,28 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Gitleaks configuration for OneInfinity
+# ─────────────────────────────────────────────────────────────────────────────
+
+title = "OneInfinity Gitleaks Config"
+
+[extend]
+# Inherit all default gitleaks rules
+useDefault = true
+
+[[allowlists]]
+description = "Test fixture constants assembled via string concatenation"
+# These variables hold patterns for testing the detector itself.
+# Values are never real credentials — see tests/test_secret_intel.py header.
+regexes = [
+    '''_AWS_KEY\s*=\s*"AKIA"''',
+    '''_STRIPE_KEY\s*=\s*"sk_"''',
+    '''_AWS_KEY_PROD\s*=\s*"AKIA"''',
+]
+
+[[allowlists]]
+description = "Detector regex patterns (the tool scans FOR these patterns, not secrets)"
+paths = [
+    "agents/secret_intel/detector.py",
+    "mobile_secret_detection.py",
+    "mobile_secret_scanner.py",
+    "osint_collector.py",
+]

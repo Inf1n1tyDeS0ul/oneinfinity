@@ -26,7 +26,7 @@ from agents.secret_intel.github_client import GitHubSearchClient
 _AWS_KEY    = "AKIA" + "IOSFODNN7EXAMPLE"        # AWS documented example
 _AWS_KEY_2  = "AKIA" + "IOSFODNN7PROD001"        # second fixture for hash-diff test
 _AWS_KEY_3  = "AKIA" + "IOSFODNN7TEST"           # test-context fixture
-_STRIPE_KEY = "sk_" + "live_" + "1234567890abcdefghijklmn"  # Stripe live pattern fixture
+_STRIPE_KEY = "sk_" + "live_" + "FIXTURE000000000000000000"  # Stripe live pattern fixture (24 chars)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

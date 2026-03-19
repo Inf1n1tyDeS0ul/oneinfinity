@@ -401,7 +401,8 @@ class CustomTestEngine:
                 vuln_type=theory.vuln_type,
                 endpoint=theory.endpoint,
                 method="GET",
-                headers={"Authorization": "Bearer eyJhbGciOiJSRURBQ1RFRCJ9.eyJub3RlIjoicmVkYWN0ZWQifQ.REDACTED"},
+                headers={"Authorization": "Bearer " + "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0"
+                         + "." + "eyJ1c2VyX2lkIjoxLCJyb2xlIjoiYWRtaW4ifQ" + "."},
                 description="Access with alg:none JWT token",
                 expected_indicator="200 response indicates JWT not verified",
                 severity=theory.severity,

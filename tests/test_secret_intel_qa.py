@@ -7,7 +7,7 @@ from agents.secret_intel.dork_engine import DorkGenerator
 # Secret-like strings are constructed via concatenation so that static scanners
 # (GitHub push protection, gitleaks) do not flag this test file.
 _AWS_KEY_PROD = "AKIA" + "IOSFODNN7PROD123"
-_STRIPE_KEY   = "sk_" + "live_" + "1234567890abcdefghijklmn"
+_STRIPE_KEY   = "sk_" + "live_" + "FIXTURE000000000000000000"  # 24 chars
 from agents.secret_intel.detector import SecretDetector
 from agents.secret_intel.scorer import SecretScorer
 from agents.secret_intel.ai_validator import AIValidationEngine
