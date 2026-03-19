@@ -1,0 +1,520 @@
+# ==============================================================
+# OneInfinity — Distributed Docker Compose
+#
+# Architecture:
+#   nginx          ← Public entrypoint (port 80)
+#   orchestrator   ← FastAPI + SwarmMaster + EventBus
+#   worker-recon   ← Subdomain/URL discovery workers (scalable)
+#   worker-vuln    ← Vulnerability scan workers (scalable)
+#   worker-exploit ← Exploit chain + zero-day workers
+#   worker-ai      ← AI red team workers (AI image variant)
+#   redis          ← Task queue + result broadcast + pub/sub
+#   frontend       ← React dashboard
+#   plugin-watcher ← Hot-reload plugins on volume change
+#   update-manager ← Daily Nuclei/GF/plugin auto-updater
+#   watchtower     ← Auto-update container images
+#   redis-exporter ← Prometheus metrics for Redis
+#   prometheus     ← Metrics collection
+#   grafana        ← Dashboards
+#
+# Usage:
+#   # Start full stack
+#   docker compose -f docker-compose.distributed.yml up -d
+#
+#   # Scale workers
+#   docker compose -f docker-compose.distributed.yml up -d \
+#     --scale worker-recon=4 --scale worker-vuln=3
+#
+#   # Submit a scan task
+#   curl -X POST http://localhost/api/scan/start \
+#     -H "X-API-Key: $ONEINFINITY_API_KEY" \
+#     -H "Content-Type: application/json" \
+#     -d '{"target":"vulnbank.org","scan_type":"full","profile":"deep"}'
+#
+#   # Monitor
+#   open http://localhost         # Dashboard
+#   open http://localhost:3001    # Grafana
+#   open http://localhost:9090    # Prometheus
+# ==============================================================
+
+version: "3.9"
+
+# ==============================================================
+# Shared configuration fragments
+# ==============================================================
+
+x-common-env: &common-env
+  ONEINFINITY_HOME: /data
+  NUCLEI_TEMPLATES_PATH: /data/.nuclei-templates
+  REDIS_URL: redis://redis:6379/0
+  ORCHESTRATOR_URL: http://orchestrator:8000
+  ONEINFINITY_API_KEY: ${ONEINFINITY_API_KEY:-changeme-set-in-env}
+  GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+x-worker-base: &worker-base
+  build:
+    context: .
+    dockerfile: Dockerfile.worker
+  environment:
+    <<: *common-env
+    HEARTBEAT_INTERVAL: "30"
+    TASK_POLL_INTERVAL: "1"
+    NUCLEI_UPDATE: "${NUCLEI_UPDATE:-1}"
+  volumes:
+    - scan-data:/data
+    - nuclei-templates:/data/.nuclei-templates
+    - community-plugins:/app/plugins/community:ro
+    - ./config:/app/config:ro
+  networks:
+    - internal
+  depends_on:
+    redis:
+      condition: service_healthy
+    orchestrator:
+      condition: service_healthy
+  restart: unless-stopped
+  # Workers need raw socket capability for nmap/masscan/naabu
+  cap_add:
+    - NET_RAW
+    - NET_ADMIN
+
+x-resource-limits-worker: &resource-limits-worker
+  deploy:
+    resources:
+      limits:
+        cpus: "${WORKER_CPU_LIMIT:-2.0}"
+        memory: "${WORKER_MEM_LIMIT:-2g}"
+      reservations:
+        cpus: "0.5"
+        memory: "512m"
+
+# ==============================================================
+# Services
+# ==============================================================
+
+services:
+
+  # ── Redis — Task queue & pub/sub backbone ──────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: oneinfinity-redis
+    command: redis-server /etc/redis/redis.conf
+    volumes:
+      - ./services/redis/redis.conf:/etc/redis/redis.conf:ro
+      - redis-data:/data
+    networks:
+      - internal
+    ports:
+      - "${REDIS_PORT:-6380}:6379"   # Exposed on non-standard port
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # ── Orchestrator — API + SwarmMaster + EventBus ────────────
+  orchestrator:
+    image: ghcr.io/inf1n1tydes0ul/oneinfinity:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: oneinfinity-orchestrator
+    entrypoint: ["python", "-m", "uvicorn"]
+    command:
+      - "web.backend.main:app"
+      - "--host=0.0.0.0"
+      - "--port=8000"
+      - "--workers=2"
+      - "--log-level=${LOG_LEVEL:-info}"
+      - "--access-log"
+    environment:
+      <<: *common-env
+      UVICORN_WORKERS: "2"
+      # Enable Redis-backed task routing in the orchestrator
+      REDIS_URL: redis://redis:6379/0
+      # Worker registration is via Redis hashes
+      WORKER_REGISTRY_REDIS: "1"
+    volumes:
+      - scan-data:/data
+      - nuclei-templates:/data/.nuclei-templates
+      - community-plugins:/app/plugins/community:ro
+      - ./config:/app/config:ro
+    networks:
+      - internal
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+
+  # ── Recon Workers — Subdomain/URL discovery ────────────────
+  # Scale with: docker compose up --scale worker-recon=4
+  worker-recon:
+    <<: *worker-base
+    <<: *resource-limits-worker
+    image: ghcr.io/inf1n1tydes0ul/oneinfinity:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+      args:
+        CAPABILITIES: recon
+    environment:
+      <<: *common-env
+      WORKER_CAPABILITIES: "recon"
+      WORKER_CONCURRENCY: "${RECON_CONCURRENCY:-3}"
+      NUCLEI_UPDATE: "0"   # Recon workers don't need nuclei templates
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import redis; redis.from_url('redis://redis:6379/0').ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Vuln Scan Workers — Nuclei/Dalfox/SQLMap ──────────────
+  # Scale with: docker compose up --scale worker-vuln=3
+  worker-vuln:
+    <<: *worker-base
+    <<: *resource-limits-worker
+    image: ghcr.io/inf1n1tydes0ul/oneinfinity:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+      args:
+        CAPABILITIES: vuln_scan
+    environment:
+      <<: *common-env
+      WORKER_CAPABILITIES: "vuln_scan"
+      WORKER_CONCURRENCY: "${VULN_CONCURRENCY:-2}"
+    healthcheck:
+      test: ["CMD", "nuclei", "-version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Exploit Workers — Chain detection + PoC gen ──────────
+  worker-exploit:
+    <<: *worker-base
+    image: ghcr.io/inf1n1tydes0ul/oneinfinity:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+      args:
+        CAPABILITIES: exploit,zero_day,research
+    environment:
+      <<: *common-env
+      WORKER_CAPABILITIES: "exploit,zero_day,research"
+      WORKER_CONCURRENCY: "${EXPLOIT_CONCURRENCY:-2}"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+
+  # ── AI Security Workers — ai-test / ai-redteam ───────────
+  # Uses the AI image variant (INSTALL_AI=1)
+  worker-ai:
+    <<: *worker-base
+    image: ghcr.io/inf1n1tydes0ul/oneinfinity:${IMAGE_TAG:-latest-ai}
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+      args:
+        CAPABILITIES: ai_security
+        INSTALL_AI: "1"
+    profiles: ["ai"]   # Only started with: docker compose --profile ai up
+    environment:
+      <<: *common-env
+      WORKER_CAPABILITIES: "ai_security"
+      WORKER_CONCURRENCY: "${AI_CONCURRENCY:-1}"
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 6g
+
+  # ── Secrets Workers ───────────────────────────────────────
+  worker-secrets:
+    <<: *worker-base
+    image: ghcr.io/inf1n1tydes0ul/oneinfinity:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+      args:
+        CAPABILITIES: secrets
+    profiles: ["secrets"]
+    environment:
+      <<: *common-env
+      WORKER_CAPABILITIES: "secrets"
+      WORKER_CONCURRENCY: "2"
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+
+  # ── Nginx — Public-facing reverse proxy ───────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: oneinfinity-nginx
+    volumes:
+      - ./services/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    networks:
+      - internal
+      - external
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── Frontend — React dashboard ─────────────────────────────
+  frontend:
+    image: node:20-alpine
+    container_name: oneinfinity-frontend
+    working_dir: /app
+    volumes:
+      - ./web/frontend:/app
+      - frontend-node-modules:/app/node_modules
+    command: sh -c "npm ci --silent && npm run dev -- --host 0.0.0.0 --port 3000"
+    environment:
+      VITE_API_URL: ""          # relative — proxied via nginx
+      VITE_WS_URL: ""           # relative — proxied via nginx
+      VITE_API_KEY: ${ONEINFINITY_API_KEY:-changeme-set-in-env}
+    networks:
+      - internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ── Plugin Watcher — Hot-reload plugins on change ─────────
+  plugin-watcher:
+    image: alpine:3.19
+    container_name: oneinfinity-plugin-watcher
+    command: |
+      sh -c "
+        apk add --no-cache inotify-tools curl
+        echo '[watcher] Watching /app/plugins/community for changes…'
+        while true; do
+          inotifywait -q -e create,modify,delete,moved_to /app/plugins/community 2>/dev/null && \
+          echo '[watcher] Plugin change detected — reloading…' && \
+          curl -sf -X POST \
+            -H 'X-API-Key: ${ONEINFINITY_API_KEY:-changeme-set-in-env}' \
+            http://orchestrator:8000/api/plugins/reload \
+            > /dev/null 2>&1 && \
+          echo '[watcher] Reload triggered' || \
+          echo '[watcher] Reload failed (orchestrator not ready?)'
+          sleep 2
+        done
+      "
+    volumes:
+      - community-plugins:/app/plugins/community
+    networks:
+      - internal
+    depends_on:
+      - orchestrator
+    restart: unless-stopped
+
+  # ── Update Manager — Scheduled auto-updates ──────────────
+  update-manager:
+    image: ghcr.io/inf1n1tydes0ul/oneinfinity:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: oneinfinity-updater
+    entrypoint: ["/bin/bash"]
+    command: ["/app/scripts/auto-update.sh", "--cron"]
+    environment:
+      <<: *common-env
+      UPDATE_SCHEDULE: "${UPDATE_SCHEDULE:-0 4 * * *}"
+      NUCLEI_UPDATE: "1"
+      GF_UPDATE: "1"
+      PLUGIN_UPDATE: "1"
+      DOCKER_UPDATE: "${DOCKER_UPDATE:-0}"
+      PKG_UPDATE: "0"
+      SLACK_WEBHOOK: "${SLACK_WEBHOOK:-}"
+      PLUGIN_DIR: /app/plugins/community
+    volumes:
+      - scan-data:/data
+      - nuclei-templates:/data/.nuclei-templates
+      - community-plugins:/app/plugins/community
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # For DOCKER_UPDATE=1
+    networks:
+      - internal
+    depends_on:
+      - redis
+    restart: unless-stopped
+    profiles: ["updater"]    # Start explicitly: --profile updater
+
+  # ── Watchtower — Automatic container image updates ────────
+  # Checks GHCR for new images every 6 hours and restarts if updated.
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: oneinfinity-watchtower
+    command:
+      - "--schedule=0 0 */6 * * *"     # Every 6 hours
+      - "--cleanup"                     # Remove old images after update
+      - "--label-enable"               # Only update containers with label
+      - "--notification-url=${SLACK_WEBHOOK:-}"
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"
+      REPO_USER: ${GHCR_USER:-}
+      REPO_PASS: ${GHCR_TOKEN:-${GITHUB_TOKEN:-}}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - internal
+    restart: unless-stopped
+    profiles: ["watchtower"]
+
+  # ── Redis Commander — Redis web UI ────────────────────────
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: oneinfinity-redis-ui
+    environment:
+      REDIS_HOSTS: "local:redis:6379"
+    networks:
+      - internal
+    ports:
+      - "${REDIS_UI_PORT:-8081}:8081"
+    depends_on:
+      - redis
+    restart: unless-stopped
+    profiles: ["debug"]
+
+  # ── Redis Exporter — Prometheus metrics ───────────────────
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: oneinfinity-redis-exporter
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+    networks:
+      - internal
+    depends_on:
+      - redis
+    restart: unless-stopped
+    profiles: ["monitoring"]
+
+  # ── Prometheus — Metrics aggregation ─────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: oneinfinity-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}"
+      - "--web.enable-admin-api"
+    volumes:
+      - ./services/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - internal
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      - orchestrator
+    restart: unless-stopped
+    profiles: ["monitoring"]
+
+  # ── Grafana — Dashboards ──────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: oneinfinity-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_DOMAIN: localhost
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./services/prometheus/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - internal
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    profiles: ["monitoring"]
+
+# ==============================================================
+# Volumes
+# ==============================================================
+
+volumes:
+  # Core data — findings, recon output, SQLite DBs
+  scan-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: "${DATA_DIR:-./data}"
+
+  # Nuclei templates — shared across all containers
+  nuclei-templates:
+    driver: local
+
+  # Redis persistence
+  redis-data:
+    driver: local
+
+  # Community plugins — writable for plugin-install.sh
+  community-plugins:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: "${PLUGIN_DIR:-./plugins/community}"
+
+  # Frontend node_modules cache
+  frontend-node-modules:
+    driver: local
+
+  # Prometheus time-series data
+  prometheus-data:
+    driver: local
+
+  # Grafana dashboards and settings
+  grafana-data:
+    driver: local
+
+# ==============================================================
+# Networks
+# ==============================================================
+
+networks:
+  # Internal communication between services (no external exposure)
+  internal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+  # External-facing network (nginx only)
+  external:
+    driver: bridge

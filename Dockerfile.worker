@@ -1,0 +1,134 @@
+# ==============================================================
+# OneInfinity — Worker Dockerfile
+# Optimised for distributed scanning workers.
+# Inherits the same Go tools and Python deps as the main image
+# but skips the Web UI layer and uses the worker entrypoint.
+#
+# Build variants (via --build-arg CAPABILITIES):
+#   recon      — subfinder, httpx, katana, waybackurls
+#   vuln_scan  — nuclei, dalfox, sqlmap
+#   exploit    — exploit chain engine (Python only)
+#   ai         — ai-test, ai-redteam (+ INSTALL_AI=1)
+#   mobile     — mobile analysis (+ INSTALL_MOBILE=1)
+#
+# Build:
+#   docker build -f Dockerfile.worker \
+#     --build-arg CAPABILITIES=recon,vuln_scan \
+#     -t oneinfinity-worker:recon .
+# ==============================================================
+
+ARG PYTHON_VERSION=3.11
+ARG GO_VERSION=1.22
+ARG CAPABILITIES=recon,vuln_scan,exploit
+ARG INSTALL_AI=0
+ARG INSTALL_MOBILE=0
+
+# ── Reuse Go tools from the main Dockerfile build ─────────────
+# (Use BuildKit build cache from a prior `docker build .` run,
+#  or let Docker build this stage from scratch)
+FROM golang:${GO_VERSION}-bookworm AS go-tools
+ENV DEBIAN_FRONTEND=noninteractive GOBIN=/go-bins
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /go-bins
+RUN go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+RUN go install github.com/projectdiscovery/httpx/cmd/httpx@latest
+RUN go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+RUN go install github.com/projectdiscovery/katana/cmd/katana@latest
+RUN go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
+RUN go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest
+RUN go install github.com/lc/gau/v2/cmd/gau@latest
+RUN go install github.com/tomnomnom/waybackurls@latest
+RUN go install github.com/hakluke/hakrawler@latest
+RUN go install github.com/tomnomnom/assetfinder@latest
+RUN go install github.com/ffuf/ffuf/v2@latest
+RUN go install github.com/hahwul/dalfox/v2@latest
+RUN go install github.com/Emoe/kxss@latest
+RUN go install github.com/dwisiswant0/crlfuzz@latest
+RUN go install github.com/trufflesecurity/trufflehog/v3@latest
+RUN go install github.com/zricethezav/gitleaks/v8@latest
+RUN go install github.com/tomnomnom/gf@latest
+
+# ── Python build ──────────────────────────────────────────────
+FROM python:${PYTHON_VERSION}-slim-bookworm AS py-builder
+ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=0
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential libssl-dev libffi-dev git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /wheels
+COPY requirements-core.txt requirements-ai.txt requirements-mobile.txt .
+
+RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements-core.txt
+# redis-py is required for the distributed worker
+RUN pip wheel --no-cache-dir --wheel-dir /wheels redis>=5.0
+
+ARG INSTALL_AI=0
+RUN if [ "$INSTALL_AI" = "1" ]; then \
+        pip wheel --no-cache-dir --wheel-dir /wheels \
+            adversarial-robustness-toolbox>=1.17.0 playwright>=1.42.0 selenium>=4.18.0 \
+        ; fi
+
+ARG INSTALL_MOBILE=0
+RUN if [ "$INSTALL_MOBILE" = "1" ]; then \
+        pip wheel --no-cache-dir --wheel-dir /wheels androguard>=3.4.0 ; fi
+
+# ── Final worker image ────────────────────────────────────────
+FROM python:${PYTHON_VERSION}-slim-bookworm AS worker
+
+ARG CAPABILITIES=recon,vuln_scan,exploit
+
+LABEL org.opencontainers.image.title="OneInfinity Worker" \
+      org.opencontainers.image.description="Distributed scan worker node"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    ONEINFINITY_HOME=/data \
+    NUCLEI_TEMPLATES_PATH=/data/.nuclei-templates \
+    PATH="/go-bins:/app/scripts:/usr/local/bin:${PATH}" \
+    # ── Worker-specific defaults ────────────────────────────
+    WORKER_CAPABILITIES=${CAPABILITIES} \
+    WORKER_CONCURRENCY=4 \
+    REDIS_URL=redis://redis:6379/0 \
+    ORCHESTRATOR_URL=http://orchestrator:8000 \
+    NUCLEI_UPDATE=1 \
+    LOG_LEVEL=INFO
+
+# System packages required by scan tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        nmap masscan nikto whatweb curl wget git dnsutils \
+        procps libssl3 libffi8 perl ruby bash less \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python pip tools
+RUN pip install --no-cache-dir sqlmap dirsearch sublist3r \
+        paramspider xssstrike commix arjun 2>/dev/null || true
+
+COPY --from=go-tools /go-bins/ /go-bins/
+
+COPY --from=py-builder /wheels /wheels
+RUN pip install --no-cache-dir --no-index --find-links /wheels /wheels/*.whl \
+    && rm -rf /wheels
+
+WORKDIR /app
+COPY . /app/
+RUN rm -rf /app/web/backend/.venv /app/__pycache__ \
+    && find /app -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+
+COPY scripts/worker-entrypoint.sh /usr/local/bin/worker-entrypoint.sh
+RUN chmod +x /usr/local/bin/worker-entrypoint.sh \
+    && ln -sf /app/oneinfinity.py /usr/local/bin/oneinfinity
+
+RUN groupadd -r oi && useradd -r -g oi -d /data -s /bin/bash oi \
+    && mkdir -p /data && chown -R oi:oi /data /go-bins
+
+VOLUME ["/data", "/app/plugins"]
+USER oi
+
+HEALTHCHECK --interval=20s --timeout=5s --start-period=15s --retries=3 \
+    CMD python /app/worker/main.py --health-check 2>/dev/null || \
+        python -c "import redis; redis.from_url('${REDIS_URL}').ping()" || exit 1
+
+ENTRYPOINT ["worker-entrypoint.sh"]

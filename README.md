@@ -15,6 +15,8 @@
   <img src="https://img.shields.io/badge/AI-Autonomous-red?style=flat-square" alt="AI">
   <img src="https://img.shields.io/badge/Security-Offensive-black?style=flat-square" alt="Offensive">
   <img src="https://img.shields.io/badge/Scope-Authorized%20Use%20Only-orange?style=flat-square" alt="Authorized">
+  <img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker" alt="Docker">
+  <img src="https://img.shields.io/badge/Distributed-Workers-purple?style=flat-square" alt="Distributed">
 </p>
 
 ---
@@ -50,10 +52,48 @@ That sequence runs autonomously. No manual pivoting. No copy-pasting between too
 | Learning / adaptive planning | ❌ | ✅ EMA per-vuln-type success tracking (α=0.30) |
 | Autonomous multi-target hunting | ❌ | ✅ discover → prioritize → scan → report, unattended |
 | Bug bounty report generation | ❌ | ✅ H1 / Bugcrowd / Intigriti markdown, with bounty estimate |
+| Distributed scanning | ❌ | ✅ Redis-backed worker swarm, horizontally scalable |
+| Containerized deployment | Partial | ✅ Multi-stage Docker image, distributed docker-compose |
 
 ---
 
 ## 🚀 Quick Start
+
+### Docker (Recommended)
+
+No Go toolchain, no Python venv, no tool installation — everything is baked into the image.
+
+```bash
+git clone https://github.com/Inf1n1tyDeS0ul/oneinfinity.git
+cd oneinfinity
+make setup          # creates .env from .env.example + data/ dirs
+# Edit .env — set ONEINFINITY_API_KEY and any AI provider keys
+make build && make up
+```
+
+The full distributed stack (API, Redis, workers, nginx, Grafana) starts at `http://localhost`.
+Submit a scan from the CLI or the web dashboard:
+
+```bash
+make scan T=example.com          # full scan via API
+make recon T=example.com         # recon only
+make scale-recon N=4             # scale recon workers to 4
+make workers-status              # inspect registered workers
+```
+
+For a single-container CLI workflow:
+
+```bash
+docker run --rm \
+  -v ~/.oneinfinity:/data \
+  -e ONEINFINITY_API_KEY=<key> \
+  ghcr.io/inf1n1tydes0ul/oneinfinity:latest \
+  scan example.com --yes
+```
+
+See [DOCKER.md](DOCKER.md) for the full Docker reference.
+
+### Native Python
 
 ```bash
 # Clone
@@ -778,7 +818,7 @@ Scope enforcement is built in — but it relies on you configuring your scope co
 
 - [ ] **Nuclei template auto-generation** — generate custom templates from zero-day findings
 - [ ] **LLM-driven triage** — local LLM (Ollama/llama.cpp) for autonomous finding severity assessment
-- [ ] **Distributed agent cluster** — Redis-backed master-worker for multi-machine scan distribution
+- [x] **Distributed agent cluster** — Redis-backed master-worker swarm with horizontally-scalable workers (shipped in v1.2.0)
 - [ ] **CI/CD integration** — native GitHub Actions / GitLab CI pipeline templates with finding gating
 - [ ] **GraphQL introspection attack engine** — automated schema extraction + BOLA/auth testing
 - [ ] **iOS static analysis** — IPA decompilation and Frida-based iOS dynamic analysis parity with Android
@@ -806,6 +846,29 @@ git push origin feature/your-feature
 ```
 
 **Before submitting:** every PR must pass the full test suite (34+ tests, `python3 -m unittest`) and the doctor health check (`10.0/10.0`).
+
+---
+
+## 🐳 Docker Quick Reference
+
+| Task | Command |
+|---|---|
+| First-time setup | `make setup` |
+| Build images | `make build` |
+| Start full stack | `make up` |
+| Start minimal (no monitoring) | `make up-min` |
+| Submit full scan | `make scan T=example.com` |
+| Recon only | `make recon T=example.com` |
+| Scale recon workers | `make scale-recon N=4` |
+| Check worker health | `make workers-status` |
+| View queue depths | `make queue-status` |
+| Tail all logs | `make logs` |
+| Open orchestrator shell | `make shell` |
+| Stop everything | `make down` |
+| Remove all scan data | `make purge` |
+
+Image variants: `latest` (core), `latest-ai` (with AI/ML dependencies).
+Full reference: [DOCKER.md](DOCKER.md)
 
 ---
 

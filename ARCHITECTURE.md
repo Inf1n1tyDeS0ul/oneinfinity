@@ -23,9 +23,10 @@
 14. [Execution Pipeline](#14-execution-pipeline)
 15. [Inter-Module Communication](#15-inter-module-communication)
 16. [Scalability Design](#16-scalability-design)
-17. [Architecture Diagrams](#17-architecture-diagrams)
-18. [Diagnostics and Audit Modes](#18-diagnostics-and-audit-modes)
-19. [Recon Asset Persistence](#19-recon-asset-persistence)
+17. [Docker Distributed Architecture](#17-docker-distributed-architecture)
+18. [Architecture Diagrams](#18-architecture-diagrams)
+19. [Diagnostics and Audit Modes](#19-diagnostics-and-audit-modes)
+20. [Recon Asset Persistence](#20-recon-asset-persistence)
 
 ---
 
@@ -38,6 +39,7 @@ The platform is a **multi-layer, event-driven security testing system** organize
 | **Autonomous** | `oneinfinity hunter-start` | Discovers programs, prioritizes targets, runs full pipeline unattended |
 | **Directed** | `oneinfinity scan <target>` | User-specified target through full pipeline |
 | **Interactive** | Web UI at `http://localhost:3000` | Manual control of all subsystems via React dashboard |
+| **Distributed** | `make scan T=<target>` / API | Redis-backed worker swarm; recon, vuln, exploit, AI, and secrets workers scale independently |
 
 The system detects the application type (web/mobile/AI/API) and dynamically selects the OWASP-aligned test suite, learns from historical results, and escalates validated findings into structured bug bounty reports.
 
@@ -50,6 +52,39 @@ oneinfinity/
 │
 ├── oneinfinity.py                     # CLI entry point (55 commands, argparse)
 ├── oneinfinity                        # Convenience wrapper: `oneinfinity <cmd>` (bash)
+│
+├── ── DOCKER / DISTRIBUTED ──────────────────────────────────────────────────
+│
+├── Dockerfile                         # 3-stage multi-arch image (go-tools → py-builder → final)
+├── Dockerfile.worker                  # Capability-scoped worker image
+├── docker-compose.yml                 # Single-host compose (cli, backend, frontend)
+├── docker-compose.distributed.yml     # Full distributed stack (15 services)
+├── docker-entrypoint.sh               # Container entrypoint (template sync, shell passthrough)
+├── Makefile                           # 30 convenience targets (setup, up, scale, scan, purge)
+├── .dockerignore                      # Build context exclusions
+├── .env.example                       # Template for all environment variables
+│
+├── worker/
+│   ├── main.py                        # Worker daemon (register → heartbeat → BLPOP → execute)
+│   └── executor.py                    # Task executor (per-capability handlers + CLI fallback)
+│
+├── scripts/
+│   ├── worker-entrypoint.sh           # Worker startup (Redis wait, plugin deps, exec main.py)
+│   ├── auto-update.sh                 # Nuclei/GF/plugin/container updater with --cron mode
+│   └── plugin-install.sh             # Plugin manager (install/remove/update/list/validate)
+│
+├── services/
+│   ├── redis/redis.conf               # Hardened Redis (LRU eviction, disabled FLUSH* commands)
+│   ├── nginx/nginx.conf               # Reverse proxy (rate limit, WebSocket upgrade, headers)
+│   └── prometheus/
+│       ├── prometheus.yml             # Scrape config (orchestrator, workers, redis-exporter)
+│       └── provisioning/              # Grafana datasource + dashboard provisioning
+│
+├── plugins/
+│   ├── PLUGIN_SPEC.md                 # Plugin interface specification
+│   ├── community/                     # Hot-reloadable third-party plugins (bind-mounted volume)
+│   ├── recon/                         # Built-in recon plugins
+│   └── vuln/                         # Built-in vulnerability plugins
 │
 ├── ── CORE ENGINES ──────────────────────────────────────────────────────────
 │
@@ -1988,7 +2023,100 @@ def cmd_swarm(args):
 
 ---
 
-## 17. Architecture Diagrams
+## 17. Docker Distributed Architecture
+
+### 17.1 Service Topology
+
+```
+Internet
+    │
+    ▼
+┌──────────────────────────────────────────────────────────┐
+│  nginx (port 80)  ←── rate limit 60 req/min             │
+│    ├── /api/*  →  orchestrator:8000                      │
+│    ├── /ws     →  orchestrator:8000  (WebSocket)         │
+│    └── /*      →  frontend:3000                          │
+└──────────────────────────────────────────────────────────┘
+    │                        │
+    ▼                        ▼
+orchestrator (FastAPI)    frontend (React/Vite)
+  ├── SwarmMaster           Dashboard, scan launcher,
+  ├── EventBus              real-time findings via WS
+  └── Plugin Registry
+    │
+    ▼
+Redis (6379 internal / 6380 host)
+  ├── swarm:tasks:recon       ← BLPOP by worker-recon
+  ├── swarm:tasks:vuln_scan   ← BLPOP by worker-vuln
+  ├── swarm:tasks:exploit     ← BLPOP by worker-exploit
+  ├── swarm:tasks:ai_security ← BLPOP by worker-ai  [profile: ai]
+  ├── swarm:tasks:secrets     ← BLPOP by worker-secrets  [profile: secrets]
+  ├── swarm:tasks:default     ← fallback queue
+  ├── swarm:workers           ← HSET worker registry (heartbeat every 30s)
+  └── swarm:results:<id>      ← LPUSH task results
+```
+
+### 17.2 Worker Lifecycle
+
+```
+Worker starts
+    │
+    ├── Connect Redis (10 retries, 3s backoff)
+    ├── HSET swarm:workers:<id>  {status, capabilities, load}
+    │
+    └── Loop:
+          ├── BLPOP swarm:tasks:<capability>  (1s timeout)
+          ├── HSET swarm:workers:<id> status=busy, active_tasks++
+          ├── Execute task (Python import → CLI subprocess fallback)
+          ├── PUBLISH swarm:results  + LPUSH swarm:results:<task_id>
+          └── HSET swarm:workers:<id> status=idle, active_tasks--
+          │
+          └── Heartbeat goroutine (every 30s):
+                HSET swarm:workers:<id> last_seen=<timestamp>
+```
+
+### 17.3 Component Summary
+
+| Service | Image | Profiles | Purpose |
+|---|---|---|---|
+| `redis` | redis:7.2-alpine | default | Task queue, worker registry, pub/sub |
+| `orchestrator` | oneinfinity:latest | default | FastAPI API, SwarmMaster, EventBus |
+| `worker-recon` | oneinfinity-worker | default | Subdomain/URL discovery (scalable) |
+| `worker-vuln` | oneinfinity-worker | default | Nuclei/Dalfox/SQLMap (scalable) |
+| `worker-exploit` | oneinfinity-worker | default | Exploit chain + zero-day |
+| `worker-ai` | oneinfinity-worker:latest-ai | ai | AI red team (GPU-optional) |
+| `worker-secrets` | oneinfinity-worker | secrets | TruffleHog/Gitleaks scanning |
+| `nginx` | nginx:1.25-alpine | default | Public entrypoint, rate limiting |
+| `frontend` | node:20-alpine | default | React dashboard |
+| `plugin-watcher` | alpine:3.19 | default | inotify → POST /api/plugins/reload |
+| `update-manager` | oneinfinity:latest | updater | Nuclei/plugin/container auto-update |
+| `watchtower` | containrrr/watchtower | watchtower | Container image auto-update |
+| `redis-exporter` | oliver006/redis_exporter | monitoring | Redis → Prometheus metrics |
+| `prometheus` | prom/prometheus | monitoring | Metrics aggregation |
+| `grafana` | grafana/grafana | monitoring | Dashboards (port 3001) |
+
+### 17.4 Plugin Hot-Reload Flow
+
+```
+Developer drops plugin.py into ./plugins/community/<name>/
+    │
+    ▼
+plugin-watcher (inotifywait -e create,modify,delete)
+    │
+    ▼
+POST http://orchestrator:8000/api/plugins/reload
+  X-API-Key: $ONEINFINITY_API_KEY
+    │
+    ▼
+PluginRegistry.reload()  →  re-scan plugins/ via pkgutil.walk_packages
+    │
+    ▼
+New plugin available to all future scan tasks (no container restart)
+```
+
+---
+
+## 18. Architecture Diagrams
 
 ### 17.1 Module Dependency Graph
 
@@ -2701,7 +2829,7 @@ oneinfinity brain-triggers [--evaluate]             # List rules / trigger evalu
 
 ---
 
-## 18. Diagnostics and Audit Modes
+## 19. Diagnostics and Audit Modes
 
 One&Infinity includes a built-in diagnostic system (`doctor`) composed of three engines:
 
@@ -2724,7 +2852,7 @@ QA scenarios include real checks (not mocked): tool registry availability report
 
 ---
 
-## 19. Recon Asset Persistence
+## 20. Recon Asset Persistence
 
 Adaptive recon now persists **subdomains**, **URLs**, and **technologies** into the findings database as recon assets. This enables:
 

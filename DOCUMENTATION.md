@@ -9,6 +9,8 @@
 
 1. [Introduction](#1-introduction)
 2. [Installation & Setup](#2-installation--setup)
+   - [2a. Docker Installation (Recommended)](#2a-docker-installation-recommended)
+   - [2b. Native Python Installation](#2b-native-python-installation)
 3. [Feature Documentation](#3-feature-documentation)
    - [3.1 Workspace Management](#31-workspace-management)
    - [3.2 Recon & Enumeration](#32-recon--enumeration)
@@ -118,6 +120,80 @@ Unlike point tools (Nuclei, Burp Suite, MobSF), OneInfinity is a **unified platf
 ---
 
 # 2. Installation & Setup
+
+## 2a. Docker Installation (Recommended)
+
+Docker is the fastest way to get started. All Go tools, Python dependencies, and system packages are baked into the image — no manual tool installation required.
+
+### Prerequisites
+- Docker 24+ and Docker Compose v2
+- 8 GB RAM (16 GB recommended for full stack with monitoring)
+
+### Quick Start
+
+```bash
+git clone https://github.com/Inf1n1tyDeS0ul/oneinfinity.git
+cd oneinfinity
+
+# Create .env and data directories
+make setup
+
+# Edit .env — at minimum set ONEINFINITY_API_KEY
+# Generate a key: python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+nano .env
+
+# Build images (~5 min on first run)
+make build
+
+# Start the full distributed stack
+make up
+# Dashboard: http://localhost
+# Grafana:   http://localhost:3001
+# API docs:  http://localhost/api/docs
+```
+
+### Running a Scan via Docker
+
+```bash
+# Full scan (all phases)
+make scan T=example.com
+
+# Recon only
+make recon T=example.com
+
+# Vulnerability scan only
+make vuln-scan T=example.com
+
+# Scale workers for faster scanning
+make scale-recon N=4
+make scale-vuln N=3
+
+# View results
+make findings
+```
+
+### Single-Container CLI (no full stack)
+
+```bash
+docker run --rm \
+  -v ~/.oneinfinity:/data \
+  -e ONEINFINITY_API_KEY=<key> \
+  ghcr.io/inf1n1tydes0ul/oneinfinity:latest \
+  scan example.com --yes
+```
+
+### Docker Image Variants
+
+| Tag | Contents | Use case |
+|---|---|---|
+| `latest` | Core tools + Python stack | Standard scanning |
+| `latest-ai` | Core + AI/ML libraries | AI red teaming (`ai-test`) |
+
+See [DOCKER.md](DOCKER.md) for the complete Docker reference.
+
+---
+
+## 2b. Native Python Installation
 
 ## Requirements
 
@@ -3076,6 +3152,20 @@ Every scan page includes a live log stream via WebSocket (`ws://localhost:8000/w
 
 # 8. Troubleshooting
 
+## Docker Troubleshooting
+
+| Symptom | Likely Cause | Fix |
+|---|---|---|
+| `make up` fails with "port 80 already in use" | Another web server on port 80 | Set `HTTP_PORT=8080` in `.env` |
+| Workers never pick up tasks | Orchestrator not healthy yet | `make status` — wait for orchestrator to be `healthy`, then `make scan` |
+| `WARN: ONEINFINITY_API_KEY not set` | `.env` missing the key | `make setup` then edit `.env` |
+| `make scan` returns 403 | Wrong API key in `.env` | Ensure `ONEINFINITY_API_KEY` in `.env` matches `ONEINFINITY_API_KEY` in the running container |
+| Worker containers restart in a loop | Redis not ready | `make logs` — workers retry 10 times with 3s backoff; check Redis health with `make status` |
+| `No space left on device` during build | Docker disk full | `docker system prune -f` to free space |
+| Nuclei templates not found | First-run sync not complete | Set `NUCLEI_UPDATE=1` in `.env` and restart: `docker compose -f docker-compose.distributed.yml restart worker-vuln` |
+| Grafana shows no data | Monitoring profile not started | Use `make up` (starts monitoring profile) not `make up-min` |
+| Plugin not loading after hot-drop | plugin-watcher container not running | `make status` — ensure `plugin-watcher` is up; check logs with `docker compose -f docker-compose.distributed.yml logs plugin-watcher` |
+
 ## Common Issues
 
 ### `Auth: none | Paths: 0` in Research Mode
@@ -3247,6 +3337,8 @@ oneinfinity --help
 | **GraphQL Security** | Deep GraphQL introspection, mutation fuzzing, and auth bypass testing |
 | **Cloud-Native Testing** | AWS/GCP/Azure misconfiguration testing beyond S3 |
 
+> **Update (v1.2.0):** Distributed Scanning has shipped. The `docker-compose.distributed.yml` stack provides a Redis-backed worker swarm (`worker-recon`, `worker-vuln`, `worker-exploit`, `worker-ai`, `worker-secrets`) that scales horizontally via `make scale-recon N=4`. See [DOCKER.md](DOCKER.md) for the full reference.
+
 ### Long-Term
 
 | Feature | Description |
@@ -3270,4 +3362,10 @@ oneinfinity --help
 
 *Documentation generated for OneInfinity v1.1*
 *Last updated: 2026-03-19*
+
+---
+
+*Docker distributed stack and plugin architecture added in OneInfinity v1.2.0 — 2026-03-20*
+*Distributed worker swarm, auto-update scripts, Makefile, GHCR CI/CD, and plugin hot-reload are now production-ready.*
+*See [DOCKER.md](DOCKER.md) · [CHANGELOG.md](CHANGELOG.md) · [plugins/PLUGIN_SPEC.md](plugins/PLUGIN_SPEC.md)*
 *For issues and contributions: [GitHub Issues](https://github.com/your-org/oneinfinity/issues)*

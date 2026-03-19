@@ -1,0 +1,15 @@
+# ============================================================
+# OneInfinity — Mobile Security Requirements
+# Install only if using:
+#   oneinfinity mobile-analyze / mobile-static / mobile-dynamic
+#
+# NOTE: frida requires a matching frida-server on the device.
+# ============================================================
+
+-r requirements-core.txt
+
+# APK static analysis
+androguard>=3.4.0
+
+# Frida dynamic instrumentation
+# frida>=16.2.0         # requires frida-server on device; install manually

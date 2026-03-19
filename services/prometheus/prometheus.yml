@@ -1,0 +1,66 @@
+# ==============================================================
+# OneInfinity — Prometheus Scrape Configuration
+# Collects metrics from: orchestrator API, workers, Redis,
+# Nginx, and the host node.
+# ==============================================================
+
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  scrape_timeout:      10s
+
+  external_labels:
+    monitor: 'oneinfinity'
+    environment: 'docker'
+
+# ── Alert rules (optional) ────────────────────────────────────
+# rule_files:
+#   - /etc/prometheus/alerts/*.yml
+
+# ── Scrape configs ────────────────────────────────────────────
+scrape_configs:
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # OneInfinity orchestrator — exposes /metrics via prometheus-fastapi-instrumentator
+  - job_name: 'orchestrator'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['orchestrator:8000']
+    scrape_interval: 10s
+
+  # Worker nodes — each worker exposes metrics on port 9100
+  # In a scaled deployment, use DNS-based service discovery:
+  - job_name: 'workers'
+    dns_sd_configs:
+      - names:
+          - 'tasks.oneinfinity-worker-recon'
+          - 'tasks.oneinfinity-worker-vuln'
+          - 'tasks.oneinfinity-worker-ai'
+        type: 'A'
+        port: 9100
+    # Fallback for single-node compose:
+    static_configs:
+      - targets:
+          - 'worker-recon:9100'
+          - 'worker-vuln:9100'
+        labels:
+          group: 'scan-workers'
+
+  # Redis exporter
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+
+  # Nginx exporter
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx-exporter:9113']
+
+  # Node exporter (host metrics)
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node-exporter:9100']

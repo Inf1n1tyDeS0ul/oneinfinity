@@ -1,0 +1,25 @@
+# ============================================================
+# OneInfinity — AI & Red Team Requirements
+# Heavy ML dependencies. Optional — install only if using:
+#   oneinfinity ai-test / ai-redteam / ai-agent-test
+#
+# Python 3.11 strongly recommended for full compatibility.
+# ============================================================
+
+-r requirements-core.txt
+
+# AI Red Teaming frameworks
+adversarial-robustness-toolbox>=1.17.0
+
+# Prompt injection defence testing
+# rebuff>=0.0.3         # pinned upstream; install manually if needed
+
+# Microsoft PyRIT (optional — heavy, install separately if needed)
+# pyrit>=0.1.0
+
+# Giskard ML safety (Python 3.10-3.11 only)
+# giskard>=2.7.0        # uncomment for Python ≤3.11
+
+# Browser automation (AI endpoint crawling)
+playwright>=1.42.0
+selenium>=4.18.0

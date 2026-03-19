@@ -1,0 +1,29 @@
+# ============================================================
+# OneInfinity — Core Requirements
+# All essential Python deps for CLI operation.
+# No heavy ML/AI frameworks. Works in slim environments.
+# ============================================================
+
+# HTTP & networking
+requests>=2.31.0
+urllib3>=2.0.0
+
+# HTML parsing
+beautifulsoup4>=4.12.0
+
+# System utilities
+psutil>=5.9.0
+tqdm>=4.66.0
+rich>=13.7.0
+
+# Config & data
+pyyaml>=6.0.0
+sqlparse>=0.4.4
+pandas>=2.1.0
+
+# Crypto (JWT, hashing)
+cryptography>=42.0.0
+
+# Graph analysis (attack graph)
+networkx>=3.2.1
+matplotlib>=3.8.0

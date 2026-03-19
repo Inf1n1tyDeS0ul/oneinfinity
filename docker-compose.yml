@@ -1,0 +1,110 @@
+# ==============================================================
+# OneInfinity — Docker Compose
+# Provides three service profiles:
+#
+#   cli      — Standard CLI scanner (default)
+#   full     — CLI + Web UI dashboard
+#   ai       — CLI with AI/red-team deps enabled
+#
+# Usage:
+#   docker compose run --rm cli scan example.com
+#   docker compose --profile full up
+#   docker compose --profile ai run --rm ai ai-redteam http://target --yes
+# ==============================================================
+
+version: "3.9"
+
+# ── Shared defaults ───────────────────────────────────────────
+x-oneinfinity-base: &oneinfinity-base
+  image: ghcr.io/inf1n1tydes0ul/oneinfinity:latest
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment:
+    - ONEINFINITY_HOME=/data
+    - NUCLEI_TEMPLATES_PATH=/data/.nuclei-templates
+    - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+    - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    - ONEINFINITY_API_KEY=${ONEINFINITY_API_KEY:-changeme}
+  volumes:
+    # Persistent scan data, DBs, and recon output
+    - oneinfinity-data:/data
+    # Wordlists (bind-mount your host wordlists for use inside)
+    # - ./wordlists:/wordlists:ro
+  stdin_open: true
+  tty: true
+  restart: "no"
+
+services:
+
+  # ── Default CLI ─────────────────────────────────────────────
+  # docker compose run --rm cli scan example.com
+  cli:
+    <<: *oneinfinity-base
+    container_name: oneinfinity-cli
+    # Network host gives direct access to target networks.
+    # Remove if you don't need raw socket / ARP capabilities.
+    network_mode: host
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    entrypoint: ["docker-entrypoint.sh"]
+    command: ["--help"]
+
+  # ── AI / Red Team variant ────────────────────────────────────
+  # Built with INSTALL_AI=1 for ai-test / ai-redteam commands.
+  # docker compose --profile ai run --rm ai ai-redteam http://target --yes
+  ai:
+    <<: *oneinfinity-base
+    profiles: ["ai"]
+    container_name: oneinfinity-ai
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_AI: "1"
+    network_mode: host
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+
+  # ── Web UI backend ───────────────────────────────────────────
+  # docker compose --profile full up
+  backend:
+    <<: *oneinfinity-base
+    profiles: ["full"]
+    container_name: oneinfinity-backend
+    entrypoint: ["python", "-m", "uvicorn"]
+    command:
+      - "web.backend.main:app"
+      - "--host=0.0.0.0"
+      - "--port=8000"
+      - "--reload"
+    ports:
+      - "8000:8000"
+    networks:
+      - oneinfinity-net
+
+  # ── Web UI frontend ──────────────────────────────────────────
+  frontend:
+    profiles: ["full"]
+    container_name: oneinfinity-frontend
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./web/frontend:/app:ro
+    command: sh -c "npm ci --silent && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - oneinfinity-net
+
+volumes:
+  oneinfinity-data:
+    driver: local
+
+networks:
+  oneinfinity-net:
+    driver: bridge
