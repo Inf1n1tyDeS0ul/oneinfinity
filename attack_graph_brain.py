@@ -324,25 +324,22 @@ class AttackGraphBrain:
     def integrate_finding(self, node_id: str, agent_type: str, finding: dict) -> None:
         """Record that an agent found something on a node; update graph; re-score neighbours."""
         try:
+            from attack_graph_core.graph_engine import NodeType, EdgeType
             eng = self._get_engine()
             node = eng.get_node(node_id)
             if node:
-                # Mark as exploitable if finding is a real vuln
                 severity = finding.get("severity", "info")
                 if severity in ("critical", "high", "medium"):
                     eng.update_node(node_id, exploitable=True, severity=severity)
-                    # Create or link a VULNERABILITY node
                     vuln_label = finding.get("vuln_type") or finding.get("name", "finding")
                     vuln_node, _ = eng.get_or_create_node(
-                        "VULNERABILITY", vuln_label,
+                        NodeType.VULNERABILITY, vuln_label,
                         properties={"severity": severity, **finding},
                         severity=severity, exploitable=True,
                     )
-                    eng.add_edge(node_id, vuln_node.id, "HAS_VULNERABILITY",
-                                  label=vuln_label, probability=0.9)
-                    # Re-score the vulnerability node
+                    eng.add_edge(node_id, vuln_node.id, EdgeType.HAS_VULNERABILITY,
+                                 label=vuln_label, probability=0.9)
                     self._score_and_enqueue(vuln_node)
-                # Re-score neighbours
                 for nb in eng.get_neighbors(node_id):
                     self._score_and_enqueue(nb)
         except Exception:
@@ -385,21 +382,316 @@ class AttackGraphBrain:
         if node_id is None:
             return None
 
-        # Wire parent → VULNERABILITY edge
+        # Wire parent → VULNERABILITY edge using explicit label lookup (exact match)
         try:
+            from attack_graph_core.graph_engine import NodeType, EdgeType
             eng = self._get_engine()
             for parent_label in ([url] if url and url != target else []) + [target]:
-                parents = eng.find_nodes(label_contains=parent_label)
-                for p in parents:
-                    if p.label == parent_label and p.id != node_id:
-                        eng.add_edge(p.id, node_id, "HAS_VULN",
+                # Prefer exact-label matches over substring search
+                for ntype in (NodeType.URL, NodeType.API_ENDPOINT, NodeType.SUBDOMAIN,
+                              NodeType.TARGET):
+                    key = (ntype, parent_label)
+                    parent_id = eng._label_index.get(key)
+                    if parent_id and parent_id != node_id:
+                        eng.add_edge(parent_id, node_id, EdgeType.HAS_VULNERABILITY,
                                      label=vuln_type or "vulnerability", probability=0.9)
                         break
+                else:
+                    continue
+                break
         except Exception as exc:
             log.debug("integrate_vuln: edge wiring failed [%s]: %s", finding_id, exc)
 
         log.info("[GRAPH] Added vulnerability node: %s (severity=%s)", finding_id, severity)
         return node_id
+
+    def integrate_token(self, token_value: str, token_type: str, issuer_label: str,
+                        target: str, properties: dict = None) -> Optional[str]:
+        """
+        Create a TOKEN node and wire it to its issuer (auth_flow/service) and
+        any protected endpoints.
+
+        token_type:   "jwt" | "api_key" | "oauth" | "session_cookie" | "bearer"
+        issuer_label: label of the AUTH_FLOW or SERVICE node that issued it
+        """
+        try:
+            from attack_graph_core.graph_engine import NodeType, EdgeType
+            import hashlib
+            eng = self._get_engine()
+            # Fingerprint the token (don't store raw secrets in the graph)
+            token_fp = hashlib.sha256(token_value.encode()).hexdigest()[:16]
+            token_label = f"{token_type}:{token_fp}"
+            props = {
+                "token_type": token_type,
+                "fingerprint": token_fp,
+                "target": target,
+                **(properties or {}),
+            }
+            token_node, created = eng.get_or_create_node(
+                NodeType.TOKEN, token_label, properties=props,
+                source="token_extractor",
+            )
+            if created:
+                self._score_and_enqueue(token_node)
+
+            # Wire issuer → TOKEN
+            for issuer_type in (NodeType.AUTH_FLOW, NodeType.SERVICE):
+                issuer_id = eng._label_index.get((issuer_type, issuer_label))
+                if issuer_id:
+                    eng.add_edge(issuer_id, token_node.id, EdgeType.ISSUES_TOKEN,
+                                 label="issues_token", probability=1.0)
+                    break
+
+            # Register raw token in the execution engine's same-run cache so
+            # _build_auth_headers() can inject it into subsequent requests
+            # within this run, without persisting secrets to SQLite.
+            try:
+                from core.token_execution_engine import get_token_execution_engine
+                get_token_execution_engine().store_raw_token(token_fp, token_value)
+            except Exception as cache_exc:
+                log.debug("integrate_token: could not cache raw token: %s", cache_exc)
+
+            log.info("[GRAPH] Token node: %s (type=%s, target=%s)", token_label, token_type, target)
+            return token_node.id
+        except Exception as exc:
+            log.debug("integrate_token failed: %s", exc)
+            return None
+
+    def integrate_session(self, session_id: str, target: str, auth_endpoint: str = "",
+                          properties: dict = None) -> Optional[str]:
+        """
+        Create a SESSION node and wire it to its authentication endpoint.
+        """
+        try:
+            from attack_graph_core.graph_engine import NodeType, EdgeType
+            import hashlib
+            eng = self._get_engine()
+            sess_fp = hashlib.sha256(session_id.encode()).hexdigest()[:16]
+            sess_label = f"session:{sess_fp}"
+            props = {
+                "fingerprint": sess_fp,
+                "target": target,
+                "auth_endpoint": auth_endpoint,
+                **(properties or {}),
+            }
+            sess_node, created = eng.get_or_create_node(
+                NodeType.SESSION, sess_label, properties=props,
+                source="session_extractor",
+            )
+            if created:
+                self._score_and_enqueue(sess_node)
+
+            # Wire session → protected endpoint (AUTH_FOR)
+            if auth_endpoint:
+                for ep_type in (NodeType.URL, NodeType.API_ENDPOINT):
+                    ep_id = eng._label_index.get((ep_type, auth_endpoint))
+                    if ep_id:
+                        eng.add_edge(sess_node.id, ep_id, EdgeType.AUTH_FOR,
+                                     label="auth_for", probability=0.9)
+                        break
+
+            log.info("[GRAPH] Session node: %s (target=%s)", sess_label, target)
+            return sess_node.id
+        except Exception as exc:
+            log.debug("integrate_session failed: %s", exc)
+            return None
+
+    def extract_tokens_from_response(self, response_headers: dict, response_body: str,
+                                     url: str, target: str) -> list:
+        """
+        Extract tokens/sessions from an HTTP response and add them to the graph.
+        Returns list of created token node IDs.
+        """
+        import re
+        node_ids = []
+
+        # Extract JWT tokens (Authorization header or body)
+        jwt_pattern = re.compile(r'eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+')
+        for header_val in response_headers.values():
+            for match in jwt_pattern.finditer(str(header_val)):
+                nid = self.integrate_token(match.group(), "jwt", url, target,
+                                           {"source": "response_header"})
+                if nid:
+                    node_ids.append(nid)
+        for match in jwt_pattern.finditer(response_body or ""):
+            nid = self.integrate_token(match.group(), "jwt", url, target,
+                                       {"source": "response_body"})
+            if nid:
+                node_ids.append(nid)
+
+        # Extract Set-Cookie session tokens
+        set_cookie = response_headers.get("Set-Cookie", "") or response_headers.get("set-cookie", "")
+        if set_cookie:
+            cookie_session = re.search(r'(?:session|sess|SESS|PHPSESSID|JSESSIONID)=([^;]+)', set_cookie)
+            if cookie_session:
+                nid = self.integrate_session(cookie_session.group(1), target, url,
+                                             {"cookie": cookie_session.group(0)})
+                if nid:
+                    node_ids.append(nid)
+
+        # Extract bearer tokens from Authorization header
+        auth_header = response_headers.get("Authorization", "") or response_headers.get("authorization", "")
+        bearer_match = re.search(r'Bearer\s+([A-Za-z0-9_\-\.]+)', str(auth_header))
+        if bearer_match:
+            nid = self.integrate_token(bearer_match.group(1), "bearer", url, target,
+                                       {"source": "authorization_header"})
+            if nid:
+                node_ids.append(nid)
+
+        return node_ids
+
+    def integrate_api_relationships(self, source_url: str, response_body: str,
+                                    response_headers: dict, target: str) -> int:
+        """
+        FIX 2: Deep relationship modeling.
+        Detects API→API CALLS edges and endpoint→auth AUTH_FOR edges from
+        HTTP response content (redirects, JSON hrefs, JS fetch() calls).
+        Returns count of new edges wired.
+        """
+        import re
+        edges_added = 0
+        try:
+            from attack_graph_core.graph_engine import NodeType, EdgeType
+            eng = self._get_engine()
+
+            # Resolve or create the source endpoint node
+            src_id = (eng._label_index.get((NodeType.URL, source_url)) or
+                      eng._label_index.get((NodeType.API_ENDPOINT, source_url)))
+            if src_id is None:
+                src_node = eng.add_node(NodeType.URL, source_url,
+                                        properties={"url": source_url, "target": target})
+                src_id = src_node.id
+
+            # 1. Detect API call patterns in JS / JSON (fetch, axios, XMLHttpRequest, href)
+            api_call_re = re.compile(
+                r"""(?:fetch|axios\.(?:get|post|put|delete|patch))\s*\(\s*['"`]([^'"`\s]+)['"`]"""
+                r"""|["']href["']\s*:\s*["']([^"']+)["']"""
+                r"""|url\s*:\s*["']([^"']{6,})["']""",
+                re.IGNORECASE,
+            )
+            for m in api_call_re.finditer(response_body or ""):
+                called = next((g for g in m.groups() if g), None)
+                if not called:
+                    continue
+                # Normalise relative paths
+                if called.startswith("/") and "://" not in called:
+                    from urllib.parse import urlparse as _up
+                    parsed = _up(source_url)
+                    called = f"{parsed.scheme}://{parsed.netloc}{called}"
+                if "://" not in called:
+                    continue
+                called_id = (eng._label_index.get((NodeType.API_ENDPOINT, called)) or
+                             eng._label_index.get((NodeType.URL, called)))
+                if called_id is None:
+                    called_node = eng.add_node(NodeType.API_ENDPOINT, called,
+                                               properties={"url": called, "target": target,
+                                                           "discovered_via": "js_analysis"})
+                    called_id = called_node.id
+                    self._score_and_enqueue(called_node)
+                # Add CALLS edge
+                e = eng.add_edge(src_id, called_id, EdgeType.CALLS,
+                                 label="calls", probability=0.8)
+                if e:
+                    edges_added += 1
+
+            # 2. Detect redirect targets → CALLS edge
+            location = response_headers.get("Location", "") or response_headers.get("location", "")
+            if location and "://" in location:
+                redir_id = (eng._label_index.get((NodeType.URL, location)) or
+                            eng._label_index.get((NodeType.API_ENDPOINT, location)))
+                if redir_id is None:
+                    redir_node = eng.add_node(NodeType.URL, location,
+                                              properties={"url": location, "target": target,
+                                                          "discovered_via": "redirect"})
+                    redir_id = redir_node.id
+                e = eng.add_edge(src_id, redir_id, EdgeType.CALLS,
+                                 label="redirect", probability=0.9)
+                if e:
+                    edges_added += 1
+
+            # 3. Detect auth requirements (401/403 with WWW-Authenticate)
+            status_hint = response_headers.get("_status_code", 0)
+            www_auth = response_headers.get("WWW-Authenticate", "") or \
+                       response_headers.get("www-authenticate", "")
+            if www_auth or str(status_hint) in ("401", "403"):
+                # Find or create an AUTH_FLOW node for this endpoint's auth scheme
+                auth_scheme = (www_auth.split()[0] if www_auth else "unknown_auth").lower()
+                auth_label = f"auth:{auth_scheme}:{target}"
+                auth_node, _ = eng.get_or_create_node(
+                    NodeType.AUTH_FLOW, auth_label,
+                    properties={"scheme": auth_scheme, "target": target,
+                                "endpoint": source_url},
+                )
+                e = eng.add_edge(src_id, auth_node.id, EdgeType.AUTHENTICATED_BY,
+                                 label="requires_auth", probability=1.0,
+                                 requires_auth=True)
+                if e:
+                    edges_added += 1
+
+        except Exception as exc:
+            log.debug("integrate_api_relationships: failed for %s: %s", source_url, exc)
+
+        if edges_added:
+            log.debug("[GRAPH] Deep relationships: +%d edges from %s", edges_added, source_url)
+        return edges_added
+
+    def record_chain_failure(self, chain_type: str, vuln_type: str, target: str) -> None:
+        """
+        FIX 6: Record a failed/unexecutable chain so its nodes get deprioritized.
+        """
+        try:
+            from attack_graph_core.graph_engine import NodeType
+            eng = self._get_engine()
+            # Find vulnerability nodes that were part of this chain trigger
+            cands = eng.find_nodes(node_type=NodeType.VULNERABILITY, label_contains=vuln_type)
+            for node in cands:
+                # Optionally filter by target if stored in properties; skip check if not present
+                if target and node.properties.get("target") and node.properties["target"] != target:
+                    continue
+                penalty = float(node.properties.get("brain_penalty", 1.0))
+                eng.update_node(node.id, properties={"brain_penalty": penalty * 0.7,
+                                                      "chain_failure": chain_type})
+                log.debug("record_chain_failure: penalized node %s (chain=%s)", node.id[:8], chain_type)
+        except Exception as exc:
+            log.debug("record_chain_failure: %s", exc)
+
+    def compute_graph_metrics(self) -> dict:
+        """
+        FIX 8: Return graph quality metrics for inclusion in reports.
+        """
+        try:
+            eng = self._get_engine()
+            stats = eng.get_stats()
+            n = stats.get("total_nodes", 0)
+            e = stats.get("total_edges", 0)
+            avg_degree = round((2 * e / n), 2) if n > 0 else 0.0
+
+            # Chain success rate from node properties
+            from attack_graph_core.graph_engine import NodeType
+            all_vulns = eng.find_nodes(node_type=NodeType.VULNERABILITY)
+            chain_success = sum(1 for v in all_vulns if v.properties.get("chain_confirmed"))
+            chain_attempts = sum(1 for v in all_vulns if v.properties.get("chain_attempts", 0) > 0)
+            chain_rate = round(chain_success / chain_attempts, 2) if chain_attempts > 0 else 0.0
+
+            exploitable = stats.get("exploitable_nodes", 0)
+            validated   = stats.get("validated_nodes", 0)
+
+            return {
+                "node_count":        n,
+                "edge_count":        e,
+                "avg_degree":        avg_degree,
+                "chain_success_rate": chain_rate,
+                "chain_attempts":    chain_attempts,
+                "chain_confirmed":   chain_success,
+                "exploitable_nodes": exploitable,
+                "validated_nodes":   validated,
+                "nodes_by_type":     stats.get("nodes_by_type", {}),
+                "edges_by_type":     stats.get("edges_by_type", {}),
+                "vulns_by_severity": stats.get("vulnerabilities_by_severity", {}),
+            }
+        except Exception as exc:
+            log.debug("compute_graph_metrics: %s", exc)
+            return {}
 
     def mark_tested(self, node_id: str, agent_type: str) -> None:
         with self._lock:
@@ -438,6 +730,23 @@ class AttackGraphBrain:
                 tested_ratio = 1.0 if tested else 0.0
             tested_discount = tested_ratio * 0.7  # fully tested → 70% discount
 
+            # Graph-score: reachability of this node from known high-value vuln nodes
+            graph_score = 0.0
+            try:
+                q = self._get_query()
+                # Count how many confirmed-exploitable vulns can reach this node
+                from attack_graph_core.graph_engine import NodeType as _NT
+                exploit_parents = eng.find_nodes(node_type=_NT.VULNERABILITY, exploitable=True)
+                reachable_count = 0
+                for ep in exploit_parents[:10]:  # cap to avoid O(n²)
+                    paths = q.dfs_paths(ep.id, node.id, max_depth=3)
+                    if paths:
+                        reachable_count += 1
+                # Cap contribution at 0.5 (5 or more reachable exploits → full bonus)
+                graph_score = min(reachable_count / 10.0, 0.5)
+            except Exception:
+                pass
+
             # Feedback reward/penalty
             reward = float(node.properties.get("brain_reward", 1.0))
             penalty = float(node.properties.get("brain_penalty", 1.0))
@@ -447,6 +756,7 @@ class AttackGraphBrain:
                 * (1.0 + conn * 0.5)
                 * (1.0 + vuln_bonus)
                 * (1.0 + sev_bonus)
+                * (1.0 + graph_score)
                 * (1.0 - tested_discount)
                 * reward
                 * penalty
