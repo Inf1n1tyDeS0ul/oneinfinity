@@ -166,3 +166,67 @@ class TestCanonicalEdgeTypes:
         validator = GraphPathValidator(engine=engine, strict=True)
         result = validator.validate(path)
         assert result.is_valid, f"Path validator rejected path: {result.reason}"
+
+
+# ── W1 tests ───────────────────────────────────────────────────────────────
+
+from core.token_execution_engine import TokenExecutionEngine
+
+
+class TestTokenCache:
+
+    def _make_token_node(self, engine, fp="abc123", token_type="jwt"):
+        node, _ = engine.get_or_create_node(
+            NodeType.TOKEN, f"{token_type}:{fp}",
+            properties={"token_type": token_type, "fingerprint": fp, "target": "t.com"},
+        )
+        return node
+
+    def test_build_auth_headers_returns_empty_without_raw(self):
+        """Baseline: no raw_token in props AND no cache → empty headers."""
+        engine = fresh_engine()
+        node = self._make_token_node(engine)
+        tee = TokenExecutionEngine()
+        headers = tee._build_auth_headers(node)
+        assert headers == {}, f"Expected empty headers, got {headers}"
+
+    def test_store_and_retrieve_raw_token(self):
+        """store_raw_token populates the cache; _build_auth_headers uses it."""
+        engine = fresh_engine()
+        node = self._make_token_node(engine, fp="deadbeef", token_type="jwt")
+        raw = "eyJhbGciOiJIUzI1NiJ9.payload.sig"
+
+        tee = TokenExecutionEngine()
+        tee.store_raw_token("deadbeef", raw)
+        headers = tee._build_auth_headers(node)
+
+        assert "Authorization" in headers, f"Expected Authorization header, got {headers}"
+        assert raw in headers["Authorization"], (
+            f"Raw token not injected: {headers}"
+        )
+
+    def test_cache_is_instance_level(self):
+        """Two separate TokenExecutionEngine instances do not share cache."""
+        tee1 = TokenExecutionEngine()
+        tee2 = TokenExecutionEngine()
+        tee1.store_raw_token("fp1", "raw-value-1")
+        engine = fresh_engine()
+        node = self._make_token_node(engine, fp="fp1", token_type="bearer")
+        # tee2 has no cache entry for fp1
+        headers = tee2._build_auth_headers(node)
+        assert headers == {}, "Cache must not bleed across instances"
+
+    def test_node_raw_token_property_takes_precedence(self):
+        """If raw_token is on the node, it wins over the cache."""
+        engine = fresh_engine()
+        node, _ = engine.get_or_create_node(
+            NodeType.TOKEN, "jwt:fp99",
+            properties={"token_type": "jwt", "fingerprint": "fp99",
+                        "raw_token": "node-level-value"},
+        )
+        tee = TokenExecutionEngine()
+        tee.store_raw_token("fp99", "cache-level-value")
+        headers = tee._build_auth_headers(node)
+        assert "node-level-value" in headers.get("Authorization", ""), (
+            "Node-level raw_token must take precedence over cache"
+        )
