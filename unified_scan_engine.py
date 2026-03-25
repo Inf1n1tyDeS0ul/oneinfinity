@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -49,7 +50,12 @@ _PHASES: List[str] = [
     "recon",
     "graph_update",
     "agent_trigger",
+    "oob_init",           # NEW: start OOB callback listener
+    "auth_setup",         # NEW: configure authenticated sessions
     "vuln_scan",
+    "graphql_scan",       # NEW: GraphQL endpoint detection + security testing
+    "browser_analysis",   # NEW: headless browser DOM/JS/XSS analysis
+    "smuggling_test",     # NEW: HTTP request smuggling detection
     "exploit_validation",
     "exploit_chaining",
     "result_ingest",
@@ -60,14 +66,19 @@ _PHASES: List[str] = [
 ]
 
 _PHASE_PCT: Dict[str, int] = {
-    "classify":           5,
-    "recon":             25,
-    "graph_update":      35,
-    "agent_trigger":     45,
-    "vuln_scan":         60,
-    "exploit_validation": 70,
-    "exploit_chaining":  80,
-    "result_ingest":     85,
+    "classify":           4,
+    "recon":             20,
+    "graph_update":      28,
+    "agent_trigger":     34,
+    "oob_init":          37,
+    "auth_setup":        40,
+    "vuln_scan":         54,
+    "graphql_scan":      60,
+    "browser_analysis":  66,
+    "smuggling_test":    70,
+    "exploit_validation": 76,
+    "exploit_chaining":  82,
+    "result_ingest":     86,
     "severity_followup": 90,
     "graph_vuln_update": 94,
     "report":            97,
@@ -236,6 +247,10 @@ def _classify_target(target: str) -> str:
 
 from core.safety import safety_guard
 
+# Module-level buffer: AI response-analysis signals written from _run_tool_safe,
+# drained into ctx["loop_history"]["ai_signals"] in _phase_vuln_scan.
+_AI_SIGNAL_BUFFER: List[dict] = []
+
 WAF_STATS = {
     "detections": 0,
     "mutations": 0,
@@ -375,19 +390,59 @@ class UnifiedScanEngine:
         """Execute phases in order, stopping early if stop is set."""
         # Shared context passed between phases
         ctx: dict = {
-            "recon_intel": None,     # ReconIntelligence object
-            "graph_brain": None,     # AttackGraphBrain instance
-            "agent_plan": [],        # list of agent-type strings
-            "tool_registry": None,   # ToolRegistry instance
-            "scan_findings": [],     # raw dicts from tools
+            "recon_intel": None,       # ReconIntelligence object
+            "graph_brain": None,       # AttackGraphBrain instance
+            "agent_plan": [],          # list of agent-type strings
+            "tool_registry": None,     # ToolRegistry instance
+            "scan_findings": [],       # raw dicts from tools
+            "validated_findings": [],  # post-validation findings
+            "target_type": None,
+            # ── Intelligence layer ──────────────────────────────
+            "kb": None,                # KnowledgeBase instance
+            "kb_session_id": None,     # KB session ID for this scan
+            "decision_engine": None,   # AutonomousDecisionEngine
+            "pattern_insight": None,   # PatternMiner TargetInsight
+            # ── Stealth layer ───────────────────────────────────
+            "stealth_session": None,   # StealthSession for all outbound requests
+            # ── Cross-run learning ──────────────────────────────
+            "persistent_memory": None, # PersistentMemory loaded at scan start
         }
+
+        # ── Load stealth session ────────────────────────────────────────────
+        try:
+            from core.stealth_engine import get_stealth_session
+            ctx["stealth_session"] = get_stealth_session()
+            log.info("Stealth session loaded for scan %s", session.scan_id)
+        except Exception as exc:
+            log.warning("StealthSession unavailable (non-fatal): %s", exc)
+
+        # ── Load persistent memory ──────────────────────────────────────────
+        try:
+            from learning.persistent_memory import load_memory, get_memory
+            load_memory()
+            mem = get_memory()
+            ctx["persistent_memory"] = mem
+            mem_ctx = mem.to_ctx()
+            ctx.update(mem_ctx)
+            log.info(
+                "PersistentMemory loaded: %d successful payloads, %d patterns",
+                len(mem._data.get("successful_payloads", [])),
+                len(mem._data.get("vulnerable_patterns", [])),
+            )
+        except Exception as exc:
+            log.warning("PersistentMemory unavailable (non-fatal): %s", exc)
 
         phase_fns = {
             "classify":            self._phase_classify,
             "recon":               self._phase_recon,
             "graph_update":        self._phase_graph_update,
             "agent_trigger":       self._phase_agent_trigger,
+            "oob_init":            self._phase_oob_init,
+            "auth_setup":          self._phase_auth_setup,
             "vuln_scan":           self._phase_vuln_scan,
+            "graphql_scan":        self._phase_graphql_scan,
+            "browser_analysis":    self._phase_browser_analysis,
+            "smuggling_test":      self._phase_smuggling_test,
             "exploit_validation":  self._phase_exploit_validation,
             "exploit_chaining":    self._phase_exploit_chaining,
             "result_ingest":       self._phase_result_ingest,
@@ -494,7 +549,7 @@ class UnifiedScanEngine:
         )
         intel = engine.run()
         ctx["recon_intel"] = intel
-        
+
         # Extract data from intel
         subdomains = getattr(intel, "subdomains", []) or []
         urls = intel.all_urls
@@ -528,8 +583,141 @@ class UnifiedScanEngine:
         except Exception as exc:
             log.warning("Recon asset ingestion failed: %s", exc)
 
+        # ── Priority 2: Knowledge Base — start session + target profile ────
+        try:
+            from learning.knowledge_base import KnowledgeBase
+            from urllib.parse import urlparse as _urlparse
+            kb = KnowledgeBase()
+            ctx["kb"] = kb
+            ctx["kb_session_id"] = session.scan_id
+            kb.start_session(
+                session_id=session.scan_id,
+                target=session.target,
+                phases=list(_PHASES),
+            )
+            domain = _urlparse(session.target).netloc or session.target
+            prior = kb.get_target_profile(domain)
+            if prior:
+                log.info("KB: prior profile found for %s — waf=%s", domain, prior.get("waf"))
+            # Refresh tech profile in KB
+            tech_stack = getattr(intel.tech_profile, "raw_tech", []) or []
+            kb.upsert_target_profile(domain, tech_stack=tech_stack)
+        except Exception as exc:
+            log.warning("KnowledgeBase init failed (non-fatal): %s", exc)
+
+        # ── Priority 3: Pattern Miner — predict likely vulns from tech stack ─
+        try:
+            from learning.pattern_miner import PatternMiner
+            kb = ctx.get("kb")
+            if kb:
+                pm = PatternMiner(kb)
+                tech_stack = getattr(intel.tech_profile, "raw_tech", []) or []
+                insight = pm.predict_for_target(session.target, tech_stack)
+                ctx["pattern_insight"] = insight
+                log.info(
+                    "PatternMiner: priority=%s suggested=%s predicted_vulns=%d",
+                    insight.scan_priority,
+                    insight.suggested_tools[:3],
+                    len(insight.predicted_vulns),
+                )
+                session.phases["recon"].meta["scan_priority"] = insight.scan_priority
+        except Exception as exc:
+            log.warning("PatternMiner prediction failed (non-fatal): %s", exc)
+
+        # ── Fix 5: Graph Enrichment — PARAMETER + API_ENDPOINT + AUTH_ENDPOINT
+        _AUTH_PATH_PATTERNS = re.compile(
+            r"/(login|signin|auth|oauth|sso|admin|account|session|password|"
+            r"register|signup|token|logout|2fa|mfa|saml|oidc)(/|$|\?)",
+            re.IGNORECASE,
+        )
+        try:
+            from urllib.parse import urlparse as _up, parse_qs as _pqs
+            brain = ctx.get("graph_brain")
+            if brain:
+                param_added = 0
+                api_added = 0
+                auth_added = 0
+                seen_params: set = set()
+                seen_auth: set = set()
+
+                for _url in (intel.all_urls or [])[:500]:
+                    _p = _up(_url)
+                    # PARAMETER nodes
+                    for _pname in _pqs(_p.query):
+                        _key = f"{_p.netloc}{_p.path}:{_pname}"
+                        if _key not in seen_params:
+                            seen_params.add(_key)
+                            try:
+                                brain.add_node(
+                                    label=_pname,
+                                    node_type="PARAMETER",
+                                    url=_url,
+                                    properties={"endpoint": _p.path, "param": _pname},
+                                )
+                                param_added += 1
+                            except Exception:
+                                pass
+                    # AUTH_ENDPOINT nodes
+                    if _AUTH_PATH_PATTERNS.search(_p.path) and _url not in seen_auth:
+                        seen_auth.add(_url)
+                        try:
+                            brain.add_node(
+                                label=_p.path,
+                                node_type="AUTH_ENDPOINT",
+                                url=_url,
+                                properties={"type": "auth", "auth_required": True},
+                            )
+                            auth_added += 1
+                        except Exception:
+                            pass
+
+                # Also add auth endpoints from alive hosts
+                for _host in (getattr(intel, "alive_hosts", []) or [])[:50]:
+                    _base = _host.get("url", "")
+                    for _apath in ("/login", "/auth", "/admin", "/account",
+                                   "/signin", "/oauth/token", "/api/auth"):
+                        _aurl = _base.rstrip("/") + _apath
+                        if _aurl not in seen_auth:
+                            seen_auth.add(_aurl)
+                            try:
+                                brain.add_node(
+                                    label=_apath,
+                                    node_type="AUTH_ENDPOINT",
+                                    url=_aurl,
+                                    properties={"type": "auth_probe", "auth_required": True},
+                                )
+                                auth_added += 1
+                            except Exception:
+                                pass
+
+                # API_ENDPOINT nodes
+                api_map = getattr(intel, "api_map", None)
+                for _bp in (getattr(api_map, "base_paths", []) or [])[:100]:
+                    try:
+                        brain.add_node(
+                            label=_bp,
+                            node_type="API_ENDPOINT",
+                            url=f"{session.target.rstrip('/')}/{_bp.lstrip('/')}",
+                            properties={"type": "api"},
+                        )
+                        api_added += 1
+                    except Exception:
+                        pass
+
+                log.info(
+                    "Graph enrichment: +%d PARAMETER, +%d API_ENDPOINT, +%d AUTH_ENDPOINT nodes",
+                    param_added, api_added, auth_added,
+                )
+                session.phases["recon"].meta.update({
+                    "graph_params": param_added,
+                    "graph_api": api_added,
+                    "graph_auth": auth_added,
+                })
+        except Exception as exc:
+            log.debug("Graph enrichment failed (non-fatal): %s", exc)
+
     def _phase_graph_update(self, session: ScanSession, ctx: dict) -> None:
-        """Push recon findings into the attack graph brain."""
+        """Push recon findings into the attack graph brain with explicit edge types."""
         try:
             from attack_graph_brain import get_brain
         except ImportError as exc:
@@ -539,52 +727,338 @@ class UnifiedScanEngine:
         brain.add_target(session.target)
         ctx["graph_brain"] = brain
 
+        # FIX 5: Cross-run graph memory — the global engine already uses SQLiteStore
+        # (get_engine() initialises GraphStore which loads previous run data on startup).
+        # Log how much historical data was loaded from the persistent store.
+        try:
+            eng = brain._get_engine()
+            stats = eng.get_stats()
+            prev_nodes = stats.get("total_nodes", 0)
+            prev_edges = stats.get("total_edges", 0)
+            if prev_nodes > 0:
+                log.info(
+                    "[GRAPH-MEMORY] Loaded %d nodes, %d edges from previous run(s) "
+                    "(cross-run memory active)",
+                    prev_nodes, prev_edges,
+                )
+        except Exception:
+            pass
+
         intel = ctx.get("recon_intel")
         if intel is None:
             log.warning("No recon intel available for graph_update")
             return
 
+        try:
+            from attack_graph_core.graph_engine import NodeType, EdgeType
+            eng = brain._get_engine()
+        except Exception:
+            eng = None
+
+        # Resolve the root TARGET node id for edge wiring
+        target_node_id = None
+        if eng is not None:
+            target_node_id = eng._label_index.get((NodeType.TARGET, session.target))
+
         subdomains = getattr(intel, "subdomains", []) or []
         for sub in subdomains:
             try:
-                brain.integrate_node("SUBDOMAIN", sub, session.target, properties={"domain": sub})
+                sub_node_id = brain.integrate_node(
+                    "SUBDOMAIN", sub, session.target, properties={"domain": sub}
+                )
+                # TARGET --[HOSTS]--> SUBDOMAIN
+                if eng is not None and target_node_id and sub_node_id:
+                    eng.add_edge(target_node_id, sub_node_id, EdgeType.HOSTS,
+                                 label="hosts", probability=1.0)
             except Exception as exc:
                 log.debug("graph_update: failed to integrate subdomain %s: %s", sub, exc)
 
+        # Build a subdomain→node_id lookup for URL → subdomain parent wiring
+        sub_index: dict = {}
+        if eng is not None:
+            for sub in subdomains:
+                nid = eng._label_index.get((NodeType.SUBDOMAIN, sub))
+                if nid:
+                    sub_index[sub] = nid
+
+        from urllib.parse import urlparse as _urlparse
+        from attack_graph_core.graph_updater import GraphUpdater as _GU
+        # GraphUpdater.add_url creates-or-retrieves the URL node and wires
+        # HAS_ENDPOINT. Note: brain.integrate_node() is no longer called here
+        # because add_url covers both node creation and edge wiring in one step.
+        # If brain.integrate_node has separate side effects needed (scoring,
+        # session tracking), call brain.integrate_node first, then add_url.
+        _local_updater = _GU(engine=eng)   # same engine instance brain uses
         urls = getattr(intel, "all_urls", []) or []
         for url in urls[:500]:   # cap to avoid graph bloat
             try:
-                brain.integrate_node("URL", url, session.target, properties={"url": url})
+                parsed = _urlparse(url)
+                parent_domain = parsed.netloc or session.target
+                _local_updater.add_url(url, parent_domain)
             except Exception as exc:
                 log.debug("graph_update: failed to integrate url %s: %s", url, exc)
 
         log.info(
-            "Graph updated for %s: %d subdomains, %d URLs ingested",
+            "Graph updated for %s: %d subdomains, %d URLs ingested (explicit edges wired)",
             session.target, len(subdomains), min(len(urls), 500),
         )
 
-    def _phase_agent_trigger(self, session: ScanSession, ctx: dict) -> None:
-        """Decide which scan agents to invoke based on target type and graph nodes."""
-        t_type = session.target_type
-        plan: List[str] = []
+    # Map decision engine agent_type strings → concrete tool names
+    _AGENT_TO_TOOL: Dict[str, str] = {
+        "xss_agent":    "dalfox",
+        "sqli_agent":   "sqlmap",
+        "nuclei_agent": "nuclei",
+        "ssrf_agent":   "nuclei",
+        "auth_agent":   "nuclei",
+        "idor_agent":   "nuclei",
+        "api_agent":    "nuclei",
+        "lfi_agent":    "nuclei",
+        "rce_agent":    "nuclei",
+        "ai_agent":     "garak",
+        "cmdi_agent":   "nuclei",
+        "xssstrike":    "xssstrike",
+        "commix":       "commix",
+    }
 
-        if t_type == "web":
-            plan = ["nuclei", "dalfox", "sqlmap"]
-        elif t_type == "api":
-            plan = ["nuclei", "sqlmap"]
-        elif t_type == "mobile":
-            plan = ["nuclei"]
-        elif t_type == "ai":
-            plan = ["garak", "pyrit"]
-        else:
-            plan = ["nuclei"]
+    def _phase_agent_trigger(self, session: ScanSession, ctx: dict) -> None:
+        """Decide which scan agents to invoke — rule-driven + decision engine + KB."""
+        from urllib.parse import urlparse, parse_qs
+
+        intel = ctx.get("recon_intel")
+        t_type = getattr(session, "target_type", "web") or "web"
+        brain = ctx.get("graph_brain")
+
+        # ── Build params_map {url: [param_names]} from all discovered URLs ──
+        params_map: Dict[str, List[str]] = {}
+        all_urls: List[str] = getattr(intel, "all_urls", []) or [] if intel else []
+        for _u in all_urls:
+            try:
+                _qs = parse_qs(urlparse(_u).query)
+                if _qs:
+                    params_map[_u] = list(_qs.keys())
+            except Exception:
+                pass
+        ctx["params_map"] = params_map
+        log.info("params_map built: %d parameterized URLs", len(params_map))
+
+        # ── Set-based plan — rules always included, no duplicates ────────────
+        plan_set: set = set()
+
+        # ── RULE 1: PARAMETER → INJECTION (unconditional) ────────────────────
+        if params_map or any("?" in u for u in all_urls):
+            plan_set.add("dalfox")
+            plan_set.add("sqlmap")
+            log.info("[RULE-1] Parameterized URLs found → dalfox + sqlmap enforced")
+
+        # ── RULE 2: API → API_FUZZ (REST or GraphQL endpoints detected) ──────
+        api_map = getattr(intel, "api_map", None) if intel else None
+        if api_map and (getattr(api_map, "has_rest", False) or getattr(api_map, "has_graphql", False)):
+            plan_set.add("kiterunner")
+            plan_set.add("nuclei")
+            log.info("[RULE-2] API endpoints detected → kiterunner + nuclei enforced")
+
+        # ── RULE 3: GraphQL → dedicated GraphQL scan ──────────────────────────
+        if api_map and getattr(api_map, "has_graphql", False):
+            plan_set.add("graphql_scan")
+            log.info("[RULE-3] GraphQL detected → graphql_scan enforced")
+
+        # ── RULE 4: AUTH_ENDPOINT → jwt_tool ─────────────────────────────────
+        auth_endpoints: List[str] = []
+        if brain:
+            try:
+                auth_nodes = brain.get_nodes_by_type("AUTH_ENDPOINT")
+                auth_endpoints = [n.get("url", "") for n in (auth_nodes or []) if n.get("url")]
+            except Exception:
+                pass
+        if not auth_endpoints:
+            _AUTH_RE = re.compile(
+                r"/(login|auth|admin|signin|signup|oauth|token|register|password|reset)(/|$)",
+                re.IGNORECASE,
+            )
+            auth_endpoints = [u for u in all_urls if _AUTH_RE.search(u)]
+        ctx["auth_endpoints"] = auth_endpoints
+        if auth_endpoints:
+            plan_set.add("jwt_tool")
+            log.info("[RULE-4] AUTH endpoints found (%d) → jwt_tool enforced", len(auth_endpoints))
+
+        # ── RULE 5: CLOUD → s3scanner ─────────────────────────────────────────
+        cloud_assets = getattr(intel, "cloud_assets", None) if intel else None
+        if cloud_assets and getattr(cloud_assets, "open_buckets", []):
+            plan_set.add("s3scanner")
+            log.info("[RULE-5] Open S3 buckets detected → s3scanner enforced")
+
+        # ── RULE 6: MOBILE → MobileSecurityEngine ────────────────────────────
+        if t_type == "mobile":
+            plan_set.add("mobile_scan")
+            log.info("[RULE-6] Mobile target → mobile_scan enforced")
+
+        rules_plan = set(plan_set)  # snapshot — always executed regardless of DE
+
+        # ── Decision Engine — merges additional tool selections ───────────────
+        _de_decisions_generated = 0
+        _de_decisions_executed = 0
+        _de_decisions_skipped = 0
+        try:
+            from autonomous_decision_engine import AutonomousDecisionEngine
+            de = AutonomousDecisionEngine()
+            ctx["decision_engine"] = de
+            dec_plan = de.generate_plan(target=session.target, max_decisions=50)
+            _de_decisions_generated = len(dec_plan.decisions)
+            for decision in dec_plan.decisions[:20]:
+                tool = self._AGENT_TO_TOOL.get(decision.agent_type, "nuclei")
+                if tool not in plan_set:
+                    _de_decisions_executed += 1
+                else:
+                    _de_decisions_skipped += 1
+                plan_set.add(tool)
+            log.info(
+                "[DE] Coverage: generated=%d new=%d merged=%d plan_size=%d (scan=%s)",
+                _de_decisions_generated, _de_decisions_executed,
+                _de_decisions_skipped, len(plan_set), session.scan_id,
+            )
+        except Exception as exc:
+            log.warning("[DE] DecisionEngine unavailable (%s); rules + fallback only", exc)
+
+        # ── AI Reasoning Layer (Phase 4) — priority-weighted, additive ──────
+        # Rules (Phase 3) + DE (Phase 2) already in plan_set.
+        # High-priority AI items move to front of execution order.
+        # ctx["ai_hints"] carries full item list for tool execution use.
+        _ai_high_tools: List[str] = []   # will be prepended in ordering
+        _ai_plan: list = []
+        try:
+            from core.ai_reasoning_engine import get_ai_reasoning_engine
+            _are = get_ai_reasoning_engine()
+            _tech = str(getattr(intel, "tech_profile", "") if intel else "unknown")
+            _auth_ctx = {"authenticated": bool(
+                getattr(session, "scan_config", {}) and (
+                    (getattr(session, "scan_config", {}) or {}).get("token")
+                    or (getattr(session, "scan_config", {}) or {}).get("cookies")
+                )
+            )}
+            _ai_plan = _are.generate_attack_plan(
+                target=session.target,
+                endpoints=all_urls[:50],
+                params_map=params_map,
+                findings=[],  # no findings yet at planning stage
+                tech_stack=_tech,
+                auth_context=_auth_ctx,
+            )
+            # Separate high-priority items — these get prepended in ordering
+            _seen_ai: set = set()
+            for _item in _ai_plan:
+                _t = _item.tool
+                if _item.priority == "high" and _t not in plan_set and _t not in _seen_ai:
+                    _ai_high_tools.append(_t)
+                    _seen_ai.add(_t)
+            # Add all AI tools to plan_set (additive)
+            _ai_all_tools = _are.map_plan_to_tools(_ai_plan)
+            _ai_new = [t for t in _ai_all_tools if t not in plan_set]
+            plan_set.update(_ai_new)
+            # Store hints dict for tool execution phase to use
+            ctx["ai_hints"] = [_item.to_dict() for _item in _ai_plan]
+            if _ai_new:
+                log.info("[AI-Reasoning] %d tools added (%d high-priority): %s",
+                         len(_ai_new), len(_ai_high_tools), _ai_new)
+            session.phases["agent_trigger"].meta["ai_plan_items"] = len(_ai_plan)
+            session.phases["agent_trigger"].meta["ai_tools_added"] = _ai_new
+            session.phases["agent_trigger"].meta["ai_high_priority"] = _ai_high_tools
+        except Exception as exc:
+            log.debug("[AI-Reasoning] unavailable (non-fatal): %s", exc)
+            ctx["ai_hints"] = []
+
+        # ── Fallback: if plan still empty after rules + DE + AI, add type defaults ─
+        if not plan_set:
+            if t_type == "web":
+                plan_set.update(["nuclei", "dalfox", "sqlmap"])
+            elif t_type == "api":
+                plan_set.update(["nuclei", "sqlmap"])
+            elif t_type == "ai":
+                plan_set.update(["garak", "pyrit"])
+            else:
+                plan_set.add("nuclei")
+            log.info("Fallback plan for %s (%s): %s", session.target, t_type, sorted(plan_set))
+
+        # nuclei always present as baseline
+        plan_set.add("nuclei")
+
+        # ── KB enrichment — best tools for predicted vulns ───────────────────
+        try:
+            kb = ctx.get("kb")
+            insight = ctx.get("pattern_insight")
+            if kb and insight:
+                for vp in insight.predicted_vulns[:5]:
+                    best = kb.best_tool_for_vuln(vp.vuln_type, top_n=1)
+                    if best:
+                        t = best[0].get("tool_name", "")
+                        if t:
+                            plan_set.add(t)
+                            log.info("KB recommended '%s' for predicted '%s'", t, vp.vuln_type)
+                for st in (insight.suggested_tools or [])[:3]:
+                    if st:
+                        plan_set.add(st)
+        except Exception as exc:
+            log.debug("KB plan enrichment skipped: %s", exc)
+
+        # ── Recon task priority hints ─────────────────────────────────────────
+        priority_tools: List[str] = []
+        try:
+            if intel and getattr(intel, "tasks", []):
+                _TASK_TOOL: Dict[str, List[str]] = {
+                    "injection": ["sqlmap", "nuclei"],
+                    "auth":      ["nuclei"],
+                    "cloud":     ["nuclei"],
+                    "api":       ["nuclei"],
+                    "misc":      ["nuclei"],
+                }
+                for task in intel.tasks:
+                    if getattr(task, "priority", "low") in ("critical", "high"):
+                        cat = getattr(task, "category", "misc")
+                        for t in _TASK_TOOL.get(cat, ["nuclei"]):
+                            if t not in priority_tools:
+                                priority_tools.append(t)
+                plan_set.update(priority_tools)
+                if priority_tools:
+                    log.info("Recon tasks added priority tools: %s", priority_tools)
+        except Exception as exc:
+            log.debug("Recon task enrichment skipped: %s", exc)
+
+        # ── Build final ordered plan ──────────────────────────────────────────
+        # Order: high-priority AI → recon priority → rules → medium/low AI + DE
+        seen_order: List[str] = []
+
+        def _add(t: str) -> None:
+            if t and t not in seen_order:
+                seen_order.append(t)
+
+        # 1. High-priority AI tools (execute earliest — AI says these are highest value)
+        for _t in _ai_high_tools:
+            _add(_t)
+        # 2. Recon-task priority tools
+        for _t in priority_tools:
+            _add(_t)
+        # 3. Rule-enforced tools (Phase 3 — always present)
+        for _t in sorted(rules_plan):
+            _add(_t)
+        # 4. Remaining: medium/low AI tools + DE additions
+        _remaining = plan_set - rules_plan - set(priority_tools) - set(_ai_high_tools)
+        for _t in sorted(_remaining):
+            _add(_t)
+        plan = seen_order
 
         ctx["agent_plan"] = plan
-        log.info("Agent plan for %s (%s): %s", session.target, t_type, plan)
-        session.phases["agent_trigger"].meta["agent_plan"] = plan
+        session.phases["agent_trigger"].meta.update({
+            "de_generated": _de_decisions_generated,
+            "de_executed": _de_decisions_executed,
+            "de_skipped": _de_decisions_skipped,
+            "de_used": ctx.get("decision_engine") is not None,
+            "agent_plan": plan,
+            "rules_enforced": sorted(rules_plan),
+            "params_map_size": len(params_map),
+            "auth_endpoints_count": len(auth_endpoints),
+        })
+        log.info("Final agent plan for %s: %s", session.target, plan)
 
-        # Execute queued agent actions via AgentExecutionFabric
-        brain = ctx.get("graph_brain")
+        # ── Execute queued agent actions via AgentExecutionFabric ─────────────
         if brain is None:
             raise RuntimeError("graph_brain not available for agent_trigger")
         try:
@@ -593,9 +1067,20 @@ class UnifiedScanEngine:
             raise RuntimeError("AgentExecutionFabric unavailable: " + str(exc)) from exc
 
         fabric = get_fabric()
-        status = fabric.status()
-        if not status.get("running"):
+        if not fabric.status().get("running"):
             fabric.start(max_workers=8)
+
+        # Collect JWT tokens for rich context injection
+        jwt_tokens: List[str] = []
+        try:
+            auth_mgr = ctx.get("auth_manager")
+            if auth_mgr:
+                tok = getattr(auth_mgr, "token", None)
+                if tok:
+                    jwt_tokens.append(str(tok))
+        except Exception:
+            pass
+        ctx["jwt_tokens"] = jwt_tokens
 
         dispatched = 0
         while True:
@@ -608,10 +1093,38 @@ class UnifiedScanEngine:
                 node_label=action.node_label,
                 node_type=action.node_type,
                 target=action.target,
-                context=action.context,
+                context={
+                    **(action.context or {}),
+                    "endpoints": all_urls[:100],
+                    "params_map": params_map,
+                    "auth_endpoints": auth_endpoints[:20],
+                    "jwt_tokens": jwt_tokens,
+                },
                 priority=action.priority,
             )
             dispatched += 1
+
+        # RULE 6: Mobile — dispatch MobileSecurityAgent directly via fabric
+        if t_type == "mobile":
+            try:
+                fabric.submit_task(
+                    agent_type="mobile",
+                    node_id=session.target,
+                    node_label=session.target,
+                    node_type="TARGET",
+                    target=session.target,
+                    context={
+                        "endpoints": all_urls[:100],
+                        "params_map": params_map,
+                        "auth_endpoints": auth_endpoints[:20],
+                        "jwt_tokens": jwt_tokens,
+                    },
+                    priority=10,
+                )
+                dispatched += 1
+                log.info("[RULE-6] MobileSecurityAgent dispatched for %s", session.target)
+            except Exception as exc:
+                log.warning("[RULE-6] Mobile agent dispatch failed: %s", exc)
 
         session.phases["agent_trigger"].meta["actions_dispatched"] = dispatched
         log.info("Agent actions dispatched: %d (scan=%s)", dispatched, session.scan_id)
@@ -644,6 +1157,9 @@ class UnifiedScanEngine:
                                "dashboard", "password", "account", "user")
 
         for tool_name in plan:
+            _tool_start = time.time()
+            _tool_result: List[dict] = []
+            _tool_success = False
             try:
                 log.info("Running tool '%s' against %s (%d URLs)", tool_name, session.target, len(urls))
                 if tool_name in ("garak", "pyrit"):
@@ -657,7 +1173,7 @@ class UnifiedScanEngine:
                         )
                         res = asyncio.run(ai_engine.scan(config))
                         for f in res.findings:
-                            findings.append({
+                            _tool_result.append({
                                 "tool": f.tool,
                                 "title": f.vulnerability,
                                 "severity": f.severity,
@@ -674,17 +1190,249 @@ class UnifiedScanEngine:
                     for batch_idx, batch in enumerate(batches):
                         log.info("nuclei batch %d/%d (%d URLs)", batch_idx + 1, len(batches), len(batch))
                         result = self._run_tool_safe(registry, "nuclei", session.target, batch)
-                        findings.extend(result)
+                        _tool_result.extend(result)
                 elif tool_name in ("dalfox", "sqlmap", "xssstrike", "commix") and urls:
-                    for url in urls[:5]:   # test top 5 discovered URLs
+                    # Use AI hints to reorder: hinted endpoints execute first
+                    _ai_hints = ctx.get("ai_hints", [])
+                    _action_map = {
+                        "dalfox":   ("test_xss",),
+                        "sqlmap":   ("test_sqli",),
+                        "xssstrike":("test_xss",),
+                        "commix":   ("test_cmdi",),
+                    }
+                    _actions = _action_map.get(tool_name, ())
+                    _hint_targets = [
+                        h["target"] for h in _ai_hints
+                        if h.get("action") in _actions and h.get("target")
+                    ]
+                    # Reorder: AI-hinted endpoints first, then remaining
+                    def _is_hinted(u: str) -> bool:
+                        return any(ht in u for ht in _hint_targets)
+                    _hinted_urls = [u for u in urls if _is_hinted(u)]
+                    _other_urls  = [u for u in urls if not _is_hinted(u)]
+                    _ordered_urls = (_hinted_urls + _other_urls)[:5]
+                    if _hint_targets and _hinted_urls:
+                        log.info("[AI-Hints] %s: %d hinted URLs prioritized",
+                                 tool_name, len(_hinted_urls))
+                    for url in _ordered_urls:
                         result = self._run_tool_safe(registry, tool_name, session.target, [url])
-                        findings.extend(result)
+                        _tool_result.extend(result)
+                elif tool_name == "jwt_tool":
+                    # RULE 4: Test JWT tokens found during auth phase
+                    jwt_tokens: List[str] = ctx.get("jwt_tokens", [])
+                    if not jwt_tokens:
+                        auth_mgr = ctx.get("auth_manager")
+                        tok = getattr(auth_mgr, "token", None) if auth_mgr else None
+                        if tok:
+                            jwt_tokens = [str(tok)]
+                    if jwt_tokens:
+                        try:
+                            from modules.tool_wrappers import run_jwt_tool
+                            for _tok in jwt_tokens[:3]:
+                                _jres = run_jwt_tool(_tok)
+                                if isinstance(_jres, dict):
+                                    _jres.setdefault("tool", "jwt_tool")
+                                    _jres.setdefault("vuln_type", "jwt_weakness")
+                                    _tool_result.append(_jres)
+                                elif isinstance(_jres, list):
+                                    for _jr in _jres:
+                                        _jr.setdefault("tool", "jwt_tool")
+                                        _tool_result.append(_jr)
+                        except Exception as exc:
+                            log.warning("jwt_tool failed: %s", exc)
+                    else:
+                        log.info("jwt_tool: no JWT tokens available, skipping")
+                elif tool_name == "s3scanner":
+                    # RULE 5: Scan S3 buckets found during recon
+                    try:
+                        from urllib.parse import urlparse as _up_s3
+                        _domain = _up_s3(session.target).netloc or session.target
+                        from modules.tool_wrappers import run_s3scanner
+                        _s3res = run_s3scanner(_domain)
+                        if isinstance(_s3res, list):
+                            for _r in _s3res:
+                                _r.setdefault("tool", "s3scanner")
+                                _r.setdefault("vuln_type", "open_bucket")
+                                _tool_result.append(_r)
+                        elif isinstance(_s3res, dict):
+                            _s3res.setdefault("tool", "s3scanner")
+                            _s3res.setdefault("vuln_type", "open_bucket")
+                            _tool_result.append(_s3res)
+                    except Exception as exc:
+                        log.warning("s3scanner failed: %s", exc)
+                elif tool_name == "kiterunner":
+                    # RULE 2: API endpoint fuzzing
+                    try:
+                        from modules.tool_wrappers import run_kiterunner
+                        _kr_target = urls[0] if urls else session.target
+                        _krres = run_kiterunner(_kr_target)
+                        if isinstance(_krres, list):
+                            for _r in _krres:
+                                _r.setdefault("tool", "kiterunner")
+                                _r.setdefault("vuln_type", "api_endpoint_exposed")
+                                _tool_result.append(_r)
+                        elif isinstance(_krres, dict):
+                            _krres.setdefault("tool", "kiterunner")
+                            _krres.setdefault("vuln_type", "api_endpoint_exposed")
+                            _tool_result.append(_krres)
+                    except Exception as exc:
+                        log.warning("kiterunner failed: %s", exc)
+                elif tool_name == "graphql_scan":
+                    # RULE 3: GraphQL security testing via dedicated engine
+                    try:
+                        from graphql_scan_engine import GraphQLScanEngine
+                        _gql_engine = GraphQLScanEngine(target=session.target)
+                        auth_mgr = ctx.get("auth_manager")
+                        if auth_mgr:
+                            _sessions: Dict[str, object] = {}
+                            _s = getattr(auth_mgr, "session", None)
+                            if _s:
+                                _sessions["user"] = _s
+                            _gql_engine.set_auth_sessions(_sessions)
+                        _gql_findings = _gql_engine.run()
+                        for _f in (_gql_findings or []):
+                            if isinstance(_f, dict):
+                                _f.setdefault("tool", "graphql_scan")
+                                _tool_result.append(_f)
+                    except Exception as exc:
+                        log.warning("graphql_scan failed: %s", exc)
+                elif tool_name == "mobile_scan":
+                    # RULE 6: Direct MobileSecurityEngine invocation (fallback if fabric unavailable)
+                    try:
+                        from mobile_security_engine import MobileSecurityEngine
+                        _mob_engine = MobileSecurityEngine(target=session.target)
+                        _mob_findings = _mob_engine.run() if hasattr(_mob_engine, "run") else []
+                        for _f in (_mob_findings or []):
+                            if isinstance(_f, dict):
+                                _f.setdefault("tool", "mobile_scan")
+                                _tool_result.append(_f)
+                    except Exception as exc:
+                        log.warning("mobile_scan failed: %s", exc)
                 else:
                     result = self._run_tool_safe(registry, tool_name, session.target, urls)
-                    findings.extend(result)
+                    _tool_result.extend(result)
+
+                _tool_success = True
+                findings.extend(_tool_result)
                 log.info("Tool '%s' produced %d total findings so far", tool_name, len(findings))
             except Exception as exc:
                 log.warning("Tool '%s' raised an exception: %s", tool_name, exc)
+            finally:
+                _tool_duration = time.time() - _tool_start
+                # ── Priority 2: KB — record tool run metrics ────────────────
+                try:
+                    _kb = ctx.get("kb")
+                    if _kb:
+                        _kb.record_tool_run(
+                            tool_name=tool_name,
+                            target_type=session.target_type or "web",
+                            success=_tool_success,
+                            findings_count=len(_tool_result),
+                            duration_s=round(_tool_duration, 2),
+                        )
+                except Exception:
+                    pass
+                # ── Priority 7: Decision Engine — record outcomes ────────────
+                try:
+                    _de = ctx.get("decision_engine")
+                    if _de and _tool_result:
+                        for _f in _tool_result[:10]:
+                            _de.record_outcome(
+                                decision_id=f"{tool_name}-{session.scan_id[:8]}",
+                                agent_type=tool_name,
+                                node_id=_f.get("url", session.target),
+                                success=True,
+                                severity=_f.get("severity", "info"),
+                            )
+                    elif _de and not _tool_result and _tool_success:
+                        _de.record_outcome(
+                            decision_id=f"{tool_name}-{session.scan_id[:8]}",
+                            agent_type=tool_name,
+                            node_id=session.target,
+                            success=False,
+                            severity="info",
+                        )
+                except Exception:
+                    pass
+
+        # ── Fix 7: Collect fabric findings (drain async swarm agents) ────────
+        try:
+            from agent_execution_fabric import get_fabric
+            _fabric = get_fabric()
+            _fabric_findings = _fabric.drain(timeout_s=20.0)
+            if _fabric_findings:
+                log.info("Fabric drain: +%d findings collected from swarm agents",
+                         len(_fabric_findings))
+                findings.extend(_fabric_findings)
+        except Exception as exc:
+            log.debug("Fabric drain skipped: %s", exc)
+
+        # ── Drain AI signal buffer → ctx["loop_history"]["ai_signals"] ──────────
+        # Signals collected by _run_tool_safe during the base scan feed the loop.
+        try:
+            if _AI_SIGNAL_BUFFER:
+                from core.attack_loop_engine import AttackLoopEngine
+                AttackLoopEngine._init_loop_history(ctx)  # type: ignore[attr-defined]
+                ctx["loop_history"]["ai_signals"].extend(_AI_SIGNAL_BUFFER)
+                ctx["loop_history"]["ai_signals"] = ctx["loop_history"]["ai_signals"][-20:]
+                log.info("[AI-Signals] %d signals drained into loop_history", len(_AI_SIGNAL_BUFFER))
+                _AI_SIGNAL_BUFFER.clear()
+        except Exception:
+            pass
+
+        # ── Phase 4: Attack Loop — AI-guided iterative follow-on scans ──────────
+        # Runs 1–2 additional iterations with AI-suggested tools.
+        # Each iteration only executes tools NOT already in the base plan.
+        # Stops on diminishing returns (< 2 new findings) or timeout.
+        _loop_new_count = 0
+        try:
+            from core.attack_loop_engine import get_attack_loop_engine
+
+            def _iteration_runner(
+                _session: object,
+                _ctx: dict,
+                _additional_tools: List[str],
+            ) -> List[dict]:
+                """
+                Run one attack loop iteration with AI-suggested tools.
+                Injects chain_data tokens into jwt_tool calls where available.
+                """
+                _iter_findings: List[dict] = []
+                _base_plan: list = _ctx.get("agent_plan", [])
+                # Only run tools not already in the base plan (avoids duplication)
+                _new_tools = [t for t in _additional_tools if t not in _base_plan]
+                if not _new_tools:
+                    return []
+                _iter_urls = self._prioritize_urls(
+                    getattr(_ctx.get("recon_intel"), "all_urls", []) or []
+                )[:50]
+                # Inject chain_data tokens into jwt_tokens context if available
+                _cd = _ctx.get("chain_data", {})
+                if _cd:
+                    _existing_jwt = list(_ctx.get("jwt_tokens", []))
+                    _chain_jwt = _cd.get("tokens", {}).get("jwt", [])
+                    if _chain_jwt:
+                        _ctx["jwt_tokens"] = list(set(_existing_jwt + _chain_jwt))[:5]
+                        log.info("[ALEngine] Injected %d chain JWT tokens for iter",
+                                 len(_chain_jwt))
+                for _t in _new_tools[:3]:   # cap at 3 new tools per iteration
+                    try:
+                        _r = self._run_tool_safe(registry, _t, _session.target, _iter_urls)
+                        _iter_findings.extend(_r)
+                    except Exception as _e:
+                        log.debug("[ALEngine] tool '%s' raised in iteration: %s", _t, _e)
+                return _iter_findings
+
+            _loop_engine = get_attack_loop_engine(max_iterations=2)
+            ctx["scan_findings"] = list(findings)   # seed context for loop dedup
+            _loop_findings = _loop_engine.run(session, ctx, _iteration_runner)
+            if _loop_findings:
+                findings.extend(_loop_findings)
+                _loop_new_count = len(_loop_findings)
+                log.info("[ALEngine] Attack loop added %d new findings", _loop_new_count)
+            session.phases["vuln_scan"].meta["loop_summary"] = _loop_engine.summary()
+        except Exception as exc:
+            log.debug("[ALEngine] Attack loop skipped (non-fatal): %s", exc)
 
         log.info("Raw findings (pre-validation): %d", len(findings))
         try:
@@ -697,7 +1445,11 @@ class UnifiedScanEngine:
 
         ctx["scan_findings"] = findings
         session.findings.extend(findings)
-        session.phases["vuln_scan"].meta["raw_findings"] = len(findings)
+        session.phases["vuln_scan"].meta.update({
+            "raw_findings": len(findings),
+            "de_used": ctx.get("decision_engine") is not None,
+            "loop_new_findings": _loop_new_count,
+        })
 
     def _run_tool_safe(
         self,
@@ -760,44 +1512,134 @@ class UnifiedScanEngine:
 
         result = registry.run(target_tool, **kwargs)
 
-        # 3. WAF Feedback Loop with Control
+        # 3. WAF Feedback Loop — HTTP payload mutation (Fix 4 / Fix 6)
         _waf_budget_start = time.time()
         _WAF_BUDGET_SEC = 60  # max 60s total across all retries
+        raw_out = result.raw or result.stderr or ""
+
+        # ── Response-based escalation (Fix 6) ──────────────────────────────
+        try:
+            from core.http_payload_mutator import get_http_mutator as _get_hpm
+            _hpm = _get_hpm()
+            _elapsed = time.time() - _waf_budget_start
+            _escalation = _hpm.classify_response(raw_out, _elapsed)
+            if _escalation:
+                log.info(
+                    "[ESCALATION] %s signal from %s response — adding %s scan",
+                    _escalation, tool_name, _escalation,
+                )
+                # Return a hint finding so downstream can escalate
+                if result.success:
+                    # Append escalation hint to results that will be returned below
+                    pass  # handled below in result normalisation
+        except Exception:
+            _escalation = None
+
+        # ── AI Response Analysis (Phase 4) — actionable signals ─────────────
+        # Signals include next_action + tool_to_run so the loop can replan.
+        # Written into ctx["loop_history"]["ai_signals"] for next iteration.
+        if raw_out and len(raw_out.strip()) >= 50:
+            try:
+                from core.ai_reasoning_engine import get_ai_reasoning_engine as _get_are
+                _are = _get_are()
+                _ai_signals = _are.analyze_response(
+                    tool_name=tool_name,
+                    target=target,
+                    response_text=raw_out,
+                )
+                for _sig in _ai_signals:
+                    log.info(
+                        "[AI-Analysis] %s [%s] → %s: %s",
+                        _sig.get("type"), _sig.get("confidence"),
+                        _sig.get("tool_to_run", ""), _sig.get("evidence", "")[:80],
+                    )
+                if _ai_signals:
+                    # Store in loop_history for adaptive replanning
+                    _lh = kwargs.get("_ctx_ref") if "_ctx_ref" in (kwargs or {}) else None
+                    # We can't access ctx here directly (no ctx param), but
+                    # signals are returned via a thread-safe list in the result normalisation
+                    # Append to a module-level buffer read by the loop engine
+                    _AI_SIGNAL_BUFFER.extend(_ai_signals)
+                    _AI_SIGNAL_BUFFER[:] = _AI_SIGNAL_BUFFER[-20:]  # cap buffer
+            except Exception:
+                pass
+
         if not result.success and retry and waf_retries > 0:
-            from ai_security.response_analyzer import ResponseAnalyzer
-            from ai_security.payload_mutator import PayloadMutator
-            
-            analyzer = ResponseAnalyzer()
-            mutator = PayloadMutator()
-            
-            raw_out = result.raw or result.stderr or ""
-            waf_type = analyzer.detect_waf(raw_out, {})
-            
+            try:
+                from ai_security.response_analyzer import ResponseAnalyzer
+                _analyzer = ResponseAnalyzer()
+                waf_type = _analyzer.detect_waf(raw_out, {})
+            except Exception:
+                waf_type = None
+
             if waf_type:
                 if time.time() - _waf_budget_start > _WAF_BUDGET_SEC:
                     log.warning("[WAF] retry budget exhausted for %s — skipping", tool_name)
                     return [{"vuln_type": "tool_error", "error": "WAF retry budget exhausted"}]
+
                 WAF_STATS["detections"] += 1
                 WAF_STATS["mutations"] += 1
                 WAF_STATS["by_type"][waf_type] = WAF_STATS["by_type"].get(waf_type, 0) + 1
+                log.info("[WAF] %s detected for %s — applying HTTP mutations (%d retries left)",
+                         waf_type, tool_name, waf_retries)
 
-                log.info("[WAF] mutation applied: Detected %s. Retrying (%d left).", waf_type, waf_retries)
-                fallback_kwargs = kwargs.copy()
-                strategies = mutator.select_mutation_for_waf(waf_type)
-                
-                if "url" in fallback_kwargs:
-                    from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
-                    u = urlparse(fallback_kwargs["url"])
-                    qs = parse_qs(u.query)
-                    if qs:
-                        for k in qs:
-                            qs[k] = [mutator.mutate_text(qs[k][0], strategies[0])]
-                        fallback_kwargs["url"] = urlunparse(u._replace(query=urlencode(qs, doseq=True)))
+                # ── Use HttpPayloadMutator (Fix 4) ──────────────────────────
+                try:
+                    from core.http_payload_mutator import get_http_mutator
+                    http_mutator = get_http_mutator()
+                    fallback_kwargs = kwargs.copy()
 
-                res = self._run_tool_safe(registry, tool_name, target, urls, retry, waf_retries - 1)
-                if any(not f.get("vuln_type") == "tool_error" for f in res):
-                    WAF_STATS["successes"] += 1
-                return res
+                    if "url" in fallback_kwargs:
+                        # Determine vuln type from tool
+                        _vtype = {
+                            "sqlmap": "sqli", "dalfox": "xss",
+                            "xssstrike": "xss", "commix": "cmdi",
+                        }.get(tool_name, "sqli")
+                        mutated_urls = http_mutator.mutate_url(
+                            fallback_kwargs["url"],
+                            vuln_type=_vtype,
+                            waf_type=waf_type,
+                            max_variants=3,
+                        )
+                        if mutated_urls:
+                            fallback_kwargs["url"] = mutated_urls[0]
+                            log.debug("[WAF] mutated URL: %s → %s",
+                                      kwargs.get("url", ""), fallback_kwargs["url"])
+
+                    elif "targets_file" in fallback_kwargs:
+                        # For nuclei: generate mutated URL list
+                        import tempfile
+                        mutated_all: List[str] = []
+                        for _u in urls[:20]:
+                            mutated_all.extend(
+                                http_mutator.mutate_url(_u, vuln_type="sqli",
+                                                        waf_type=waf_type, max_variants=2)
+                            )
+                        if mutated_all:
+                            with tempfile.NamedTemporaryFile(
+                                mode="w", suffix=".txt", delete=False
+                            ) as _tf:
+                                _tf.write("\n".join(mutated_all))
+                                fallback_kwargs["targets_file"] = _tf.name
+
+                    # Run with mutated kwargs directly (not recursive — avoids double mutation)
+                    retry_result = registry.run(target_tool, **fallback_kwargs)
+                    if retry_result.success:
+                        WAF_STATS["successes"] += 1
+                        result = retry_result
+                    else:
+                        # One more recursive attempt with decremented retries
+                        res = self._run_tool_safe(
+                            registry, tool_name, target, urls, retry=False, waf_retries=0
+                        )
+                        if any(f.get("vuln_type") != "tool_error" for f in res):
+                            WAF_STATS["successes"] += 1
+                        return res
+                except Exception as _mut_exc:
+                    log.debug("[WAF] HTTP mutation failed: %s", _mut_exc)
+                    return self._run_tool_safe(
+                        registry, tool_name, target, urls, retry=False, waf_retries=0
+                    )
 
         if not result.success and waf_retries == 0:
             log.warning("[WAF] bypass failed for %s after max retries", tool_name)
@@ -884,6 +1726,209 @@ class UnifiedScanEngine:
             f.setdefault("tool", tool_name)
         return findings
 
+    # ── NEW PHASE: OOB Init ───────────────────────────────────────────────────
+
+    def _phase_oob_init(self, session: ScanSession, ctx: dict) -> None:
+        """Start OOB (out-of-band) callback listener for DNS/HTTP interaction detection."""
+        try:
+            from oob_engine import OOBEngine
+            oob = OOBEngine(scan_id=session.scan_id)
+            domain = oob.start()
+            ctx["oob_engine"] = oob
+            ctx["oob_domain"] = domain
+            session.phases["oob_init"].meta["oob_domain"] = domain
+            log.info("OOB engine started for scan %s: domain=%s", session.scan_id, domain)
+        except Exception as exc:
+            # Non-fatal: OOB is best-effort
+            log.warning("oob_init: failed to start OOB engine: %s", exc)
+            ctx["oob_engine"] = None
+            ctx["oob_domain"] = None
+
+    # ── NEW PHASE: Auth Setup ────────────────────────────────────────────────
+
+    def _phase_auth_setup(self, session: ScanSession, ctx: dict) -> None:
+        """Configure authenticated sessions from scan config (cookies, tokens, headers)."""
+        try:
+            from auth_session_manager import AuthSessionManager
+            scan_config = getattr(session, "scan_config", {}) or {}
+            cookies = scan_config.get("cookies") or {}
+            headers = scan_config.get("headers") or {}
+            token = scan_config.get("token") or ""
+            mgr = AuthSessionManager(
+                target=session.target,
+                cookies=cookies if isinstance(cookies, dict) else {},
+                headers=headers if isinstance(headers, dict) else {},
+                token=str(token) if token else None,
+            )
+            # Auto-detect login form if no credentials supplied
+            if not cookies and not token:
+                login_url = mgr.detect_login_form()
+                if login_url:
+                    session.phases["auth_setup"].meta["login_url_detected"] = login_url
+                    log.info("auth_setup: login form detected at %s", login_url)
+            ctx["auth_manager"] = mgr
+            session.phases["auth_setup"].meta["authenticated"] = bool(cookies or token)
+            log.info("auth_setup: session manager ready (authenticated=%s)", bool(cookies or token))
+        except Exception as exc:
+            log.warning("auth_setup: failed: %s", exc)
+            ctx["auth_manager"] = None
+
+    # ── NEW PHASE: GraphQL Scan ──────────────────────────────────────────────
+
+    def _phase_graphql_scan(self, session: ScanSession, ctx: dict) -> None:
+        """Detect GraphQL endpoints and run security tests (introspection, fuzzing, IDOR)."""
+        try:
+            from graphql_scan_engine import GraphQLScanEngine
+        except ImportError as exc:
+            log.warning("graphql_scan: engine unavailable: %s", exc)
+            return
+
+        # Smart execution: only run if GraphQL is likely present
+        target = session.target
+        probe_url = target if target.startswith("http") else f"https://{target}"
+        output_dir = str(get_target_path(session.target, subdir="graphql"))
+
+        try:
+            engine = GraphQLScanEngine(target=probe_url, output_dir=output_dir)
+            findings = engine.run()
+            if not findings:
+                log.info("graphql_scan: no GraphQL endpoints or vulnerabilities found for %s", target)
+                session.phases["graphql_scan"].meta["endpoints"] = 0
+                return
+
+            # Apply auth session if available
+            auth_mgr = ctx.get("auth_manager")
+            if auth_mgr:
+                for f in findings:
+                    f.setdefault("authenticated", True)
+
+            # Inject OOB domain into SSRF-like findings
+            oob_domain = ctx.get("oob_domain")
+            if oob_domain:
+                for f in findings:
+                    if "ssrf" in f.get("vuln_type", "").lower():
+                        f["oob_domain"] = oob_domain
+
+            session.findings.extend(findings)
+            ctx["scan_findings"] = ctx.get("scan_findings", []) + findings
+            session.phases["graphql_scan"].meta.update({
+                "endpoints": engine.detected_endpoints if hasattr(engine, "detected_endpoints") else 0,
+                "findings": len(findings),
+            })
+            log.info("graphql_scan: %d findings for %s", len(findings), target)
+        except Exception as exc:
+            log.warning("graphql_scan: scan failed: %s", exc)
+            session.phases["graphql_scan"].error = str(exc)
+
+    # ── NEW PHASE: Browser Analysis ──────────────────────────────────────────
+
+    def _phase_browser_analysis(self, session: ScanSession, ctx: dict) -> None:
+        """Run headless browser analysis for DOM XSS, JS secrets, and dynamic endpoints."""
+        # Smart execution: only for JS-heavy targets
+        target_type = session.target_type
+        if target_type == "mobile":
+            log.info("browser_analysis: skipping for mobile target")
+            return
+
+        try:
+            from headless_browser_engine import HeadlessBrowserEngine
+        except ImportError as exc:
+            log.warning("browser_analysis: engine unavailable: %s", exc)
+            return
+
+        target = session.target
+        probe_url = target if target.startswith("http") else f"https://{target}"
+        output_dir = str(get_target_path(session.target, subdir="browser"))
+
+        try:
+            engine = HeadlessBrowserEngine(target=probe_url, output_dir=output_dir)
+            result = engine.run()
+
+            # Merge discovered endpoints into recon intel
+            intel = ctx.get("recon_intel")
+            browser_urls = result.get("endpoints", [])
+            if intel and browser_urls:
+                existing_urls = list(getattr(intel, "all_urls", []) or [])
+                existing_urls.extend(browser_urls)
+                try:
+                    intel.all_urls = list(set(existing_urls))
+                except Exception:
+                    pass
+
+            # Add DOM XSS and JS secret findings
+            browser_findings = result.get("findings", [])
+            js_secrets = result.get("js_secrets", [])
+            all_findings = browser_findings + js_secrets
+
+            if all_findings:
+                session.findings.extend(all_findings)
+                ctx["scan_findings"] = ctx.get("scan_findings", []) + all_findings
+
+            # FIX 2: Wire CALLS edges from JS-discovered API calls into graph
+            brain = ctx.get("graph_brain")
+            if brain and browser_urls:
+                rel_edges = 0
+                js_content = result.get("js_content", "") or ""
+                for burl in browser_urls[:100]:
+                    try:
+                        rel_edges += brain.integrate_api_relationships(
+                            source_url=probe_url,
+                            response_body=js_content,
+                            response_headers=result.get("response_headers", {}),
+                            target=session.target,
+                        )
+                    except Exception:
+                        pass
+                if rel_edges:
+                    log.info("browser_analysis: +%d deep relationship edges from JS analysis",
+                             rel_edges)
+
+            session.phases["browser_analysis"].meta.update({
+                "endpoints_discovered": len(browser_urls),
+                "findings": len(all_findings),
+                "js_secrets": len(js_secrets),
+            })
+            log.info(
+                "browser_analysis: %d endpoints, %d findings, %d JS secrets for %s",
+                len(browser_urls), len(browser_findings), len(js_secrets), target,
+            )
+        except Exception as exc:
+            log.warning("browser_analysis: failed: %s", exc)
+            session.phases["browser_analysis"].error = str(exc)
+
+    # ── NEW PHASE: Smuggling Test ────────────────────────────────────────────
+
+    def _phase_smuggling_test(self, session: ScanSession, ctx: dict) -> None:
+        """Detect HTTP request smuggling (CL.TE, TE.CL, TE.TE) via raw socket probes."""
+        # Smart execution: skip for mobile targets or non-HTTP targets
+        target_type = session.target_type
+        if target_type == "mobile":
+            log.info("smuggling_test: skipping for mobile target")
+            return
+
+        try:
+            from smuggling_engine import SmugglingEngine
+        except ImportError as exc:
+            log.warning("smuggling_test: engine unavailable: %s", exc)
+            return
+
+        target = session.target
+        probe_url = target if target.startswith("http") else f"https://{target}"
+
+        try:
+            engine = SmugglingEngine(target=probe_url, timeout=8)
+            findings = engine.run()
+            if findings:
+                session.findings.extend(findings)
+                ctx["scan_findings"] = ctx.get("scan_findings", []) + findings
+                log.info("smuggling_test: %d smuggling findings for %s", len(findings), target)
+            else:
+                log.info("smuggling_test: no smuggling vulnerabilities found for %s", target)
+            session.phases["smuggling_test"].meta["findings"] = len(findings)
+        except Exception as exc:
+            log.warning("smuggling_test: failed: %s", exc)
+            session.phases["smuggling_test"].error = str(exc)
+
     def _phase_exploit_validation(self, session: ScanSession, ctx: dict) -> None:
         """Validate findings to remove false positives."""
         raw = ctx.get("scan_findings", [])
@@ -893,28 +1938,25 @@ class UnifiedScanEngine:
             ctx["validated_findings"] = []
             return
 
-        validated: List[dict] = []
         try:
-            from finding_validation_engine import FindingValidationEngine
-            fve = FindingValidationEngine()
-            for f in raw:
-                try:
-                    ok = fve.validate(f)
-                    if ok:
-                        validated.append(f)
-                except Exception as exc:
-                    log.debug("Validation error for finding: %s", exc)
-                    validated.append(f)   # keep on error to avoid silent loss
+            from core.finding_validator import get_classifier
+            classifier = get_classifier()
+            classified = classifier.classify(raw)
         except ImportError as exc:
-            raise RuntimeError("FindingValidationEngine unavailable: " + str(exc)) from exc
+            raise RuntimeError("FindingClassifier unavailable: " + str(exc)) from exc
 
+        # confirmed + unverified are reportable; false_positive + simulated are excluded
+        validated = classified.all_reportable()
         removed = len(raw) - len(validated)
         log.info(
-            "Validation complete: %d/%d findings kept (%d removed as FP)",
-            len(validated), len(raw), removed,
+            "Validation complete: confirmed=%d unverified=%d false_positive=%d simulated=%d "
+            "(%d removed from report pipeline)",
+            len(classified.confirmed), len(classified.unverified),
+            len(classified.false_positive), len(classified.simulated), removed,
         )
-        log.info("Validated findings: %d", len(validated))
         ctx["validated_findings"] = validated
+        ctx["classified_findings"] = classified   # expose buckets for report phase
+
         # Refresh session.findings with validated set
         session.findings = [
             f for f in session.findings
@@ -922,9 +1964,34 @@ class UnifiedScanEngine:
         ] + validated
         session.phases["exploit_validation"].meta.update({
             "original": len(raw),
+            "confirmed": len(classified.confirmed),
+            "unverified": len(classified.unverified),
+            "false_positive": len(classified.false_positive),
+            "simulated": len(classified.simulated),
             "validated": len(validated),
             "removed": removed,
         })
+
+        # Extract tokens/sessions from finding evidence and ingest into graph
+        brain = ctx.get("graph_brain")
+        if brain and validated:
+            try:
+                token_count = 0
+                for f in validated:
+                    evidence = str(f.get("evidence", ""))
+                    if evidence:
+                        nids = brain.extract_tokens_from_response(
+                            response_headers={},
+                            response_body=evidence,
+                            url=f.get("url", session.target),
+                            target=session.target,
+                        )
+                        token_count += len(nids)
+                if token_count:
+                    log.info("exploit_validation: extracted %d token/session nodes from evidence",
+                             token_count)
+            except Exception as exc:
+                log.debug("exploit_validation: token extraction failed: %s", exc)
 
     def _phase_exploit_chaining(self, session: ScanSession, ctx: dict) -> None:
         """Attempt to chain validated findings into attack paths."""
@@ -950,6 +2017,20 @@ class UnifiedScanEngine:
             paths = brain.find_attack_paths(target=session.target, max_length=3)
         except Exception as exc:
             log.debug("exploit_chaining: find_attack_paths failed: %s", exc)
+
+        # 2b. Validate graph paths before using them for chaining
+        if paths:
+            try:
+                from core.graph_path_validator import GraphPathValidator
+                eng = brain._get_engine()
+                validator = GraphPathValidator(engine=eng, strict=False)
+                raw_node_lists = [p.nodes if hasattr(p, "nodes") else p for p in paths]
+                valid_node_lists = validator.filter_paths(raw_node_lists)
+                paths = valid_node_lists
+                log.info("exploit_chaining: %d/%d attack paths passed validation",
+                         len(paths), len(raw_node_lists))
+            except Exception as exc:
+                log.debug("exploit_chaining: path validation unavailable: %s", exc)
 
         if not paths:
             log.info("exploit_chaining: no multi-step attack paths found")
@@ -986,11 +2067,18 @@ class UnifiedScanEngine:
                         tool="exploit_chain_engine",
                         confidence=chain.confidence,
                         cvss=chain.cvss_escalated,
+                        source_type="simulated",
                     )
                     session.findings.append(nf.to_dict() if hasattr(nf, "to_dict") else nf.__dict__)
 
                 session.phases["exploit_chaining"].meta["chains_detected"] = len(chains)
                 session.phases["exploit_chaining"].meta["chain_types"] = [c.chain_type for c in chains]
+                # Persist chain data for persistent memory + report
+                ctx["successful_chains"] = [
+                    {"chain_type": c.chain_type, "target": session.target,
+                     "severity": c.severity_escalated, "confidence": c.confidence}
+                    for c in chains
+                ]
                 log.info("exploit_chaining: %d chains detected on %s", len(chains), session.target)
             else:
                 log.info("exploit_chaining: no chains found for %s", session.target)
@@ -999,6 +2087,80 @@ class UnifiedScanEngine:
         except Exception as exc:
             log.error("exploit_chaining: chain detection failed: %s", exc)
             session.phases["exploit_chaining"].error = str(exc)
+
+        # ── Phase 4: HTTP-based exploit chain execution ────────────────────────
+        # Runs actual HTTP follow-on steps against confirmed findings.
+        # New chain findings are added to session.findings with escalated severity.
+        # FIX 9: Dedup guard — track (chain_type, url) pairs already executed
+        _executed_chain_keys: set = ctx.setdefault("_executed_chain_keys", set())
+
+        try:
+            from core.exploit_chain_executor import get_chain_executor
+            _chain_exec = get_chain_executor()
+            _source_findings = ctx.get("validated_findings") or ctx.get("scan_findings", [])
+            _http_chains = _chain_exec.execute(
+                findings=_source_findings,
+                target=session.target,
+                scan_id=session.scan_id,
+                ctx=ctx,
+            )
+            if _http_chains:
+                # FIX 7: Validate each chain result has real HTTP evidence before reporting
+                validated_http_chains = []
+                for hc in _http_chains:
+                    chain_key = (hc.get("vuln_type", ""), hc.get("url", ""))
+                    if chain_key in _executed_chain_keys:
+                        log.debug("[ECE] dedup: skipping already-executed chain %s", chain_key)
+                        continue
+                    _executed_chain_keys.add(chain_key)
+
+                    # Require evidence to be non-trivial (not just "HTTP 200")
+                    evidence = hc.get("evidence", "")
+                    if len(evidence) < 20:
+                        log.debug("[ECE] chain result rejected: insufficient evidence (%d chars)", len(evidence))
+                        # Record failure in graph for FIX 6 feedback
+                        if brain:
+                            brain.record_chain_failure(
+                                hc.get("vuln_type", ""), hc.get("original_vuln", ""),
+                                session.target
+                            )
+                        continue
+                    validated_http_chains.append(hc)
+
+                session.findings.extend(validated_http_chains)
+                ctx.setdefault("scan_findings", []).extend(validated_http_chains)
+                session.phases["exploit_chaining"].meta["http_chains_executed"] = len(validated_http_chains)
+                log.info("[ECE] HTTP exploit chains: %d validated findings added", len(validated_http_chains))
+            else:
+                session.phases["exploit_chaining"].meta["http_chains_executed"] = 0
+        except Exception as exc:
+            log.debug("[ECE] exploit_chain_executor skipped (non-fatal): %s", exc)
+
+        # FIX 3: Token execution — use graph TOKEN/SESSION nodes to test authenticated endpoints
+        try:
+            from core.token_execution_engine import get_token_execution_engine
+            token_engine = get_token_execution_engine()
+            token_results = token_engine.execute_from_graph(
+                brain=brain,
+                scan_id=session.scan_id,
+                target=session.target,
+            )
+            if token_results:
+                token_findings = [r.to_finding(session.scan_id, session.target)
+                                  for r in token_results]
+                session.findings.extend(token_findings)
+                ctx.setdefault("scan_findings", []).extend(token_findings)
+                session.phases["exploit_chaining"].meta["token_tests"] = len(token_results)
+                session.phases["exploit_chaining"].meta["token_escalations"] = sum(
+                    1 for r in token_results if r.escalated
+                )
+                log.info("[TOKEN] %d token tests executed, %d escalations found",
+                         len(token_results),
+                         sum(1 for r in token_results if r.escalated))
+            else:
+                session.phases["exploit_chaining"].meta["token_tests"] = 0
+        except Exception as exc:
+            log.debug("[TOKEN] token_execution_engine skipped (non-fatal): %s", exc)
 
     def _phase_result_ingest(self, session: ScanSession, ctx: dict) -> None:
         """Push all findings into the result ingestion layer with integrity checks."""
@@ -1023,7 +2185,35 @@ class UnifiedScanEngine:
         if not findings:
             log.info("No findings to ingest for scan %s", session.scan_id)
             session.phases["result_ingest"].meta["ingested"] = 0
+            # Still close KB session even with no findings
+            try:
+                _kb = ctx.get("kb")
+                if _kb:
+                    _kb.finish_session(ctx.get("kb_session_id", session.scan_id),
+                                       total_findings=0, tools_used=[])
+            except Exception:
+                pass
             return
+
+        # ── Fix 8: Deduplication — always enforce + log ──────────────────────
+        try:
+            from core.deduplicator import Deduplicator
+            _dedup = Deduplicator()
+            _before = len(findings)
+            findings = _dedup.filter_new(findings)
+            _after = len(findings)
+            _removed = _before - _after
+            log.info(
+                "[DEDUP] %d unique findings (removed %d duplicates from %d total)",
+                _after, _removed, _before,
+            )
+            session.phases["result_ingest"].meta.update({
+                "deduplicated": _removed,
+                "unique_findings": _after,
+                "total_before_dedup": _before,
+            })
+        except Exception as exc:
+            log.warning("Deduplicator failed (non-fatal): %s", exc)
 
         try:
             from result_ingestion_engine import get_ingestion_engine, RawResult
@@ -1044,7 +2234,22 @@ class UnifiedScanEngine:
             db_count = eng.finding_count(session.scan_id)
             if db_count == 0 and len(findings) > 0:
                 log.error("CRITICAL: Findings produced but zero stored in database")
-        
+
+            # ── Priority 2: KB — record findings + close session ────────────
+            try:
+                _kb = ctx.get("kb")
+                if _kb:
+                    _kb_sid = ctx.get("kb_session_id", session.scan_id)
+                    _kb.record_findings_bulk(_kb_sid, findings)
+                    _tools_used = list({f.get("tool", "unknown") for f in findings})
+                    _kb.finish_session(_kb_sid,
+                                       total_findings=len(ingested),
+                                       tools_used=_tools_used)
+                    log.info("KB: session %s closed (%d findings, tools=%s)",
+                             _kb_sid, len(ingested), _tools_used)
+            except Exception as exc:
+                log.warning("KB finish_session failed (non-fatal): %s", exc)
+
         except ImportError as exc:
             log.error("result_ingestion_engine unavailable: %s", exc)
         except Exception as exc:
@@ -1174,46 +2379,106 @@ class UnifiedScanEngine:
         })
 
     def _phase_report(self, session: ScanSession, ctx: dict) -> None:
-        """Generate a human-readable markdown report."""
+        """Generate rich multi-format report via core/reporter.py."""
         output_dir = get_target_path(session.target, subdir="findings")
-        report_path = output_dir / f"report_{session.scan_id[:8]}.md"
-
-        lines: List[str] = [
-            f"# Scan Report — {session.target}",
-            f"",
-            f"**Scan ID:** {session.scan_id}",
-            f"**Target type:** {session.target_type}",
-            f"**Status:** {session.status}",
-            f"**Duration:** {round(session.end_time - session.start_time, 1) if session.end_time else 'in progress'}s",
-            f"",
-            f"## Findings ({len(session.findings)} total)",
-            f"",
-        ]
-
-        sev_order = ["critical", "high", "medium", "low", "info"]
-        by_sev: Dict[str, List[dict]] = {s: [] for s in sev_order}
-        for f in session.findings:
-            sev = str(f.get("severity", "info")).lower()
-            bucket = sev if sev in by_sev else "info"
-            by_sev[bucket].append(f)
-
-        for sev in sev_order:
-            group = by_sev[sev]
-            if not group:
-                continue
-            lines.append(f"### {sev.capitalize()} ({len(group)})")
-            for f in group:
-                title = f.get("name") or f.get("title") or f.get("vuln_type") or "Finding"
-                url = f.get("url") or f.get("endpoint") or f.get("target") or ""
-                lines.append(f"- **{title}** — `{url}`")
-            lines.append("")
 
         try:
-            report_path.write_text("\n".join(lines), encoding="utf-8")
-            log.info("Report written to %s", report_path)
-            session.phases["report"].meta["report_path"] = str(report_path)
-        except Exception as exc:
-            log.warning("Failed to write report to %s: %s", report_path, exc)
+            from core.reporter import Reporter
+            reporter = Reporter(
+                output_dir=str(output_dir),
+                target=session.target,
+                platform="hackerone",
+            )
+            reporter.set_meta("scan_id", session.scan_id)
+            reporter.set_meta("target_type", session.target_type)
+            duration = round(session.end_time - session.start_time, 1) if session.end_time else 0
+            reporter.set_meta("duration_s", duration)
+
+            # Use classified findings if available (FP-filtered), else raw session findings
+            classified = ctx.get("classified_findings")
+            reportable = classified.all_reportable() if classified else session.findings
+            reporter.add_findings(reportable)
+
+            # Write markdown always; write JSON too for downstream tools
+            paths_written: List[str] = []
+            for fmt in ("markdown", "json"):
+                try:
+                    p = reporter.write(fmt)
+                    paths_written.append(str(p))
+                    log.info("Report [%s] written to %s", fmt, p)
+                except Exception as exc:
+                    log.warning("Report format %s failed: %s", fmt, exc)
+
+            # FIX 8: Compute and attach graph quality metrics
+            brain = ctx.get("graph_brain")
+            if brain:
+                try:
+                    import json as _json
+                    graph_metrics = brain.compute_graph_metrics()
+                    reporter.set_meta("graph_metrics", graph_metrics)
+                    log.info(
+                        "Graph metrics: nodes=%d edges=%d avg_degree=%.2f "
+                        "chain_success_rate=%.2f exploitable=%d",
+                        graph_metrics.get("node_count", 0),
+                        graph_metrics.get("edge_count", 0),
+                        graph_metrics.get("avg_degree", 0),
+                        graph_metrics.get("chain_success_rate", 0),
+                        graph_metrics.get("exploitable_nodes", 0),
+                    )
+                    # Export full graph snapshot (nodes + edges + stats)
+                    graph_export = brain._get_engine().to_dict()
+                    graph_export["metrics"] = graph_metrics
+                    graph_path = output_dir / f"graph_{session.scan_id[:8]}.json"
+                    graph_path.write_text(_json.dumps(graph_export, indent=2), encoding="utf-8")
+                    paths_written.append(str(graph_path))
+                    log.info("Graph export written to %s (%d nodes, %d edges)",
+                             graph_path,
+                             graph_metrics.get("node_count", 0),
+                             graph_metrics.get("edge_count", 0))
+                except Exception as exc:
+                    log.debug("Graph export/metrics failed: %s", exc)
+
+            session.phases["report"].meta.update({
+                "report_paths": paths_written,
+                "findings_reported": reporter.count(),
+            })
+        except ImportError as exc:
+            # Fallback to simple markdown if Reporter unavailable
+            log.warning("core.reporter unavailable (%s) — using plain markdown fallback", exc)
+            report_path = output_dir / f"report_{session.scan_id[:8]}.md"
+            lines: List[str] = [
+                f"# Scan Report — {session.target}",
+                f"",
+                f"**Scan ID:** {session.scan_id}",
+                f"**Status:** {session.status}",
+                f"",
+                f"## Findings ({len(session.findings)} total)",
+                f"",
+            ]
+            sev_order = ["critical", "high", "medium", "low", "info"]
+            by_sev: Dict[str, List[dict]] = {s: [] for s in sev_order}
+            for f in session.findings:
+                sev = str(f.get("severity", "info")).lower()
+                bucket = sev if sev in by_sev else "info"
+                by_sev[bucket].append(f)
+            for sev in sev_order:
+                group = by_sev[sev]
+                if not group:
+                    continue
+                lines.append(f"### {sev.capitalize()} ({len(group)})")
+                for f in group:
+                    title = f.get("name") or f.get("title") or f.get("vuln_type") or "Finding"
+                    url = f.get("url") or f.get("endpoint") or f.get("target") or ""
+                    repro = f.get("reproduction_cmd", "")
+                    lines.append(f"- **{title}** — `{url}`")
+                    if repro:
+                        lines.append(f"  - Reproduce: `{repro}`")
+                lines.append("")
+            try:
+                report_path.write_text("\n".join(lines), encoding="utf-8")
+                session.phases["report"].meta["report_path"] = str(report_path)
+            except Exception as write_exc:
+                log.warning("Failed to write fallback report: %s", write_exc)
 
     def _phase_done(self, session: ScanSession, ctx: dict) -> None:
         """Mark scan as complete, emit quality metrics, and do a final DB persist."""
@@ -1249,6 +2514,30 @@ class UnifiedScanEngine:
             "Scan %s done. Target=%s type=%s findings=%d",
             session.scan_id, session.target, session.target_type, len(db_findings),
         )
+
+        # ── Persist cross-run memory ─────────────────────────────────────────
+        try:
+            mem = ctx.get("persistent_memory")
+            if mem is not None:
+                from learning.persistent_memory import save_memory
+                # update_from_ctx reads ctx["findings"] with confirmed/exploited flags
+                mem_findings = []
+                for f in db_findings:
+                    vstatus = f.get("validation_status", "")
+                    mem_f = dict(f)
+                    mem_f["confirmed"] = vstatus == "confirmed"
+                    mem_findings.append(mem_f)
+                update_ctx = {
+                    "findings":          mem_findings,
+                    "successful_chains": ctx.get("successful_chains", []),
+                    "priority_vuln_types": ctx.get("priority_vuln_types", []),
+                    "focus_targets":     ctx.get("focus_targets", []),
+                }
+                mem.update_from_ctx(update_ctx)
+                save_memory()
+                log.info("PersistentMemory saved after scan %s", session.scan_id)
+        except Exception as exc:
+            log.warning("PersistentMemory save failed (non-fatal): %s", exc)
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 

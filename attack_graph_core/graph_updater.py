@@ -115,8 +115,8 @@ class GraphUpdater:
         self.engine.add_edge(
             parent_node.id,
             url_node.id,
-            EdgeType.EXPOSES,
-            label="exposes",
+            EdgeType.HAS_ENDPOINT,
+            label="has_endpoint",
             source_engine="crawler",
         )
 
@@ -150,8 +150,8 @@ class GraphUpdater:
             self.engine.add_edge(
                 url_node_id,
                 param_node.id,
-                EdgeType.EXPOSES,
-                label="has_parameter",
+                EdgeType.HAS_PARAM,
+                label="has_param",
                 source_engine="parameter_discovery",
             )
 
@@ -185,8 +185,8 @@ class GraphUpdater:
             pid = self.engine._label_index.get((ntype, parent_domain))
             if pid:
                 self.engine.add_edge(
-                    pid, api_node.id, EdgeType.EXPOSES,
-                    label="exposes_api",
+                    pid, api_node.id, EdgeType.HAS_ENDPOINT,
+                    label="has_endpoint",
                     source_engine="api_discovery",
                 )
                 break
@@ -252,20 +252,38 @@ class GraphUpdater:
             source=tool or "scanner",
         )
 
-        # Link to URL node
+        # Link to parameter node first (if parameter specified), else to URL node
         url_clean = url.rstrip("/")
-        for ntype in [NodeType.URL, NodeType.API_ENDPOINT]:
-            uid = self.engine._label_index.get((ntype, url_clean))
-            if uid is None:
-                uid = self.engine._label_index.get((ntype, url))
-            if uid:
+        wired = False
+        if parameter:
+            param_label = f"{url_clean}?{parameter}"
+            param_id = self.engine._label_index.get((NodeType.PARAMETER, param_label))
+            if param_id is None:
+                param_label_raw = f"{url}?{parameter}"
+                param_id = self.engine._label_index.get((NodeType.PARAMETER, param_label_raw))
+            if param_id:
                 self.engine.add_edge(
-                    uid, vuln_node.id, EdgeType.HAS_VULNERABILITY,
+                    param_id, vuln_node.id, EdgeType.HAS_VULNERABILITY,
                     label=f"has {vuln_type}",
                     source_engine=tool or "scanner",
                 )
-                break
-        else:
+                wired = True
+
+        if not wired:
+            for ntype in [NodeType.URL, NodeType.API_ENDPOINT]:
+                uid = self.engine._label_index.get((ntype, url_clean))
+                if uid is None:
+                    uid = self.engine._label_index.get((ntype, url))
+                if uid:
+                    self.engine.add_edge(
+                        uid, vuln_node.id, EdgeType.HAS_VULNERABILITY,
+                        label=f"has {vuln_type}",
+                        source_engine=tool or "scanner",
+                    )
+                    wired = True
+                    break
+
+        if not wired:
             # If no URL node exists, create one on the fly
             parent_domain = urlparse(url).netloc
             url_node = self.add_url(url, parent_domain)
