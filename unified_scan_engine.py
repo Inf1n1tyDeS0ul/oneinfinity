@@ -783,20 +783,18 @@ class UnifiedScanEngine:
 
         from urllib.parse import urlparse as _urlparse
         from attack_graph_core.graph_updater import GraphUpdater as _GU
-        # GraphUpdater.add_url creates-or-retrieves the URL node and wires
-        # HAS_ENDPOINT. Note: brain.integrate_node() is no longer called here
-        # because add_url covers both node creation and edge wiring in one step.
-        # If brain.integrate_node has separate side effects needed (scoring,
-        # session tracking), call brain.integrate_node first, then add_url.
-        _local_updater = _GU(engine=eng)   # same engine instance brain uses
         urls = getattr(intel, "all_urls", []) or []
-        for url in urls[:500]:   # cap to avoid graph bloat
-            try:
-                parsed = _urlparse(url)
-                parent_domain = parsed.netloc or session.target
-                _local_updater.add_url(url, parent_domain)
-            except Exception as exc:
-                log.debug("graph_update: failed to integrate url %s: %s", url, exc)
+        if eng is not None:
+            # GraphUpdater.add_url creates-or-retrieves the URL node and wires
+            # HAS_ENDPOINT. Requires the same engine instance brain uses.
+            _local_updater = _GU(engine=eng)
+            for url in urls[:500]:   # cap to avoid graph bloat
+                try:
+                    parsed = _urlparse(url)
+                    parent_domain = parsed.netloc or session.target
+                    _local_updater.add_url(url, parent_domain)
+                except Exception as exc:
+                    log.debug("graph_update: failed to integrate url %s: %s", url, exc)
 
         log.info(
             "Graph updated for %s: %d subdomains, %d URLs ingested (explicit edges wired)",
