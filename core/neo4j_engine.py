@@ -35,6 +35,8 @@ class Neo4jEngine:
     Safe no-op when driver missing or connection fails.
     """
 
+    _last_sync_ts = None   # updated by BatchedNeo4jGraphBackend.flush()
+
     def __init__(
         self,
         uri: str,
@@ -256,6 +258,41 @@ class Neo4jEngine:
         except Exception as exc:
             log.debug("find_path_node_ids_safe failed: %s", exc)
             return []
+
+    def count_nodes(self) -> int:
+        """Return total OI_Node count in Neo4j, or 0 if unavailable."""
+        if not self._driver:
+            return 0
+        try:
+            with self._driver.session(database=self._database) as sess:
+                result = list(sess.run("MATCH (n:OI_Node) RETURN count(n) AS n"))
+                return int(result[0]["n"]) if result else 0
+        except Exception as exc:
+            log.debug("count_nodes failed: %s", exc)
+            return 0
+
+    def count_edges(self) -> int:
+        """Return total OI_REL count in Neo4j, or 0 if unavailable."""
+        if not self._driver:
+            return 0
+        try:
+            with self._driver.session(database=self._database) as sess:
+                result = list(sess.run("MATCH ()-[r:OI_REL]->() RETURN count(r) AS e"))
+                return int(result[0]["e"]) if result else 0
+        except Exception as exc:
+            log.debug("count_edges failed: %s", exc)
+            return 0
+
+    def get_status(self) -> dict:
+        """Return dict: connected, uri, database, node_count, edge_count, last_sync_ts."""
+        return {
+            "connected": self.connected,
+            "uri": self._uri,
+            "database": self._database,
+            "node_count": self.count_nodes() if self.connected else 0,
+            "edge_count": self.count_edges() if self.connected else 0,
+            "last_sync_ts": getattr(self, "_last_sync_ts", None),
+        }
 
     # --- Analytics (Phase 6) ----------------------------------------------------
 

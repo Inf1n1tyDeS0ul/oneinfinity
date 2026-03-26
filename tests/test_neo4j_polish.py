@@ -64,3 +64,48 @@ def test_find_path_node_ids_safe_noop_when_disconnected():
     eng, _ = _make_neo4j_engine(connected=False)
     result = eng.find_path_node_ids_safe("x", "y")
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Task 4 — count_nodes, count_edges, get_status
+# ---------------------------------------------------------------------------
+
+def test_count_nodes_returns_int():
+    eng, driver = _make_neo4j_engine()
+    mock_sess = MagicMock()
+    mock_sess.run.return_value = [{"n": 42}]
+    driver.session.return_value.__enter__ = lambda s: mock_sess
+    driver.session.return_value.__exit__ = MagicMock(return_value=False)
+
+    result = eng.count_nodes()
+    assert result == 42
+
+
+def test_count_edges_returns_int():
+    eng, driver = _make_neo4j_engine()
+    mock_sess = MagicMock()
+    mock_sess.run.return_value = [{"e": 17}]
+    driver.session.return_value.__enter__ = lambda s: mock_sess
+    driver.session.return_value.__exit__ = MagicMock(return_value=False)
+
+    result = eng.count_edges()
+    assert result == 17
+
+
+def test_count_nodes_returns_zero_when_disconnected():
+    eng, _ = _make_neo4j_engine(connected=False)
+    assert eng.count_nodes() == 0
+
+
+def test_get_status_structure():
+    eng, driver = _make_neo4j_engine()
+    mock_sess = MagicMock()
+    mock_sess.run.return_value = [{"n": 5}]
+    driver.session.return_value.__enter__ = lambda s: mock_sess
+    driver.session.return_value.__exit__ = MagicMock(return_value=False)
+
+    status = eng.get_status()
+    assert "connected" in status
+    assert "node_count" in status
+    assert "edge_count" in status
+    assert "last_sync_ts" in status
