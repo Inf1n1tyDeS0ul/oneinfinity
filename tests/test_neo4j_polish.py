@@ -109,3 +109,53 @@ def test_get_status_structure():
     assert "node_count" in status
     assert "edge_count" in status
     assert "last_sync_ts" in status
+
+
+# ---------------------------------------------------------------------------
+# Task 5 — compare_inmemory_vs_neo4j
+# ---------------------------------------------------------------------------
+
+def test_compare_inmemory_vs_neo4j_match():
+    """Returns True when in-memory counts match Neo4j counts."""
+    from core.graph_neo4j_bootstrap import compare_inmemory_vs_neo4j
+
+    mock_store = MagicMock()
+    mock_store.get_graph_stats.return_value = {"total_nodes": 10, "total_edges": 5}
+
+    mock_engine = MagicMock()
+    mock_engine.connected = True
+    mock_engine.count_nodes.return_value = 10
+    mock_engine.count_edges.return_value = 5
+
+    result = compare_inmemory_vs_neo4j(mock_store, neo4j_engine=mock_engine)
+    assert result["match"] is True
+    assert result["inmem_nodes"] == 10
+    assert result["neo4j_nodes"] == 10
+
+
+def test_compare_inmemory_vs_neo4j_mismatch():
+    """Returns False with delta when counts differ."""
+    from core.graph_neo4j_bootstrap import compare_inmemory_vs_neo4j
+
+    mock_store = MagicMock()
+    mock_store.get_graph_stats.return_value = {"total_nodes": 10, "total_edges": 5}
+
+    mock_engine = MagicMock()
+    mock_engine.connected = True
+    mock_engine.count_nodes.return_value = 8
+    mock_engine.count_edges.return_value = 5
+
+    result = compare_inmemory_vs_neo4j(mock_store, neo4j_engine=mock_engine)
+    assert result["match"] is False
+    assert result["node_delta"] == 2
+
+
+def test_compare_inmemory_vs_neo4j_no_neo4j():
+    """Returns neo4j_connected=False when Neo4j unavailable."""
+    from core.graph_neo4j_bootstrap import compare_inmemory_vs_neo4j
+
+    mock_store = MagicMock()
+    mock_store.get_graph_stats.return_value = {"total_nodes": 3, "total_edges": 1}
+
+    result = compare_inmemory_vs_neo4j(mock_store, neo4j_engine=None)
+    assert result["neo4j_connected"] is False

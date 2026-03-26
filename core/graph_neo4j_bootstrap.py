@@ -102,6 +102,54 @@ def maybe_merge_neo4j_into_store(store) -> None:
         log.warning("Neo4j load_on_startup merge failed: %s", exc)
 
 
+def compare_inmemory_vs_neo4j(store, neo4j_engine=None) -> dict:
+    """
+    Compare node and edge counts between the in-memory/SQLite store and Neo4j.
+
+    Args:
+        store: GraphStore instance with get_graph_stats().
+        neo4j_engine: Neo4jEngine instance, or None to auto-detect singleton.
+
+    Returns:
+        dict with: neo4j_connected, inmem_nodes, inmem_edges,
+        neo4j_nodes, neo4j_edges, node_delta, edge_delta, match
+    """
+    if neo4j_engine is None:
+        neo4j_engine = get_neo4j_engine()
+
+    local_stats = store.get_graph_stats()
+    inmem_nodes = int(local_stats.get("total_nodes") or 0)
+    inmem_edges = int(local_stats.get("total_edges") or 0)
+
+    if neo4j_engine is None or not neo4j_engine.connected:
+        return {
+            "neo4j_connected": False,
+            "inmem_nodes": inmem_nodes,
+            "inmem_edges": inmem_edges,
+            "neo4j_nodes": 0,
+            "neo4j_edges": 0,
+            "node_delta": inmem_nodes,
+            "edge_delta": inmem_edges,
+            "match": False,
+        }
+
+    neo_nodes = neo4j_engine.count_nodes()
+    neo_edges = neo4j_engine.count_edges()
+    node_delta = abs(inmem_nodes - neo_nodes)
+    edge_delta = abs(inmem_edges - neo_edges)
+
+    return {
+        "neo4j_connected": True,
+        "inmem_nodes": inmem_nodes,
+        "inmem_edges": inmem_edges,
+        "neo4j_nodes": neo_nodes,
+        "neo4j_edges": neo_edges,
+        "node_delta": node_delta,
+        "edge_delta": edge_delta,
+        "match": node_delta == 0 and edge_delta == 0,
+    }
+
+
 def publish_chain_feedback_neo4j(
     chain_type: str,
     success: bool,
