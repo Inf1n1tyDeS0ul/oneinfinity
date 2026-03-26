@@ -1,0 +1,20 @@
+# OneInfinity graph backends — Neo4j is optional; SQLite + in-memory remain primary.
+# Override secrets via env: NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
+
+neo4j:
+  enabled: false
+  uri: bolt://localhost:7687
+  username: neo4j
+  password: password
+  database: neo4j
+  # Batched write-through (reduces round-trips)
+  batch_size: 100
+  flush_interval_sec: 2.0
+  # Hybrid query: use Neo4j for path search when max_depth exceeds this threshold
+  hybrid_depth_threshold: 3
+  # On startup: merge Neo4j graph into local store (can duplicate SQLite data — use carefully)
+  load_on_startup: false
+  # Analytics / feedback nodes in Neo4j
+  record_chain_feedback: true
+  path_max_depth: 8
+  max_path_query_ms: 5000
