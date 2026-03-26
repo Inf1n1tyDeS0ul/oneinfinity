@@ -17,6 +17,32 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Enum-safe helpers
+# ---------------------------------------------------------------------------
+
+def _enum_to_str(value) -> str:
+    """
+    Safely convert any value to its canonical string form.
+
+    Handles three cases:
+    1. Standard Enum  → returns .value  (e.g. NodeType.vulnerability → "vulnerability")
+    2. Repr strings   → strips angle-bracket repr
+                        "<NodeType.vulnerability: 'vulnerability'>" → "vulnerability"
+    3. Plain string   → returned as-is (lowercased)
+    """
+    if hasattr(value, "value"):          # Enum instance
+        return str(value.value).lower()
+    s = str(value).lower()
+    # Handle Python repr format: <classname.member: 'value'>
+    if s.startswith("<") and ": '" in s:
+        try:
+            return s.split(": '")[1].rstrip("'>").strip()
+        except IndexError:
+            pass
+    return s
+
+
+# ---------------------------------------------------------------------------
 # InMemoryStore — fast dict-based backend
 # ---------------------------------------------------------------------------
 
@@ -150,7 +176,7 @@ class SQLiteStore:
     def _node_to_row(self, node_dict: dict) -> tuple:
         return (
             node_dict["id"],
-            node_dict.get("node_type", ""),
+            _enum_to_str(node_dict.get("node_type", "")),
             node_dict.get("label", ""),
             json.dumps(node_dict.get("properties", {})),
             node_dict.get("severity"),
@@ -314,17 +340,22 @@ class GraphStore:
     """
     Dual-mode graph store. Writes go to both memory and SQLite.
     Reads prefer memory; fall back to SQLite on miss.
+
+    Optional ``sync_backend`` (e.g. Neo4j batched write-through) receives the same
+    node/edge dicts after local persistence — failures are logged and never break SQLite.
     """
 
     def __init__(
         self,
         db_path: str = str(attack_graph_db_path()),
         use_memory: bool = True,
+        sync_backend=None,
     ):
         self._db_path = str(Path(db_path).expanduser())
         self._use_memory = use_memory
         self._memory = InMemoryStore() if use_memory else None
         self._sqlite = SQLiteStore(self._db_path)
+        self._sync_backend = sync_backend
         self._initialised = False
 
     def initialize(self):
@@ -349,6 +380,11 @@ class GraphStore:
         if self._use_memory:
             self._memory.save_node(nd)
         self._sqlite.save_node(nd)
+        if self._sync_backend:
+            try:
+                self._sync_backend.on_node_saved(nd)
+            except Exception as exc:
+                logger.debug("GraphStore sync_backend on_node_saved: %s", exc)
 
     def load_node(self, node_id: str):
         """Load a Node; prefer memory, fall back to SQLite."""
@@ -376,6 +412,11 @@ class GraphStore:
         if self._use_memory:
             self._memory.delete_node(node_id)
         self._sqlite.delete_node(node_id)
+        if self._sync_backend:
+            try:
+                self._sync_backend.on_node_deleted(node_id)
+            except Exception as exc:
+                logger.debug("GraphStore sync_backend on_node_deleted: %s", exc)
 
     # ------------------------------------------------------------------
     # Edge operations
@@ -387,6 +428,11 @@ class GraphStore:
         if self._use_memory:
             self._memory.save_edge(ed)
         self._sqlite.save_edge(ed)
+        if self._sync_backend:
+            try:
+                self._sync_backend.on_edge_saved(ed)
+            except Exception as exc:
+                logger.debug("GraphStore sync_backend on_edge_saved: %s", exc)
 
     def load_edge(self, edge_id: str):
         if self._use_memory:
@@ -411,6 +457,19 @@ class GraphStore:
         if self._use_memory:
             self._memory.delete_edge(edge_id)
         self._sqlite.delete_edge(edge_id)
+        if self._sync_backend:
+            try:
+                self._sync_backend.on_edge_deleted(edge_id)
+            except Exception as exc:
+                logger.debug("GraphStore sync_backend on_edge_deleted: %s", exc)
+
+    def flush_sync_backend(self):
+        """Flush optional secondary graph backend (e.g. batched Neo4j writes)."""
+        if self._sync_backend:
+            try:
+                self._sync_backend.flush()
+            except Exception as exc:
+                logger.debug("GraphStore flush_sync_backend: %s", exc)
 
     # ------------------------------------------------------------------
     # Search
@@ -448,7 +507,12 @@ class GraphStore:
         else:
             n = self._sqlite.count_nodes()
             e = self._sqlite.count_edges()
-        return {"total_nodes": n, "total_edges": e}
+        avg_degree = round((2 * e) / n, 4) if n > 0 else 0.0
+        return {
+            "total_nodes": n,
+            "total_edges": e,
+            "avg_degree": avg_degree,
+        }
 
     def export_json(self, path: str):
         """Export full graph to JSON file."""
@@ -471,13 +535,10 @@ class GraphStore:
         with open(in_path, "r") as f:
             data = json.load(f)
         for nd in data.get("nodes", []):
-            if self._use_memory:
-                self._memory.save_node(nd)
-            self._sqlite.save_node(nd)
+            self.save_node(nd)
         for ed in data.get("edges", []):
-            if self._use_memory:
-                self._memory.save_edge(ed)
-            self._sqlite.save_edge(ed)
+            self.save_edge(ed)
+        self.flush_sync_backend()
         logger.info(f"Imported {len(data.get('nodes', []))} nodes and {len(data.get('edges', []))} edges from {in_path}")
 
     # ------------------------------------------------------------------
@@ -488,9 +549,16 @@ class GraphStore:
     def _dict_to_node(nd: dict):
         """Reconstruct a Node dataclass from a plain dict."""
         from .graph_engine import Node, NodeType
+        # Normalise — handles plain strings, uppercase, and Enum repr strings
+        _nt_raw = _enum_to_str(nd.get("node_type") or "target")
+        # Guard: fallback to "target" if the normalised value is not a valid NodeType member
+        try:
+            _node_type = NodeType(_nt_raw)
+        except (ValueError, KeyError):
+            _node_type = NodeType("target")
         return Node(
             id=nd["id"],
-            node_type=NodeType(nd["node_type"]),
+            node_type=_node_type,
             label=nd["label"],
             properties=nd.get("properties", {}),
             severity=nd.get("severity"),
@@ -507,11 +575,13 @@ class GraphStore:
     def _dict_to_edge(ed: dict):
         """Reconstruct an Edge dataclass from a plain dict."""
         from .graph_engine import Edge, EdgeType
+        # Normalise to lowercase for enum safety
+        _et_raw = (ed.get("edge_type") or "leads_to").lower()
         return Edge(
             id=ed["id"],
             source_id=ed["source_id"],
             target_id=ed["target_id"],
-            edge_type=EdgeType(ed["edge_type"]),
+            edge_type=EdgeType(_et_raw),
             label=ed.get("label", ""),
             properties=ed.get("properties", {}),
             probability=ed.get("probability", 1.0),

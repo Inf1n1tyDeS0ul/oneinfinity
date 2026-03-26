@@ -159,3 +159,43 @@ def test_compare_inmemory_vs_neo4j_no_neo4j():
 
     result = compare_inmemory_vs_neo4j(mock_store, neo4j_engine=None)
     assert result["neo4j_connected"] is False
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — avg_degree in get_graph_stats
+# ---------------------------------------------------------------------------
+
+def test_get_graph_stats_includes_avg_degree():
+    """get_graph_stats must return avg_degree key."""
+    import tempfile
+    from attack_graph_core.graph_store import GraphStore
+
+    with tempfile.TemporaryDirectory() as td:
+        store = GraphStore(db_path=f"{td}/test.db", use_memory=True)
+
+        # Seed 3 nodes and 2 edges manually into the in-memory store
+        for i in range(3):
+            store._memory.save_node({
+                "id": f"n{i}", "node_type": "target", "label": f"n{i}",
+                "properties": {}, "severity": None, "risk_score": 0.0,
+                "exploitable": False, "validated": False,
+                "discovered_at": "0", "updated_at": "0", "source": "", "tags": [],
+            })
+        store._memory.save_edge({
+            "id": "e1", "source_id": "n0", "target_id": "n1",
+            "edge_type": "leads_to", "label": "", "properties": {},
+            "probability": 1.0, "weight": 1.0, "requires_auth": False,
+            "created_at": "0", "source_engine": "",
+        })
+        store._memory.save_edge({
+            "id": "e2", "source_id": "n1", "target_id": "n2",
+            "edge_type": "leads_to", "label": "", "properties": {},
+            "probability": 1.0, "weight": 1.0, "requires_auth": False,
+            "created_at": "0", "source_engine": "",
+        })
+
+        stats = store.get_graph_stats()
+
+    assert "avg_degree" in stats, "avg_degree key missing from get_graph_stats"
+    # 3 nodes, 2 edges → avg_degree = (2 * 2) / 3 ≈ 1.33
+    assert abs(stats["avg_degree"] - (2 * 2 / 3)) < 0.01
