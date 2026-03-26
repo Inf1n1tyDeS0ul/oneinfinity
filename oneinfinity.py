@@ -682,6 +682,23 @@ def cmd_pipeline_recon(args):
     banner(f"Recon Pipeline — {target}")
     warn("Ensure you have authorization to test this target.")
 
+    # WAF detection before recon
+    try:
+        from waf_detection_engine import WAFDetectionEngine
+        print("[*] Detecting WAF...")
+        waf_engine = WAFDetectionEngine()
+        scheme = "https" if not target.startswith("http") else ""
+        probe_url = f"https://{target}" if scheme else target
+        waf_profile = waf_engine.detect(probe_url)
+        if waf_profile.detected:
+            print(f"[!] WAF detected: {waf_profile.waf_name} | rps={waf_profile.recommended_rps:.1f} | jitter={waf_profile.jitter_ms}ms")
+            if waf_profile.passive_only:
+                print("[!] WAF is blocking — switching to passive/nuclei-only mode")
+        else:
+            print("[+] No WAF detected — full scan mode")
+    except Exception:
+        waf_profile = None
+
     phases = ["recon"]
     if not args.no_ports:
         phases.append("ports")
@@ -727,6 +744,24 @@ def cmd_pipeline_vulnscan(args):
         nuclei_severity=args.severity or "medium,high,critical",
         oob_url=args.oob or "",
     )
+
+    # WAF detection before vuln scan
+    try:
+        from waf_detection_engine import WAFDetectionEngine
+        print("[*] Detecting WAF...")
+        waf_engine = WAFDetectionEngine()
+        probe_url = f"https://{target}" if not target.startswith("http") else target
+        waf_profile = waf_engine.detect(probe_url)
+        if waf_profile.detected:
+            waf_cfg = waf_profile.as_scan_config()
+            print(f"[!] WAF detected: {waf_profile.waf_name} | rps={waf_cfg['rate_limit_rps']:.1f} | passive={waf_cfg['passive_only']}")
+            # Apply WAF-adapted rate limit
+            if not args.rate:
+                p.rate_limit = int(waf_cfg["rate_limit_rps"] * 60)
+        else:
+            print("[+] No WAF detected — full scan mode")
+    except Exception:
+        pass
 
     # Load cached recon data
     for attr, filename in [("subdomains", "subdomains.json"),
@@ -1122,6 +1157,85 @@ def cmd_tool_run(args):
             print(result.raw[:500])
 
 
+def cmd_graph(args):
+    """
+    oneinfinity graph <verify|stats|neo4j-status>
+    """
+    from modules.utils import banner, ok, warn, info, err
+    import datetime
+
+    sub = getattr(args, "subcommand", None)
+
+    if sub == "verify":
+        banner("Graph Consistency Verify")
+        try:
+            from attack_graph_core.graph_engine import get_engine
+            from core.graph_neo4j_bootstrap import compare_inmemory_vs_neo4j
+            engine = get_engine()
+            result = compare_inmemory_vs_neo4j(engine.store)
+            print(f"  In-memory  nodes : {result['inmem_nodes']}")
+            print(f"  In-memory  edges : {result['inmem_edges']}")
+            if result["neo4j_connected"]:
+                print(f"  Neo4j      nodes : {result['neo4j_nodes']}")
+                print(f"  Neo4j      edges : {result['neo4j_edges']}")
+                print(f"  Node delta       : {result['node_delta']}")
+                print(f"  Edge delta       : {result['edge_delta']}")
+                if result["match"]:
+                    ok("Counts match — in-memory and Neo4j are consistent.")
+                else:
+                    warn("Count mismatch — Neo4j may be lagging or diverged.")
+            else:
+                warn("Neo4j not connected — only in-memory counts available.")
+        except Exception as exc:
+            err(f"verify failed: {exc}")
+
+    elif sub == "stats":
+        banner("Graph Metrics")
+        try:
+            from attack_graph_core.graph_engine import get_engine
+            from attack_graph_core.exploit_chain_engine import ExploitChainEngine
+            engine = get_engine()
+            stats = engine.store.get_graph_stats()
+            chains = ExploitChainEngine(engine=engine).detect_chains()
+            print(f"  nodes      : {stats['total_nodes']}")
+            print(f"  edges      : {stats['total_edges']}")
+            print(f"  avg_degree : {stats['avg_degree']}")
+            print(f"  chains     : {len(chains)}")
+            ok("Graph stats complete.")
+        except Exception as exc:
+            err(f"stats failed: {exc}")
+
+    elif sub == "neo4j-status":
+        banner("Neo4j Status")
+        try:
+            from core.graph_neo4j_bootstrap import get_neo4j_engine
+            eng = get_neo4j_engine()
+            if eng is None:
+                warn("Neo4j engine not initialised (disabled or not connected).")
+                return
+            status = eng.get_status()
+            print(f"  Connected  : {status['connected']}")
+            print(f"  URI        : {status['uri']}")
+            print(f"  Database   : {status['database']}")
+            print(f"  Nodes      : {status['node_count']}")
+            print(f"  Edges      : {status['edge_count']}")
+            ts = status.get("last_sync_ts")
+            if ts:
+                dt = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+                print(f"  Last sync  : {dt}")
+            else:
+                print(f"  Last sync  : never")
+            if status["connected"]:
+                ok("Neo4j is reachable.")
+            else:
+                warn("Neo4j not connected.")
+        except Exception as exc:
+            err(f"neo4j-status failed: {exc}")
+
+    else:
+        warn("Usage: oneinfinity graph <verify|stats|neo4j-status>")
+
+
 def cmd_attack_graph(args):
     """
     oneinfinity attack-graph <domain> — build and visualise the attack graph.
@@ -1142,7 +1256,8 @@ def cmd_attack_graph(args):
     builder = AttackGraphBuilder(target)
     if out_path.exists():
         info(f"Loading recon data from {output_dir}/ ...")
-        graph = builder.from_recon_dir(str(out_path))
+        builder.from_recon_dir(str(out_path))
+        graph = builder.build()
     else:
         warn(f"No recon directory found at {output_dir}/ — creating empty graph")
         graph = AttackGraph(target)
@@ -1320,45 +1435,41 @@ def cmd_chains(args):
         print("  oneinfinity vuln-scan <domain>")
         return
 
-    from exploit_chains import ExploitChainEngine, PocGenerator
+    from exploit_chains import ExploitChainEngine
+    from exploit_chains.poc_generator import PoCGenerator as PocGenerator
 
-    engine = ExploitChainEngine(target)
-    chains = engine.detect_chains(findings)
+    engine = ExploitChainEngine()
+    chains = engine.detect_chains(findings, target)
 
     if not chains:
         info("No exploit chains detected in current findings.")
         print()
-        # Show escalation opportunities
-        escalations = engine.find_escalations(findings)
-        if escalations:
-            section("Severity Escalation Opportunities")
-            for e in escalations:
-                f = e["original"]
-                print(f"  {f.get('vuln_type','?'):<35} "
-                      f"{e['original_severity'].upper():<8} → "
-                      f"{e['escalated_severity'].upper():<8}  ({e['reason']})")
         return
 
     section(f"Detected {len(chains)} Exploit Chain(s)")
     for chain in chains:
-        print(f"\n  [{chain.escalated_severity.upper()}] {chain.title}")
-        print(f"  Type      : {chain.chain_type}")
+        print(f"\n  [{chain.severity_escalated.upper()}] {chain.chain_type}")
+        print(f"  Chain ID  : {chain.chain_id}")
         print(f"  Confidence: {chain.confidence:.0%}")
+        print(f"  CVSS      : {chain.base_cvss:.1f} → {chain.cvss_escalated:.1f} (escalated)")
         print(f"  Steps     : {len(chain.steps)}")
         for step in chain.steps:
-            print(f"    {step['step']}. {step['vuln_type']} → {step['endpoint'][:60]}")
-        print(f"  Impact    : {chain.impact[:120]}")
+            print(f"    - {step.step_name}: {step.payload[:60]}")
+        print(f"  Narrative : {chain.narrative[:120]}")
 
     # Generate PoC scripts
     if not args.no_poc:
         section("Generating PoC Scripts")
-        gen = PocGenerator(target)
+        from exploit_chains.chain_patterns import CHAIN_PATTERNS
+        gen = PocGenerator()
         out_path.mkdir(parents=True, exist_ok=True)
         for chain in chains:
-            poc = gen.generate(chain)
+            pattern = CHAIN_PATTERNS.get(chain.chain_type, {})
+            relevant = [f for f in findings if f.get("vuln_type", "") in pattern.get("trigger_types", set())]
+            poc = gen.generate(chain.chain_type, pattern, relevant, target)
             if poc:
-                poc_file = out_path / f"poc_{chain.chain_id}.py"
-                poc_file.write_text(poc.script)
+                poc_file = out_path / f"poc_{chain.chain_id}.json"
+                poc_file.write_text(json.dumps(poc.to_dict(), indent=2))
                 ok(f"PoC saved: {poc_file.name}")
 
     # Save chains JSON
@@ -1647,7 +1758,7 @@ def cmd_exploit_chains(args):
 
     import json
     from pathlib import Path
-    from exploit_chains.chain_patterns import ExploitChainEngine
+    from exploit_chains import ExploitChainEngine
 
     # Load existing findings
     findings_file = Path(output_dir) / "findings.json"
@@ -1675,17 +1786,18 @@ def cmd_exploit_chains(args):
 
     print(f"\n[+] Detected {len(chains)} exploit chain(s):\n")
     for i, chain in enumerate(chains, 1):
-        print(f"  {i}. {chain.get('name', 'Unknown Chain')}")
-        print(f"     Severity: {chain.get('severity', '?').upper()}")
-        print(f"     Steps: {len(chain.get('steps', []))}")
-        print(f"     Impact: {chain.get('impact', '')}")
+        print(f"  {i}. {chain.chain_type}")
+        print(f"     Severity  : {chain.severity_escalated.upper()}")
+        print(f"     CVSS      : {chain.base_cvss:.1f} → {chain.cvss_escalated:.1f}")
+        print(f"     Steps     : {len(chain.steps)}")
+        print(f"     Narrative : {chain.narrative[:100]}")
         print()
 
     # Write report
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     chains_file = out_path / "exploit_chains.json"
-    chains_file.write_text(json.dumps({"chains": chains}, indent=2))
+    chains_file.write_text(json.dumps({"chains": [c.to_dict() for c in chains]}, indent=2))
     print(f"[+] Chains saved: {chains_file}")
 
     # Multi-format report
@@ -1695,12 +1807,12 @@ def cmd_exploit_chains(args):
             reporter = Reporter(output_dir=out_path, target=domain)
             for chain in chains:
                 reporter.add_finding({
-                    "vuln_type": f"Exploit Chain: {chain.get('name', 'Unknown')}",
-                    "severity": chain.get("severity", "high"),
-                    "endpoint": chain.get("start_endpoint", "multiple"),
-                    "description": chain.get("description", ""),
-                    "evidence": str(chain.get("steps", [])),
-                    "impact": chain.get("impact", ""),
+                    "vuln_type": f"Exploit Chain: {chain.chain_type}",
+                    "severity": chain.severity_escalated,
+                    "endpoint": chain.target or "multiple",
+                    "description": chain.narrative,
+                    "evidence": str([s.__dict__ for s in chain.steps]),
+                    "impact": f"CVSS {chain.cvss_escalated:.1f}",
                     "tool": "exploit_chain_engine",
                 })
             fmts = ["markdown", "json", "html"] if report_fmt == "all" else [report_fmt]
@@ -1986,6 +2098,67 @@ def build_parser():
     sc2.add_argument("--yes", "-y", action="store_true",
                      help="Run full autonomous 9-phase scan pipeline")
 
+    # ── Full canonical pipeline ──────────────────────────────────────────────
+    fs = sub.add_parser("full-scan",
+        help="Run the canonical 10-phase pipeline (Docker + CLI parity guaranteed)")
+    fs.add_argument("target", help="Target URL or domain")
+    fs.add_argument("--output", "-o", default="", metavar="DIR",
+                    help="Output directory (default: auto under ONEINFINITY_HOME)")
+    fs.add_argument("--mode", choices=["inline", "subprocess"], default="subprocess",
+                    help="Execution mode: 'inline' imports modules directly, 'subprocess' runs CLI (default: subprocess)")
+    fs.add_argument("--skip-phases", nargs="+", default=[], metavar="PHASE",
+                    help="Phase names to skip (e.g. ai_theory business_logic)")
+    fs.add_argument("--no-waf-detect", action="store_true",
+                    help="Skip WAF detection before scan")
+    fs.add_argument("--report", choices=["html", "pdf", "all", "none"], default="all",
+                    help="Report format(s) to generate (default: all)")
+    fs.add_argument("--seed-from", default="", metavar="DIR",
+                    help="Seed new run with phase output files from a prior scan directory "
+                         "(useful when skipping deep_recon to reuse prior recon data)")
+    fs.add_argument("--parity-check", action="store_true",
+                    help="Compare this run against prior CLI run for Docker/CLI parity")
+    fs.add_argument("--compare-dir", default="", metavar="DIR",
+                    help="Directory of prior run to compare against (for parity check)")
+
+    # ── Parity checker ───────────────────────────────────────────────────────
+    pc = sub.add_parser("parity-check",
+        help="Compare Docker vs CLI scan results for consistency")
+    pc.add_argument("docker_dir", help="Output directory from Docker run")
+    pc.add_argument("cli_dir", help="Output directory from CLI run")
+    pc.add_argument("--output", "-o", default="", metavar="FILE",
+                    help="Write parity report JSON to this file")
+    pc.add_argument("--merge", action="store_true",
+                    help="Merge findings from both runs into a unified output")
+    pc.add_argument("--merge-output", default="", metavar="DIR",
+                    help="Directory to write merged findings (requires --merge)")
+
+    # ── GraphQL Scan ─────────────────────────────────────────────────────────
+    gql = sub.add_parser("graphql-scan",
+        help="GraphQL security scan: introspection, fuzzing, mutations, IDOR")
+    gql.add_argument("target", help="Target URL or domain")
+    gql.add_argument("--output", "-o", default="", metavar="FILE",
+                     help="Write findings JSON to this file")
+    gql.add_argument("--endpoints", nargs="+", default=[],
+                     help="GraphQL endpoint paths to test (default: auto-detect)")
+
+    # ── Browser Scan ─────────────────────────────────────────────────────────
+    brs = sub.add_parser("browser-scan",
+        help="Headless browser analysis: DOM XSS, JS secrets, dynamic endpoints")
+    brs.add_argument("target", help="Target URL or domain")
+    brs.add_argument("--output", "-o", default="", metavar="FILE",
+                     help="Write findings JSON to this file")
+    brs.add_argument("--max-pages", type=int, default=20,
+                     help="Maximum pages to crawl (default: 20)")
+
+    # ── Smuggling Scan ───────────────────────────────────────────────────────
+    smg = sub.add_parser("smuggling-scan",
+        help="HTTP request smuggling detection (CL.TE, TE.CL, TE.TE)")
+    smg.add_argument("target", help="Target URL or domain")
+    smg.add_argument("--output", "-o", default="", metavar="FILE",
+                     help="Write findings JSON to this file")
+    smg.add_argument("--timeout", type=int, default=10,
+                     help="Socket timeout per probe in seconds (default: 10)")
+
     # scope
     sub.add_parser("scope", help="Show current program scope")
 
@@ -2120,6 +2293,13 @@ def build_parser():
     pcm.add_argument("--tool", metavar="NAME", help="Show full profile for one tool")
     pcm.add_argument("--vuln", metavar="CLASS",
                      help="Show tools that detect a vuln class (e.g. xss, sqli, ssrf)")
+
+    # ── graph — Neo4j observability commands ──────────────────────────────────
+    gr = sub.add_parser("graph", help="Graph observability: verify/stats/neo4j-status")
+    grsub = gr.add_subparsers(dest="subcommand")
+    grsub.add_parser("verify",       help="Compare in-memory vs Neo4j node/edge counts")
+    grsub.add_parser("stats",        help="Show graph metrics (nodes, edges, avg_degree, chains)")
+    grsub.add_parser("neo4j-status", help="Show Neo4j connectivity, counts, and last sync time")
 
     # attack-graph — build and visualise attack graph from recon data
     ag = sub.add_parser("attack-graph",
@@ -2543,6 +2723,22 @@ def build_parser():
     hunt_report.add_argument("--platform", default="HackerOne", help="Bug bounty platform template")
     hunt_report.add_argument("--output", default="", help="Output file path")
 
+    # ── Findings Replay ───────────────────────────────────────────────────────
+    fr = sub.add_parser("replay", help="Convert findings.json into reproducible CLI workflows")
+    fr.add_argument("findings_file", help="Path to findings JSON file")
+    fr.add_argument("--run", action="store_true", help="Execute replay commands (not just generate)")
+    fr.add_argument("--filter", dest="filter_status", default="", metavar="STATUS",
+                    help="Filter by validation_status (e.g. confirmed, unverified)")
+    fr.add_argument("--severity", nargs="+", default=None,
+                    choices=["critical", "high", "medium", "low", "info"],
+                    help="Filter by severity")
+    fr.add_argument("--source", dest="filter_source", default="",
+                    help="Filter by source_type (tool, simulated, ai_theory)")
+    fr.add_argument("--output", "-o", default="/data/raw/replay_report",
+                    help="Output path for replay report (without extension)")
+    fr.add_argument("--docker-exec", dest="docker_exec", default="oneinfinity-orchestrator",
+                    help="Docker container to execute commands in (default: oneinfinity-orchestrator)")
+
     # ── Swarm Intelligence ────────────────────────────────────────────────────
     si_scan = sub.add_parser("swarm-scan",
         help="Multi-agent swarm intelligence scan (XSS/SQLi/SSRF/IDOR/Auth/BizLogic/Mobile/API)")
@@ -2587,6 +2783,69 @@ def build_parser():
     wf_sim.add_argument("--cookie", default="", help="Session cookie for authenticated testing")
     wf_sim.add_argument("--token", default="", help="Bearer token for authenticated testing")
     wf_sim.add_argument("--output", "-o", default="", help="Write JSON results to this file")
+
+    # ── Hunter mode (Phase 6 — domination layer) ──────────────────────────────
+    hunter = sub.add_parser(
+        "hunter",
+        help="Domination-mode bounty hunter: scope → discover → parallel scan → report",
+    )
+    hunter.add_argument("--scope", default="scope.yaml",
+                        help="Path to scope.yaml (default: scope.yaml in cwd)")
+    hunter.add_argument("--max-targets", type=int, default=10, dest="max_targets",
+                        help="Max targets to scan (default: 10)")
+    hunter.add_argument("--workers", type=int, default=3,
+                        help="Parallel scan workers (default: 3)")
+    hunter.add_argument("--severity", default="medium",
+                        choices=["critical", "high", "medium", "low", "info"],
+                        help="Minimum severity threshold for reporting (default: medium)")
+    hunter.add_argument("--platforms", default="hackerone",
+                        help="Bug bounty platforms: hackerone,bugcrowd,intigriti (default: hackerone)")
+    hunter.add_argument("--output", default="",
+                        help="Output directory for reports (default: ./reports)")
+    hunter.add_argument("--mode", "-m",
+                        choices=["fast", "deep", "api-heavy", "stealth"],
+                        default="fast",
+                        help="Scan strategy: fast (default), deep, api-heavy, stealth")
+    hunter.add_argument("--strategy", "-s",
+                        choices=["aggressive", "stealthy", "high-value"],
+                        default="",
+                        help="Elite strategy: aggressive (broad+fast), stealthy (evasive), "
+                             "high-value (auth/API ROI-focus)")
+    hunter.add_argument("--yes", "-y", action="store_true",
+                        help="Skip confirmation prompt")
+    hunter.add_argument("--benchmark-ref", default="", dest="benchmark_ref",
+                        metavar="FILE",
+                        help="Burp/Nuclei reference file for post-hunt accuracy benchmark")
+
+    # ── Distributed scanner (Phase 6 Fix 4) ───────────────────────────────────
+    dist = sub.add_parser(
+        "distributed",
+        help="Distributed scanning: spread targets across N parallel workers",
+    )
+    dist.add_argument("--workers", type=int, default=4,
+                      help="Number of parallel scan workers (default: 4)")
+    dist.add_argument("--target", default="",
+                      help="Single target domain to scan")
+    dist.add_argument("--targets", default="",
+                      help="Path to file with one target per line")
+    dist.add_argument("--output", "-o", default="",
+                      help="Write aggregated findings JSON to this file")
+    dist.add_argument("--worker", dest="worker_mode", action="store_true",
+                      help="Run as a worker node (pull tasks from queue)")
+
+    # ── Benchmark (Phase 6 — Burp-style comparison) ───────────────────────────
+    bench = sub.add_parser(
+        "benchmark",
+        help="Compare OneInfinity coverage against Burp Suite / Nuclei exports",
+    )
+    bench.add_argument("--oi", required=False, default="",
+                       help="Path to OneInfinity findings JSON (required)")
+    bench.add_argument("--burp", default="",
+                       help="Path to Burp Suite JSON export")
+    bench.add_argument("--nuclei", default="",
+                       help="Path to Nuclei JSONL output")
+    bench.add_argument("--output", "-o", default="benchmark_report.json",
+                       help="Output path for benchmark JSON report (default: benchmark_report.json)")
 
     return p
 
@@ -3033,6 +3292,296 @@ def cmd_hunter_status(args):
         print(f"[!] Error reading sessions: {e}")
 
 
+def cmd_full_scan(args):
+    """
+    oneinfinity full-scan <target> — canonical 10-phase pipeline.
+
+    Runs the SAME 10 phases in both Docker and CLI environments.
+    Guaranteed parity: Docker exec and CLI produce identical results.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+    from modules.utils import banner, info, ok, warn, err
+
+    target      = args.target
+    mode        = getattr(args, "mode", "subprocess")
+    skip_phases = getattr(args, "skip_phases", [])
+    no_waf      = getattr(args, "no_waf_detect", False)
+    report_fmt  = getattr(args, "report", "all")
+    do_parity   = getattr(args, "parity_check", False)
+    compare_dir = getattr(args, "compare_dir", "") or ""
+    seed_from   = getattr(args, "seed_from", "") or ""
+
+    # Resolve output directory
+    output = getattr(args, "output", "") or ""
+    if not output:
+        home = _Path(os.environ.get("ONEINFINITY_HOME", "/data"))
+        host = target.replace("https://", "").replace("http://", "").rstrip("/")
+        output = str(home / "raw" / host)
+    _Path(output).mkdir(parents=True, exist_ok=True)
+
+    # Auto-detect seed dir: if no --seed-from given and output dir is a subdirectory,
+    # check if the parent dir contains prior phase output files and use it automatically.
+    if not seed_from and _Path(output).parent != _Path(output):
+        parent = _Path(output).parent
+        # Heuristic: if parent has at least one canonical output file, use it as seed
+        from pipeline.canonical import CANONICAL_PHASES as _CP
+        parent_files = [p.output_file for p in _CP if (parent / p.output_file).exists()]
+        if parent_files:
+            seed_from = str(parent)
+
+    banner(f"OneInfinity Full Scan — {target}")
+    info(f"Mode       : {mode}")
+    info(f"Output dir : {output}")
+    info(f"Phases     : all 10 canonical phases")
+    if seed_from:
+        info(f"Seed from  : {seed_from}")
+    if skip_phases:
+        warn(f"Skipping   : {', '.join(skip_phases)}")
+    print()
+
+    # WAF detection
+    waf_profile = {}
+    if not no_waf:
+        try:
+            from waf_detection_engine import WAFDetectionEngine
+            info("Detecting WAF...")
+            probe_url = target if target.startswith("http") else f"https://{target}"
+            waf_engine = WAFDetectionEngine()
+            waf_p = waf_engine.detect(probe_url)
+            if waf_p.detected:
+                warn(f"WAF detected: {waf_p.waf_name} | rps={waf_p.recommended_rps:.1f} | jitter={waf_p.jitter_ms}ms")
+                if waf_p.passive_only:
+                    warn("WAF is blocking — active testing phases will be limited")
+            else:
+                ok("No WAF detected — full active testing enabled")
+            waf_profile = waf_p.as_scan_config()
+        except Exception as e:
+            warn(f"WAF detection failed: {e} — continuing without WAF adaptation")
+
+    # Phase progress display
+    phase_status_line = {}
+
+    def on_progress(phase: str, pct: int, msg: str):
+        tag = "+" if "completed" in msg.lower() else "-" if "fail" in msg.lower() else "*"
+        print(f"  [{tag}] [{pct:3d}%] [{phase:25s}] {msg}")
+        phase_status_line[phase] = (pct, msg)
+
+    # Run canonical pipeline
+    try:
+        from pipeline.executor import run_canonical_pipeline
+        info(f"Starting canonical 10-phase pipeline...")
+        print()
+        result = run_canonical_pipeline(
+            target=target,
+            output_dir=output,
+            mode=mode,
+            waf_profile=waf_profile,
+            on_progress=on_progress,
+            skip_phases=skip_phases,
+            prior_results_dir=seed_from or None,
+        )
+    except Exception as e:
+        err(f"Pipeline failed: {e}")
+        import traceback; traceback.print_exc()
+        sys.exit(1)
+
+    print()
+
+    # Summary table
+    print("  ┌─────────────────────────────┬───────────┬──────────┬──────────┐")
+    print("  │ Phase                       │ Status    │ Findings │ Time (s) │")
+    print("  ├─────────────────────────────┼───────────┼──────────┼──────────┤")
+    for phase_cfg in __import__("pipeline.canonical", fromlist=["CANONICAL_PHASES"]).CANONICAL_PHASES:
+        pr = result.phases.get(phase_cfg.name)
+        if not pr:
+            continue
+        status = pr.status
+        status_sym = "✓" if status == "completed" else "✗" if status == "failed" else "–"
+        print(f"  │ {phase_cfg.display_name:27s} │ {status_sym} {status:8s}│ {pr.finding_count:8d} │ {pr.elapsed_s:8.1f} │")
+    print("  └─────────────────────────────┴───────────┴──────────┴──────────┘")
+    print()
+
+    # Severity breakdown
+    sev_counts = {}
+    for f in result.findings:
+        s = f.get("severity", "info").lower()
+        sev_counts[s] = sev_counts.get(s, 0) + 1
+    print(f"  Total unique findings: {len(result.findings)}")
+    for sev in ["critical", "high", "medium", "low", "info"]:
+        cnt = sev_counts.get(sev, 0)
+        if cnt:
+            print(f"    {sev.upper():10s} {cnt}")
+    print()
+
+    if result.status == "completed":
+        ok(f"Pipeline complete — {len(result.findings)} unique findings")
+    else:
+        warn(f"Pipeline status: {result.status}")
+        if result.phases_failed:
+            warn(f"Failed phases: {', '.join(result.phases_failed)}")
+
+    # Generate reports
+    if report_fmt != "none" and result.findings:
+        try:
+            from confidence_engine import ConfidenceEngine
+            from core.reporter import Reporter
+            scored = ConfidenceEngine().score_findings(result.findings)
+            reporter = Reporter(output, target=target, platform="HackerOne")
+            reporter.add_findings(scored)
+            fmts = ["html", "pdf"] if report_fmt == "all" else [report_fmt]
+            for fmt in fmts:
+                try:
+                    p = reporter.write(fmt)
+                    ok(f"Report: {p}")
+                except Exception as re:
+                    warn(f"Report ({fmt}) failed: {re}")
+            exec_paths = reporter.write_executive()
+            for p in exec_paths:
+                ok(f"Executive: {p}")
+        except Exception as e:
+            warn(f"Report generation failed: {e}")
+
+    # Parity check
+    if do_parity and compare_dir:
+        print()
+        info("Running parity check against prior run...")
+        try:
+            from pipeline.parity_checker import ParityChecker, load_result_from_dir, merge_results
+            prior = load_result_from_dir(compare_dir, mode="unknown")
+            checker = ParityChecker(prior, result)
+            parity_report = checker.check()
+            print(parity_report.summary())
+            parity_out = _Path(output) / "parity_report.json"
+            parity_out.write_text(_json.dumps(parity_report.to_dict(), indent=2))
+            ok(f"Parity report: {parity_out}")
+            if not parity_report.is_consistent:
+                warn("PARITY CHECK FAILED — see parity_report.json for details")
+        except Exception as e:
+            warn(f"Parity check failed: {e}")
+
+    info(f"All outputs: {output}/")
+    info(f"Unified findings: {output}/unified_findings.json")
+    info(f"Pipeline report:  {output}/pipeline_report.json")
+
+
+def cmd_parity_check(args):
+    """
+    oneinfinity parity-check <docker_dir> <cli_dir>
+    Compare Docker and CLI scan results for consistency.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+    from modules.utils import ok, warn, info, err
+
+    docker_dir = args.docker_dir
+    cli_dir    = args.cli_dir
+    output     = getattr(args, "output", "") or ""
+    do_merge   = getattr(args, "merge", False)
+    merge_out  = getattr(args, "merge_output", "") or ""
+
+    try:
+        from pipeline.parity_checker import ParityChecker, load_result_from_dir, merge_results
+    except ImportError as e:
+        err(f"pipeline module not found: {e}")
+        sys.exit(1)
+
+    info(f"Loading Docker result from: {docker_dir}")
+    docker_result = load_result_from_dir(docker_dir, mode="docker")
+    info(f"Loading CLI result from: {cli_dir}")
+    cli_result = load_result_from_dir(cli_dir, mode="cli")
+
+    info(f"Docker findings : {len(docker_result.findings)}")
+    info(f"CLI findings    : {len(cli_result.findings)}")
+
+    checker = ParityChecker(docker_result, cli_result)
+    report = checker.check()
+    print()
+    print(report.summary())
+
+    # Write JSON report
+    if output:
+        _Path(output).write_text(_json.dumps(report.to_dict(), indent=2))
+        ok(f"Parity report written: {output}")
+
+    # Merge findings
+    if do_merge:
+        merged = merge_results(docker_result, cli_result)
+        if merge_out:
+            _Path(merge_out).mkdir(parents=True, exist_ok=True)
+            (_Path(merge_out) / "unified_findings.json").write_text(
+                _json.dumps(merged, indent=2, default=str)
+            )
+            ok(f"Merged findings written: {merge_out}/unified_findings.json ({len(merged)} findings)")
+        else:
+            info(f"Merged finding count: {len(merged)}")
+
+    if report.is_consistent:
+        ok("Docker and CLI results are now consistent")
+    else:
+        warn("Discrepancies remain — review parity report for details")
+        sys.exit(1)
+
+
+def cmd_replay_findings(args):
+    """oneinfinity replay <findings_file> — convert findings to reproducible CLI workflows."""
+    from finding_replay_engine import replay_findings_file
+
+    findings_file   = args.findings_file
+    run             = getattr(args, "run", False)
+    filter_status   = getattr(args, "filter_status", "") or None
+    filter_severity = getattr(args, "severity", None)
+    filter_source   = getattr(args, "filter_source", "") or None
+    output          = getattr(args, "output", "/data/raw/replay_report")
+    docker_exec     = getattr(args, "docker_exec", "oneinfinity-orchestrator")
+
+    print(f"[*] Loading findings from: {findings_file}")
+    if filter_status:
+        print(f"[*] Filtering by status: {filter_status}")
+    if filter_severity:
+        print(f"[*] Filtering by severity: {', '.join(filter_severity)}")
+    if run:
+        print(f"[*] Execution mode: ACTIVE (commands will run inside {docker_exec})")
+    else:
+        print(f"[*] Execution mode: DRY RUN (commands generated, not executed)")
+
+    try:
+        records = replay_findings_file(
+            findings_path=findings_file,
+            output_path=output,
+            filter_status=filter_status,
+            filter_severity=filter_severity,
+            run=run,
+            docker_exec=docker_exec if run else "",
+        )
+        print(f"\n[+] Replay complete — {len(records)} findings processed")
+        print(f"[+] Report written: {output}.md")
+        print(f"[+] JSON written:   {output}.json")
+
+        # Print summary table
+        by_sev = {}
+        for r in records:
+            by_sev[r.severity] = by_sev.get(r.severity, 0) + 1
+        print("\n  Severity breakdown:")
+        for sev in ["critical", "high", "medium", "low", "info"]:
+            cnt = by_sev.get(sev, 0)
+            if cnt:
+                print(f"    {sev.upper():10s} {cnt}")
+
+        # Print first 5 records with commands
+        print("\n  Sample commands (first 5 findings):")
+        for rec in records[:5]:
+            print(f"\n  [{rec.severity.upper()}] {rec.vuln_type} → {rec.url[:60]}")
+            for cmd in rec.commands[:2]:
+                print(f"    $ {cmd[:100]}")
+
+    except FileNotFoundError:
+        print(f"[!] File not found: {findings_file}")
+    except Exception as e:
+        print(f"[!] Replay failed: {e}")
+        import traceback; traceback.print_exc()
+
+
 def cmd_hunter_report(args):
     """oneinfinity hunter-report <session_id> — generate findings report."""
     import json as _json
@@ -3077,6 +3626,276 @@ def cmd_hunter_report(args):
         print(f"[✗] Error: {e}")
 
 
+def cmd_hunter(args):
+    """
+    oneinfinity hunter --scope scope.yaml [options]
+
+    Full domination-mode bounty hunter:
+      1. Loads scope from scope.yaml
+      2. Discovers + prioritizes targets
+      3. Scans in parallel (--workers)
+      4. Generates submission-ready reports
+    """
+    from modules.utils import banner, info, ok, warn, err
+
+    scope_file = getattr(args, "scope", "") or "scope.yaml"
+    max_targets = getattr(args, "max_targets", 10)
+    max_workers = getattr(args, "workers", 3)
+    severity_threshold = getattr(args, "severity", "medium")
+    scan_mode = getattr(args, "mode", "fast")
+    elite_strategy = getattr(args, "strategy", "")
+    output_dir = getattr(args, "output", "")
+    platforms = [p.strip() for p in getattr(args, "platforms", "hackerone").split(",")]
+    benchmark_ref = getattr(args, "benchmark_ref", "")
+    yes = getattr(args, "yes", False)
+
+    banner("OneInfinity Hunter — Domination Mode")
+
+    # Load and validate scope
+    scope_path = Path(scope_file)
+    if not scope_path.exists():
+        scope_path = Path.cwd() / scope_file
+    if not scope_path.exists():
+        err(f"scope.yaml not found: {scope_file}")
+        info("Create one with: oneinfinity setup <program-name>")
+        sys.exit(1)
+
+    try:
+        from modules.scope import ScopeManager
+        sm = ScopeManager(str(scope_path.parent))
+        sm.load()
+        ok(f"Scope loaded: {scope_path}")
+        sm.show_scope()
+    except Exception as exc:
+        warn(f"Could not display scope: {exc}")
+
+    # Show persistent memory status
+    try:
+        from learning.persistent_memory import get_memory as _gm
+        _mem = _gm()
+        _ms = _mem.stats()
+        if _ms["total_runs"] > 0:
+            ok(f"Persistent memory: {_ms['total_runs']} prior runs, "
+               f"{_ms['total_findings']} findings ({_ms['total_confirmed']} confirmed)")
+        else:
+            info("Persistent memory: first run — learning begins now")
+    except Exception:
+        pass
+
+    if not yes:
+        resp = input("\nStart autonomous hunt? (you confirm authorization) [y/N]: ").strip().lower()
+        if resp not in ("y", "yes"):
+            print("Aborted.")
+            sys.exit(0)
+
+    try:
+        from bounty_hunter_engine import BountyHunterEngine, HunterConfig
+        engine = BountyHunterEngine()
+        config = HunterConfig(
+            name=scope_path.parent.name,
+            platforms=platforms,
+            max_targets=max_targets,
+            max_concurrent=max_workers,
+            severity_threshold=severity_threshold,
+            auto_exploit=True,
+            auto_report=True,
+            output_dir=output_dir,
+            scan_mode=scan_mode,
+            benchmark_ref_file=benchmark_ref,
+            strategy=elite_strategy,
+        )
+        info(f"Scan mode  : {scan_mode}")
+        if elite_strategy:
+            info(f"Strategy   : {elite_strategy}")
+        if benchmark_ref:
+            info(f"Benchmark  : {benchmark_ref}")
+
+        info(f"Scanning up to {max_targets} targets with {max_workers} parallel workers...")
+        session = engine.run(config)
+
+        print()
+        ok(f"Hunt complete — {len(session.findings)} total findings, "
+           f"{sum(1 for f in session.findings if f.confirmed)} confirmed")
+
+        # Severity breakdown
+        sev_counts: dict = {}
+        for f in session.findings:
+            s = f.severity if hasattr(f, "severity") else f.get("severity", "info")
+            sev_counts[s] = sev_counts.get(s, 0) + 1
+        for sev in ("critical", "high", "medium", "low", "info"):
+            if sev in sev_counts:
+                print(f"  {sev:8s}: {sev_counts[sev]}")
+
+        # Generate submission-ready report
+        if session.findings:
+            out = Path(output_dir) if output_dir else Path.cwd() / "reports"
+            out.mkdir(parents=True, exist_ok=True)
+            from bounty_report_generator import bounty_report_generator
+            findings_raw = [
+                f.to_dict() if hasattr(f, "to_dict") else f
+                for f in session.findings
+            ]
+            report = bounty_report_generator.generate(
+                target=config.name,
+                findings=findings_raw,
+                platform=platforms[0].title() if platforms else "HackerOne",
+                session_id=session.session_id,
+            )
+            paths = bounty_report_generator.save_all_formats(report, out / session.session_id)
+            print()
+            ok(f"Reports saved:")
+            for fmt, p in paths.items():
+                print(f"  {fmt:<10} {p}")
+
+        # Benchmark metrics (always shown)
+        m = session.benchmark_metrics
+        if m:
+            print()
+            ok("Quality metrics:")
+            print(f"  confirmed     : {m.get('confirmed', 0)}/{m.get('total_findings', 0)} "
+                  f"({m.get('confirmed_pct', 0)}%)")
+            print(f"  avg confidence: {m.get('avg_confidence', 0):.0%}")
+            print(f"  coverage      : {m.get('targets_hit', 0)}/{m.get('targets_scanned', 0)} targets "
+                  f"({m.get('coverage_pct', 0)}%)")
+            if "accuracy_score" in m:
+                print(f"  vs reference  : accuracy={m['accuracy_score']:.0%}, "
+                      f"missed={m.get('missed_count', 0)}, extra={m.get('extra_count', 0)}")
+            focus = session.ctx.get("focus_targets", [])
+            if focus:
+                print()
+                info(f"Feedback loop: {len(focus)} focus targets saved for next run")
+                info("Re-run with --mode deep to prioritise these targets")
+
+    except ImportError as exc:
+        err(f"Could not load bounty_hunter_engine: {exc}")
+    except Exception as exc:
+        err(f"Hunter failed: {exc}")
+        import traceback; traceback.print_exc()
+
+
+def cmd_distributed(args):
+    """
+    oneinfinity distributed --workers N [--targets file.txt] [--target domain]
+
+    Distribute scan tasks across N parallel workers using the best available
+    queue backend (Redis > shared filesystem > in-process memory).
+    """
+    from modules.utils import banner, ok, info, warn, err
+
+    max_workers = getattr(args, "workers", 4)
+    targets_file = getattr(args, "targets", "")
+    single_target = getattr(args, "target", "")
+    output = getattr(args, "output", "")
+    worker_mode = getattr(args, "worker_mode", False)
+
+    # Worker mode: pull from queue and scan
+    if worker_mode:
+        banner(f"Distributed Worker Mode")
+        info("Pulling tasks from queue...")
+        try:
+            from core.distributed_engine import WorkerNode
+            worker = WorkerNode(worker_id=0)
+            worker.run()
+            ok("Worker finished.")
+        except Exception as exc:
+            err(f"Worker failed: {exc}")
+        return
+
+    banner(f"Distributed Scanner — {max_workers} workers")
+
+    targets = []
+    if targets_file:
+        try:
+            targets.extend(l.strip() for l in open(targets_file) if l.strip())
+        except Exception as exc:
+            err(f"Could not read targets file: {exc}")
+    if single_target:
+        targets.append(single_target)
+
+    if not targets:
+        err("No targets specified. Use --target or --targets file.txt")
+        sys.exit(1)
+
+    info(f"Submitting {len(targets)} targets to {max_workers} workers...")
+    try:
+        from core.distributed_engine import DistributedEngine
+        engine = DistributedEngine(max_workers=max_workers)
+        findings = engine.run(targets=targets)
+        stats = engine.stats()
+
+        ok(f"Distributed scan complete.")
+        print(f"  Workers     : {max_workers}")
+        print(f"  Targets     : {len(targets)}")
+        print(f"  Backend     : {stats['backend']}")
+        print(f"  Findings    : {len(findings)}")
+
+        if output and findings:
+            import json as _json
+            Path(output).write_text(_json.dumps(findings, indent=2))
+            ok(f"Findings saved: {output}")
+
+    except ImportError as exc:
+        err(f"distributed_engine not available: {exc}")
+    except Exception as exc:
+        err(f"Distributed scan failed: {exc}")
+        import traceback; traceback.print_exc()
+
+
+def cmd_benchmark(args):
+    """
+    oneinfinity benchmark --burp burp.json --oi results.json [--nuclei nuclei.jsonl]
+
+    Compare OneInfinity findings against Burp Suite / Nuclei to measure coverage.
+    """
+    from modules.utils import banner, ok, warn, err, info
+
+    oi_path   = getattr(args, "oi", "")
+    burp_path = getattr(args, "burp", "")
+    nuclei_path = getattr(args, "nuclei", "")
+    output    = getattr(args, "output", "benchmark_report.json")
+
+    if not oi_path:
+        err("--oi <oneinfinity-results.json> is required")
+        sys.exit(1)
+    if not burp_path and not nuclei_path:
+        err("At least one reference tool required: --burp or --nuclei")
+        sys.exit(1)
+
+    banner("OneInfinity Benchmark Engine")
+
+    try:
+        from core.benchmark_engine import get_benchmark_engine
+        engine = get_benchmark_engine()
+
+        references = []
+        if burp_path:
+            references.append({"path": burp_path, "fmt": "burp"})
+        if nuclei_path:
+            references.append({"path": nuclei_path, "fmt": "nuclei"})
+
+        all_results = engine.compare_all(oi_findings_path=oi_path, references=references)
+
+        for result in all_results:
+            result.print_summary()
+
+        if output:
+            import json as _json
+            combined = {
+                "oi_file": oi_path,
+                "comparisons": [r.to_dict() for r in all_results],
+            }
+            Path(output).write_text(_json.dumps(combined, indent=2))
+            ok(f"Full benchmark report: {output}")
+
+    except FileNotFoundError as exc:
+        err(f"File not found: {exc}")
+    except ImportError as exc:
+        err(f"benchmark_engine not available: {exc}")
+    except Exception as exc:
+        err(f"Benchmark failed: {exc}")
+        import traceback; traceback.print_exc()
+
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
@@ -3086,11 +3905,16 @@ def main():
         sys.exit(0)
 
     handlers = {
-        "doctor":      cmd_doctor,
-        "setup":       cmd_setup,
-        "run":         cmd_run,
-        "scan":        cmd_scan,
-        "scope":       cmd_scope,
+        "doctor":        cmd_doctor,
+        "setup":         cmd_setup,
+        "run":           cmd_run,
+        "scan":          cmd_scan,
+        "full-scan":     cmd_full_scan,
+        "parity-check":  cmd_parity_check,
+        "graphql-scan":  cmd_graphql_scan,
+        "browser-scan":  cmd_browser_scan,
+        "smuggling-scan": cmd_smuggling_scan,
+        "scope":         cmd_scope,
         "analyze":     cmd_analyze,
         "org-intel":   cmd_org_intel,
         "plan":        cmd_plan,
@@ -3114,6 +3938,7 @@ def main():
         "capmap":      cmd_capmap,
         "workflow":    cmd_workflow,
         # ── Advanced AI capabilities ───────────────────────────────────────
+        "graph":              cmd_graph,
         "attack-graph":       cmd_attack_graph,
         "agents":             cmd_agents,
         "chains":             cmd_chains,
@@ -3138,6 +3963,7 @@ def main():
         # ── Traffic & Replay ───────────────────────────────────────────────
         "traffic-list":       cmd_traffic_list,
         "traffic-export":     cmd_traffic_export,
+        "replay":             cmd_replay_findings,
         "replay-request":     cmd_replay_request,
         "replay-attack":      cmd_replay_attack,
         "proxy-status":       cmd_proxy_status,
@@ -3149,10 +3975,14 @@ def main():
         "mobile-api-scan":    cmd_mobile_api_scan,
         "mobile-report":      cmd_mobile_report,
         # ── Autonomous Bounty Hunter ───────────────────────────────────────
+        "hunter":             cmd_hunter,
         "hunter-start":       cmd_hunter_start,
         "hunter-scan":        cmd_hunter_scan,
         "hunter-status":      cmd_hunter_status,
         "hunter-report":      cmd_hunter_report,
+        # ── Benchmarking & Distributed ────────────────────────────────────
+        "benchmark":          cmd_benchmark,
+        "distributed":        cmd_distributed,
         # ── Swarm Intelligence ─────────────────────────────────────────────
         "swarm-scan":         cmd_swarm_scan,
         "simulate-attacks":   cmd_simulate_attacks,
@@ -3189,6 +4019,141 @@ def main():
             sys.exit(0)
     else:
         parser.print_help()
+
+
+# ── New capability handlers ───────────────────────────────────────────────────
+
+def cmd_graphql_scan(args):
+    """oneinfinity graphql-scan <target> — GraphQL security scan."""
+    import json as _json
+    from pathlib import Path
+    from modules.utils import banner, ok, warn, info, err
+
+    target = args.target
+    probe_url = target if target.startswith("http") else f"https://{target}"
+    output = getattr(args, "output", "") or ""
+
+    banner(f"GraphQL Security Scan — {probe_url}")
+
+    try:
+        from graphql_scan_engine import GraphQLScanEngine
+    except ImportError as e:
+        err(f"graphql_scan_engine unavailable: {e}")
+        sys.exit(1)
+
+    try:
+        engine = GraphQLScanEngine(target=probe_url, output_dir=".")
+        findings = engine.run()
+
+        if not findings:
+            info("No GraphQL endpoints or vulnerabilities found.")
+        else:
+            ok(f"Found {len(findings)} GraphQL findings")
+            for f in findings:
+                sev = f.get("severity", "info").upper()
+                vtype = f.get("vuln_type", "?")
+                url = f.get("url", probe_url)
+                print(f"  [{sev}] {vtype} @ {url[:80]}")
+
+        if output:
+            Path(output).write_text(_json.dumps({"findings": findings}, indent=2, default=str))
+            ok(f"Results saved: {output}")
+    except Exception as e:
+        err(f"GraphQL scan failed: {e}")
+        import traceback; traceback.print_exc()
+        sys.exit(1)
+
+
+def cmd_browser_scan(args):
+    """oneinfinity browser-scan <target> — headless browser security analysis."""
+    import json as _json
+    from pathlib import Path
+    from modules.utils import banner, ok, warn, info, err
+
+    target = args.target
+    probe_url = target if target.startswith("http") else f"https://{target}"
+    output = getattr(args, "output", "") or ""
+    max_pages = getattr(args, "max_pages", 20)
+
+    banner(f"Headless Browser Analysis — {probe_url}")
+
+    try:
+        from headless_browser_engine import HeadlessBrowserEngine
+    except ImportError as e:
+        err(f"headless_browser_engine unavailable: {e}")
+        sys.exit(1)
+
+    try:
+        engine = HeadlessBrowserEngine(target=probe_url, output_dir=".")
+        result = engine.run()
+
+        endpoints = result.get("endpoints", [])
+        findings = result.get("findings", [])
+        js_secrets = result.get("js_secrets", [])
+
+        info(f"Discovered {len(endpoints)} dynamic endpoints")
+        if findings:
+            ok(f"Found {len(findings)} browser-side vulnerabilities")
+            for f in findings:
+                sev = f.get("severity", "info").upper()
+                vtype = f.get("vuln_type", "?")
+                print(f"  [{sev}] {vtype} @ {f.get('url', probe_url)[:80]}")
+        if js_secrets:
+            warn(f"Found {len(js_secrets)} JS secrets")
+            for s in js_secrets[:5]:
+                print(f"  [SECRET] {s.get('vuln_type', '?')}: {str(s.get('evidence', ''))[:60]}")
+        if not findings and not js_secrets:
+            info("No browser-side vulnerabilities found.")
+
+        if output:
+            Path(output).write_text(_json.dumps(result, indent=2, default=str))
+            ok(f"Results saved: {output}")
+    except Exception as e:
+        err(f"Browser scan failed: {e}")
+        import traceback; traceback.print_exc()
+        sys.exit(1)
+
+
+def cmd_smuggling_scan(args):
+    """oneinfinity smuggling-scan <target> — HTTP request smuggling detection."""
+    import json as _json
+    from pathlib import Path
+    from modules.utils import banner, ok, warn, info, err
+
+    target = args.target
+    probe_url = target if target.startswith("http") else f"https://{target}"
+    output = getattr(args, "output", "") or ""
+    timeout = getattr(args, "timeout", 10)
+
+    banner(f"HTTP Request Smuggling — {probe_url}")
+
+    try:
+        from smuggling_engine import SmugglingEngine
+    except ImportError as e:
+        err(f"smuggling_engine unavailable: {e}")
+        sys.exit(1)
+
+    try:
+        engine = SmugglingEngine(target=probe_url, timeout=timeout)
+        findings = engine.run()
+
+        if not findings:
+            ok("No HTTP request smuggling vulnerabilities found.")
+        else:
+            for f in findings:
+                sev = f.get("severity", "critical").upper()
+                stype = f.get("meta", {}).get("smuggling_type", f.get("vuln_type", "?"))
+                print(f"  [{sev}] {stype} @ {f.get('url', probe_url)}")
+                if f.get("evidence"):
+                    print(f"    Evidence: {str(f['evidence'])[:100]}")
+
+        if output:
+            Path(output).write_text(_json.dumps({"findings": findings}, indent=2, default=str))
+            ok(f"Results saved: {output}")
+    except Exception as e:
+        err(f"Smuggling scan failed: {e}")
+        import traceback; traceback.print_exc()
+        sys.exit(1)
 
 
 # ── Swarm Intelligence handlers ───────────────────────────────────────────────

@@ -230,3 +230,25 @@ def test_get_chain_feedback_scores_empty_when_disconnected():
     """Returns empty dict when driver is None."""
     eng, _ = _make_neo4j_engine(connected=False)
     assert eng.get_chain_feedback_scores() == {}
+
+
+# ---------------------------------------------------------------------------
+# Task 8 — CLI graph subcommand
+# ---------------------------------------------------------------------------
+
+def test_graph_parser_has_verify_stats_neo4j_status():
+    """The 'graph' parser must expose verify, stats, neo4j-status subcommands."""
+    import sys
+    sys.path.insert(0, "/Users/devendrayadav/Tools/oneinfinity")
+    from oneinfinity import build_parser
+
+    p = build_parser()
+    args_verify = p.parse_args(["graph", "verify"])
+    assert args_verify.command == "graph"
+    assert args_verify.subcommand == "verify"
+
+    args_stats = p.parse_args(["graph", "stats"])
+    assert args_stats.subcommand == "stats"
+
+    args_status = p.parse_args(["graph", "neo4j-status"])
+    assert args_status.subcommand == "neo4j-status"
