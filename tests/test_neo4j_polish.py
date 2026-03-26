@@ -28,12 +28,13 @@ def test_bootstrap_schema_runs_all_three_statements():
     eng.bootstrap_schema()
 
     calls = [str(c) for c in mock_sess.run.call_args_list]
-    assert any("CONSTRAINT" in c for c in calls), "CONSTRAINT statement missing"
-    assert any("INDEX" in c and "n.type" in c for c in calls), "node type INDEX missing"
-    assert any("INDEX" in c and "r.type" in c for c in calls), "rel type INDEX missing"
+    assert any("CONSTRAINT" in c and "IF NOT EXISTS" in c for c in calls), "CONSTRAINT IF NOT EXISTS missing"
+    assert any("INDEX" in c and "n.type" in c and "IF NOT EXISTS" in c for c in calls), "node type INDEX IF NOT EXISTS missing"
+    assert any("INDEX" in c and "r.type" in c and "IF NOT EXISTS" in c for c in calls), "rel type INDEX IF NOT EXISTS missing"
 
 
 def test_bootstrap_schema_noop_when_disconnected():
     """bootstrap_schema must be safe to call when driver is None."""
-    eng, _ = _make_neo4j_engine(connected=False)
+    eng, mock_driver = _make_neo4j_engine(connected=False)
     eng.bootstrap_schema()  # should not raise
+    assert mock_driver.session.call_count == 0, "session must not be called when disconnected"
