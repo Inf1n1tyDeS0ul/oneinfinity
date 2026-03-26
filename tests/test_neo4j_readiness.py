@@ -73,7 +73,7 @@ def sim_graph():
         vuln_type keywords match "SQLi -> Auth Bypass -> Full Compromise" CHAIN_DEFINITION
     - TOKEN node (JWT) with ISSUES_TOKEN from login_flow and AUTH_FOR to api endpoints
     - SESSION node with AUTH_FOR to /login
-    - CALLS edge: /login -> /api/users (via integrate_api_relationships)
+    - No CALLS/ISSUES_TOKEN edges here — these require preconditions wired in sim_graph_extended
     """
     engine = AttackGraphEngine()  # in-memory, no SQLite
 
@@ -186,3 +186,181 @@ class TestPhase1DeepChaining:
         assert chains == [], (
             f"C1 regression: got {len(chains)} chains from disconnected nodes"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Token Propagation
+# ---------------------------------------------------------------------------
+
+class TestPhase2TokenPropagation:
+
+    def _make_mock_response(self, body: str, status: int = 200):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.text = body
+        resp.json.return_value = {}
+        try:
+            import json as _json
+            resp.json.return_value = _json.loads(body)
+        except Exception:
+            pass
+        resp.headers = {}
+        return resp
+
+    def test_execute_chain_calls_request_3_times(self):
+        """execute_chain_with_tokens must send one real request per chain step."""
+        tee = TokenExecutionEngine()
+        chain_steps = [
+            {"url": "https://vulnbank.org/login", "method": "POST"},
+            {"url": "https://api.vulnbank.org/users", "method": "GET"},
+            {"url": "https://api.vulnbank.org/admin/transfer", "method": "GET"},
+        ]
+        mock_responses = [
+            self._make_mock_response('{"token": "eyJhbGciOiJIUzI1NiJ9.step1.sig"}'),
+            self._make_mock_response('{"next_token": "eyJhbGciOiJIUzI1NiJ9.step2.sig"}'),
+            self._make_mock_response('{"status": "authorized"}'),
+        ]
+        with patch.object(tee, "_request", side_effect=mock_responses) as mock_req:
+            success, results, evidence = tee.execute_chain_with_tokens(
+                chain_steps, initial_token="seed_token", initial_token_type="jwt",
+            )
+        assert mock_req.call_count == 3, (
+            f"Expected 3 requests, got {mock_req.call_count}"
+        )
+        assert success, "execute_chain_with_tokens returned failure — chain did not complete"
+
+    def test_token_propagates_across_steps(self):
+        """Each chain step must use the token extracted from the previous step's response."""
+        tee = TokenExecutionEngine()
+        chain_steps = [
+            {"url": "https://vulnbank.org/login", "method": "POST"},
+            {"url": "https://api.vulnbank.org/users", "method": "GET"},
+            {"url": "https://api.vulnbank.org/admin/transfer", "method": "GET"},
+        ]
+        # Use tokens >=20 chars so _extract_token_from_response bearer regex matches
+        token_step1 = "jwt-from-step1-propagated"   # 25 chars
+        token_step2 = "jwt-from-step2-propagated"   # 25 chars
+        mock_responses = [
+            self._make_mock_response(f'{{"token": "{token_step1}"}}'),
+            self._make_mock_response(f'{{"token": "{token_step2}"}}'),
+            self._make_mock_response('{"status": "ok"}'),
+        ]
+        call_headers = []
+
+        def capture_request(method, url, **kwargs):
+            call_headers.append(kwargs.get("headers", {}))
+            return mock_responses.pop(0)
+
+        with patch.object(tee, "_request", side_effect=capture_request):
+            tee.execute_chain_with_tokens(
+                chain_steps, initial_token="initial-token-seed-val", initial_token_type="jwt",
+            )
+
+        # Step 2 should carry token from step 1; step 3 should carry token from step 2
+        assert len(call_headers) == 3, f"Expected 3 captured header dicts, got {len(call_headers)}"
+        step2_auth = call_headers[1].get("Authorization", "")
+        step3_auth = call_headers[2].get("Authorization", "")
+        # Tokens should have changed (propagation occurred)
+        assert step2_auth != call_headers[0].get("Authorization", ""), (
+            "Token did not change between step 1 and step 2 — no propagation"
+        )
+        assert token_step1 in step2_auth, (
+            f"Token from step 1 not found in step 2 Authorization. step2={step2_auth}"
+        )
+        assert token_step2 in step3_auth, (
+            f"Token from step 2 not found in step 3 Authorization. step3={step3_auth}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Relationship Depth
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session")
+def sim_graph_extended(sim_graph):
+    """
+    Extend sim_graph with CALLS and ISSUES_TOKEN edges that require
+    correct preconditions (AUTH_FLOW issuer node + JS-pattern response body).
+
+    - Creates AUTH_FLOW node 'login_flow' so integrate_token can wire ISSUES_TOKEN.
+    - Calls integrate_api_relationships with a response body whose 'url:' pattern
+      is matched by the api_call_re regex, producing a CALLS edge.
+
+    This fixture does not modify any node/edge already in sim_graph.
+    """
+    engine = sim_graph["engine"]
+    brain  = sim_graph["brain"]
+
+    # Create the AUTH_FLOW issuer node that integrate_token expects
+    from attack_graph_core.graph_engine import NodeType, EdgeType
+    engine.get_or_create_node(
+        NodeType.AUTH_FLOW, "login_flow",
+        properties={"scheme": "jwt", "target": "vulnbank.org"},
+    )
+
+    # Re-run integrate_token now that the issuer node exists
+    brain.integrate_token(
+        "eyJhbGciOiJIUzI1NiJ9.vulnbank2.sig2",
+        "jwt", "login_flow", "vulnbank.org",
+    )
+
+    # Wire CALLS edge via a response body with url: pattern matched by api_call_re
+    brain.integrate_api_relationships(
+        "https://vulnbank.org/login",
+        'var opts = {url: "https://api.vulnbank.org/users"};',
+        {},
+        "vulnbank.org",
+    )
+
+    return sim_graph
+
+
+class TestPhase3RelationshipDepth:
+
+    def _all_edges(self, engine):
+        return list(engine._edges.values())
+
+    def test_calls_edge_exists(self, sim_graph_extended):
+        """CALLS edge must exist (API→API relationship)."""
+        edges = self._all_edges(sim_graph_extended["engine"])
+        assert any(e.edge_type == EdgeType.CALLS for e in edges), \
+            "No CALLS edge found — integrate_api_relationships did not wire CALLS"
+
+    def test_auth_for_edge_exists(self, sim_graph_extended):
+        """AUTH_FOR edge must exist (TOKEN→endpoint)."""
+        edges = self._all_edges(sim_graph_extended["engine"])
+        assert any(e.edge_type == EdgeType.AUTH_FOR for e in edges), \
+            "No AUTH_FOR edge found — integrate_session did not wire AUTH_FOR"
+
+    def test_issues_token_edge_exists(self, sim_graph_extended):
+        """ISSUES_TOKEN edge must exist (auth_flow→TOKEN)."""
+        edges = self._all_edges(sim_graph_extended["engine"])
+        assert any(e.edge_type == EdgeType.ISSUES_TOKEN for e in edges), \
+            "No ISSUES_TOKEN edge found — integrate_token did not wire ISSUES_TOKEN"
+
+    def test_has_vulnerability_edge_exists(self, sim_graph_extended):
+        """HAS_VULNERABILITY edge must exist."""
+        edges = self._all_edges(sim_graph_extended["engine"])
+        assert any(e.edge_type == EdgeType.HAS_VULNERABILITY for e in edges), \
+            "No HAS_VULNERABILITY edge found"
+
+    def test_leads_to_has_two_hops(self, sim_graph_extended):
+        """LEADS_TO must appear >=2 times (sqli→bypass and bypass→rce)."""
+        edges = self._all_edges(sim_graph_extended["engine"])
+        leads_to = [e for e in edges if e.edge_type == EdgeType.LEADS_TO]
+        assert len(leads_to) >= 2, \
+            f"Expected >=2 LEADS_TO edges, found {len(leads_to)}"
+
+    def test_no_exposes_on_url_edges(self, sim_graph_extended):
+        """C2 regression: URL→parent and URL→param edges must not use EXPOSES."""
+        engine = sim_graph_extended["engine"]
+        for edge in engine._edges.values():
+            if edge.edge_type == EdgeType.EXPOSES:
+                src = engine.get_node(edge.source_id)
+                tgt = engine.get_node(edge.target_id)
+                # EXPOSES on URL or PARAMETER edges is wrong
+                if src and tgt:
+                    assert src.node_type not in (NodeType.TARGET, NodeType.SUBDOMAIN,
+                                                  NodeType.URL), (
+                        f"C2 regression: EXPOSES found on {src.node_type}→{tgt.node_type} edge"
+                    )
