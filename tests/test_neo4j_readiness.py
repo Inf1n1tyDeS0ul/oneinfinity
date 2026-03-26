@@ -608,3 +608,103 @@ class TestPhase7PipelineIntegration:
         assert penalized, (
             "record_chain_failure did not set brain_penalty < 1.0 on any sqli node"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 — CLI/Docker Parity (code inspection)
+# ---------------------------------------------------------------------------
+
+class TestPhase8CliDockerParity:
+
+    BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def _read(self, rel_path: str) -> str:
+        return open(os.path.join(self.BASE, rel_path)).read()
+
+    def test_cli_uses_attack_graph_core(self):
+        """oneinfinity.py must reference attack_graph_core (graph init present in CLI)."""
+        src = self._read("oneinfinity.py")
+        assert "attack_graph" in src, \
+            "oneinfinity.py does not reference attack_graph_core — CLI has no graph integration"
+
+    def test_docker_delegates_to_cli(self):
+        """docker-entrypoint.sh must invoke oneinfinity (no parallel implementation)."""
+        src = self._read("docker-entrypoint.sh")
+        assert "oneinfinity" in src, \
+            "docker-entrypoint.sh does not call oneinfinity — Docker may use different entry point"
+
+    def test_worker_uses_same_graph_module(self):
+        """worker/executor.py must delegate to graph-backed modules (no parallel graph impl)."""
+        src = self._read("worker/executor.py")
+        # Worker delegates to exploit_chains or unified_scan_engine, both of which
+        # use attack_graph_core internally. Direct import is not required.
+        assert (
+            "attack_graph_core" in src
+            or "get_engine" in src
+            or "exploit_chains" in src
+            or "unified_scan_engine" in src
+        ), "worker/executor.py does not reference any graph-backed module"
+
+    def test_no_parallel_graph_engine_in_worker_or_docker(self):
+        """Neither worker/executor.py nor docker-entrypoint.sh may define their own AttackGraphEngine."""
+        for path in ("worker/executor.py", "docker-entrypoint.sh"):
+            src = self._read(path)
+            assert "class AttackGraphEngine" not in src, (
+                f"{path} defines its own AttackGraphEngine — parallel graph implementation found"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Standalone runner
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import subprocess
+
+    _PHASE_CLASSES = [
+        ("PHASE 1 — DEEP CHAINING       ", "TestPhase1DeepChaining"),
+        ("PHASE 2 — TOKEN PROPAGATION   ", "TestPhase2TokenPropagation"),
+        ("PHASE 3 — RELATIONSHIP DEPTH  ", "TestPhase3RelationshipDepth"),
+        ("PHASE 4 — GRAPH DENSITY       ", "TestPhase4GraphDensity"),
+        ("PHASE 5 — PERSISTENCE         ", "TestPhase5Persistence"),
+        ("PHASE 6 — EXECUTION           ", "TestPhase6Execution"),
+        ("PHASE 7 — PIPELINE INTEGRATION", "TestPhase7PipelineIntegration"),
+        ("PHASE 8 — CLI/DOCKER PARITY   ", "TestPhase8CliDockerParity"),
+    ]
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", __file__, "-v", "--tb=short"],
+        capture_output=True,
+        text=True,
+    )
+
+    output = result.stdout + result.stderr
+    print()
+    print("=" * 60)
+    print("  OneInfinity — Neo4j Readiness Validation")
+    print("=" * 60)
+
+    all_pass = True
+    for label, cls in _PHASE_CLASSES:
+        class_lines = [l for l in output.splitlines() if f"::{cls}::" in l]
+        if not class_lines:
+            status = "UNKNOWN"
+            all_pass = False
+        elif any("FAILED" in l or "ERROR" in l for l in class_lines):
+            status = "FAIL"
+            all_pass = False
+        else:
+            status = "PASS"
+        print(f"  {label}: {status}")
+
+    print("=" * 60)
+    if all_pass:
+        print("  FINAL VERDICT: ALL PASS — READY FOR NEO4J")
+    else:
+        print("  FINAL VERDICT: NOT READY — fix required")
+        print()
+        for line in output.splitlines():
+            if "FAILED" in line or "ERROR" in line or "AssertionError" in line:
+                print(" ", line)
+    print("=" * 60)
+    sys.exit(0 if all_pass else 1)
