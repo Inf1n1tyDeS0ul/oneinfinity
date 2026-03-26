@@ -54,7 +54,7 @@ A single `@pytest.fixture(scope="session")` named `sim_graph` builds one realist
 - Target: `vulnbank.org` + subdomain `api.vulnbank.org`
 - URLs: `/login`, `/api/users`, `/api/admin/transfer`
 - Parameters: `username`, `password` on `/login`; `user_id` on `/api/users`
-- Vulnerabilities: `sqli` on `user_id` → `file_write` (intermediate) → `command_execution` (3-hop chain via LEADS_TO)
+- Vulnerabilities: `sqli` on `user_id` → `auth_bypass` (intermediate, `vuln_type="auth_bypass"`) → `command_execution` (3-hop chain via LEADS_TO). **Note:** `vuln_type` values must match keywords in a `CHAIN_DEFINITIONS` pattern's `vuln_sequence`. The "SQLi → Auth Bypass → Full Compromise" pattern uses `["sqli", "auth_bypass"]` — use these exact keywords so `_find_vuln_sequence` keyword-matches and `_path_exists` graph-validates.
 - Token: JWT extracted from login, stored as TOKEN node via `brain.integrate_token()`
 - Session: SESSION node wired via `brain.integrate_session()`
 - CALLS edge: `/login` → `/api/users` (discovered via `brain.integrate_api_relationships()`)
@@ -97,7 +97,7 @@ def _avg_degree(engine) -> float:
     return (2 * len(engine._edges)) / n if n else 0.0
 ```
 
-If `get_edges_to()` does not exist on `AttackGraphEngine`, add it as a thin wrapper over `_adj_in`. This is the only new method that may need to be added to `graph_engine.py`.
+`get_edges_to()` already exists in `AttackGraphEngine` as a wrapper over `_adj_in` — no changes to `graph_engine.py` needed.
 
 ---
 
@@ -107,16 +107,22 @@ If `get_edges_to()` does not exist on `AttackGraphEngine`, add it as a thin wrap
 
 **Goal:** Prove the system supports multi-hop attack chains of ≥3 steps.
 
-**Test:** Using the session graph, call `GraphQueryEngine.dfs_paths(sqli_node_id, rce_node_id, max_depth=6)`. Assert at least one path is returned and its length is ≥ 3 nodes. Also call `ExploitChainEngine(engine=engine).detect_chains()` and assert at least one chain is found — proving the fix from C1 holds: the chain is accepted because the graph path exists, not just because keywords match.
+**Test:** Using the session graph, call `GraphQueryEngine.dfs_paths(sqli_node_id, rce_node_id, max_depth=6)`. Assert at least one path is returned and its length is ≥ 3 nodes.
+
+Also verify C1 fix holds using `attack_graph_core.exploit_chain_engine.ExploitChainEngine` (the inner engine that was patched). Call `detect_chains()` with no arguments — the method fetches all VULNERABILITY nodes directly from `self.engine` internally. Run two scenarios:
+
+1. **Connected graph** (session engine): call `ExploitChainEngine(engine=session_engine).detect_chains()` — assert ≥1 chain returned (sqli→file_write→rce LEADS_TO path exists)
+2. **Isolated nodes** (fresh engine with 2 unconnected vuln nodes, same `vuln_type` keywords but no edges): call `ExploitChainEngine(engine=isolated_engine).detect_chains()` — assert 0 chains returned (C1 regression check)
 
 **Pass criteria:**
 - `len(dfs_paths(sqli, rce)) >= 1`
 - `len(path[0]) >= 3`
-- `ExploitChainEngine.detect_chains()` returns ≥1 chain
+- `detect_chains()` on connected graph returns ≥1 chain
+- `detect_chains()` on isolated graph returns 0 chains (C1 fix holds)
 
 **Fail criteria:**
 - No path found between sqli and rce nodes
-- Chains detected without graph connectivity (C1 regression)
+- Chains detected from isolated nodes with no LEADS_TO edges (C1 regression)
 
 ---
 
@@ -217,7 +223,7 @@ Use `tempfile.NamedTemporaryFile` for the SQLite path; clean up after test.
 
 **Goal:** Prove chains are executed (real requests sent) not just detected.
 
-**Test:** Patch `TokenExecutionEngine._request`. Call `tee.execute_from_graph(engine, target="vulnbank.org")`. This method loads TOKEN/SESSION nodes from the graph and follows AUTH_FOR edges to find endpoints to test. Assert:
+**Test:** Patch `TokenExecutionEngine._request`. Call `tee.execute_from_graph(brain, target="vulnbank.org")` — the first argument is the `AttackGraphBrain` instance from the session fixture (not the raw engine; the method calls `brain._get_engine()` internally). This method loads TOKEN/SESSION nodes from the graph and follows AUTH_FOR edges to find endpoints to test. Assert:
 - `_request` was called at least once (requests actually sent)
 - The call included an `Authorization` header (token injected from graph node or same-run cache)
 - Result list is non-empty (endpoints were tested)
@@ -245,11 +251,11 @@ Also verify `store_raw_token()` was called by `brain.integrate_token()` by check
 1. **Recon:** `brain.integrate_node("SUBDOMAIN", "api2.vulnbank.org", "vulnbank.org")` → assert node count increased
 2. **Scan:** `brain.integrate_vuln(...)` → assert node + edge count increased
 3. **Chaining:** `ExploitChainEngine(engine=fresh).detect_chains()` after adding connected vulns → assert chains returned
-4. **Feedback:** `brain.record_chain_failure("sqli_to_rce", [vuln_node_id])` → assert `brain_penalty` property updated on the node
+4. **Feedback:** `brain.record_chain_failure("sqli_to_rce", "sqli", "vulnbank.org")` → assert the penalized node's `properties["brain_penalty"] < 1.0` (the method searches for nodes by `label_contains="sqli"` and applies a 0.7 penalty multiplier)
 
 **Pass criteria:**
 - Node count grows after each of steps 1–3
-- `brain_penalty < 1.0` on the penalized node after step 4
+- `node.properties.get("brain_penalty", 1.0) < 1.0` on the penalized node after step 4
 
 **Fail criteria:**
 - Graph size does not change after a pipeline phase
@@ -299,4 +305,4 @@ In pytest mode, a single test failure causes the suite to fail.
 | File | Action |
 |------|--------|
 | `tests/test_neo4j_readiness.py` | Create — all 8 phases + session fixture + standalone runner |
-| `attack_graph_core/graph_engine.py` | Possibly modify — add `get_edges_to(node_id)` if absent |
+| `attack_graph_core/graph_engine.py` | No changes needed — `get_edges_to()` already exists |
