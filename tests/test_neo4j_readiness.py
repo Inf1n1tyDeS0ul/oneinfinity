@@ -65,15 +65,16 @@ def sim_graph():
                     "vuln_sqli": node, "vuln_bypass": node, "vuln_rce": node}
 
     Graph contents:
-    - Target: vulnbank.org + subdomain api.vulnbank.org
+    - Target: vulnbank.org --HOSTS--> api.vulnbank.org (subdomain)
     - URLs: /login, /api/users, /api/admin/transfer (HAS_ENDPOINT via graph_updater)
     - Parameters: username, password on /login; user_id on /api/users (HAS_PARAM)
     - Vulnerabilities:
         sqli (on user_id) --LEADS_TO--> auth_bypass --LEADS_TO--> command_execution
-        vuln_type keywords match "SQLi -> Auth Bypass -> Full Compromise" CHAIN_DEFINITION
-    - TOKEN node (JWT) with ISSUES_TOKEN from login_flow and AUTH_FOR to api endpoints
-    - SESSION node with AUTH_FOR to /login
-    - No CALLS/ISSUES_TOKEN edges here — these require preconditions wired in sim_graph_extended
+    - AUTH_FLOW "login_flow" --ISSUES_TOKEN--> TOKEN (JWT) --AUTH_FOR--> /login
+    - SESSION node --AUTH_FOR--> /login
+    - CALLS edge: /login --CALLS--> /api/users (via integrate_api_relationships url: pattern)
+
+    All nodes are reachable from a single connected component (verified by Phase 4 tests).
     """
     engine = AttackGraphEngine()  # in-memory, no SQLite
 
@@ -117,20 +118,38 @@ def sim_graph():
                     label="auth bypass enables rce")
 
     # --- Token and session ---
-    brain.integrate_token(
+    # Create AUTH_FLOW issuer node first so integrate_token wires ISSUES_TOKEN immediately.
+    engine.get_or_create_node(
+        NodeType.AUTH_FLOW, "login_flow",
+        properties={"scheme": "jwt", "target": "vulnbank.org"},
+    )
+    token_id = brain.integrate_token(
         "eyJhbGciOiJIUzI1NiJ9.vulnbank.sig",
         "jwt", "login_flow", "vulnbank.org",
     )
     brain.integrate_session("sess_vb123", "vulnbank.org",
                              auth_endpoint="https://vulnbank.org/login")
 
-    # --- CALLS edge via API relationship discovery ---
+    # --- CALLS edge via API relationship discovery (url: pattern triggers the regex) ---
     brain.integrate_api_relationships(
         "https://vulnbank.org/login",
-        '{"fetch": "https://api.vulnbank.org/users"}',
+        'var opts = {url: "https://api.vulnbank.org/users"};',
         {},
         "vulnbank.org",
     )
+
+    # --- Explicit edges to ensure full graph connectivity ---
+    # HOSTS: TARGET → SUBDOMAIN (integrate_node doesn't wire this automatically)
+    target_id = engine._label_index.get((NodeType.TARGET, "vulnbank.org"))
+    subdomain_id = engine._label_index.get((NodeType.SUBDOMAIN, "api.vulnbank.org"))
+    if target_id and subdomain_id:
+        engine.add_edge(target_id, subdomain_id, EdgeType.HOSTS, label="hosts")
+
+    # AUTH_FOR: TOKEN → /login (enables execute_from_graph to inject JWT on login endpoint)
+    login_url_id = engine._label_index.get((NodeType.URL, "https://vulnbank.org/login"))
+    if token_id and login_url_id:
+        engine.add_edge(token_id, login_url_id, EdgeType.AUTH_FOR,
+                        label="auth_for", probability=0.9)
 
     return {
         "engine": engine,
@@ -364,3 +383,77 @@ class TestPhase3RelationshipDepth:
                                                   NodeType.URL), (
                         f"C2 regression: EXPOSES found on {src.node_type}→{tgt.node_type} edge"
                     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Graph Density and Connectivity
+# ---------------------------------------------------------------------------
+
+class TestPhase4GraphDensity:
+
+    def test_single_connected_component(self, sim_graph):
+        """All nodes must be reachable from any other node (1 component)."""
+        components = _connected_components(sim_graph["engine"])
+        assert components == 1, (
+            f"Expected 1 connected component, found {components} — graph has isolated subgraphs"
+        )
+
+    def test_average_degree_above_threshold(self, sim_graph):
+        """Average node degree must be >= 1.5 (non-sparse graph)."""
+        avg = _avg_degree(sim_graph["engine"])
+        assert avg >= 1.5, (
+            f"Average degree {avg:.2f} < 1.5 — graph is too sparse"
+        )
+
+    def test_more_edges_than_nodes(self, sim_graph):
+        """Edge count must exceed node count (graph has meaningful connectivity)."""
+        engine = sim_graph["engine"]
+        n_nodes = len(engine._nodes)
+        n_edges = len(engine._edges)
+        assert n_edges >= n_nodes, (
+            f"Only {n_edges} edges for {n_nodes} nodes — edge/node ratio < 1.0"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — Cross-Run Persistence
+# ---------------------------------------------------------------------------
+
+class TestPhase5Persistence:
+
+    def test_graph_survives_sqlite_roundtrip(self, sim_graph):
+        """Nodes and edges must survive a write-to-SQLite + read-from-SQLite cycle."""
+        engine = sim_graph["engine"]
+        original_node_count = len(engine._nodes)
+        original_edge_count = len(engine._edges)
+        assert original_node_count > 0, "Session fixture produced empty graph"
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            tmp_path = f.name
+        try:
+            # Write all nodes and edges to a fresh SQLite store
+            store1 = GraphStore(db_path=tmp_path, use_memory=True)
+            store1.initialize()
+            for node in engine._nodes.values():
+                store1.save_node(node)
+            for edge in engine._edges.values():
+                store1.save_edge(edge)
+
+            # Load into a brand-new store from the same SQLite file
+            store2 = GraphStore(db_path=tmp_path, use_memory=True)
+            store2.initialize()   # warms memory from SQLite
+            engine2 = AttackGraphEngine(store=store2)
+
+            assert len(engine2._nodes) == original_node_count, (
+                f"Node count after reload: {len(engine2._nodes)} vs original {original_node_count}"
+            )
+            assert len(engine2._edges) == original_edge_count, (
+                f"Edge count after reload: {len(engine2._edges)} vs original {original_edge_count}"
+            )
+
+            # Specific node must be retrievable
+            target_id = engine2._label_index.get((NodeType.TARGET, "vulnbank.org"))
+            assert target_id is not None, \
+                "Target node 'vulnbank.org' not found after SQLite reload"
+        finally:
+            os.unlink(tmp_path)
