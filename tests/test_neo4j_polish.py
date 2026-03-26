@@ -199,3 +199,34 @@ def test_get_graph_stats_includes_avg_degree():
     assert "avg_degree" in stats, "avg_degree key missing from get_graph_stats"
     # 3 nodes, 2 edges → avg_degree = (2 * 2) / 3 ≈ 1.33
     assert abs(stats["avg_degree"] - (2 * 2 / 3)) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# Task 7 — feedback loop
+# ---------------------------------------------------------------------------
+
+def test_get_chain_feedback_scores_returns_dict():
+    """get_chain_feedback_scores returns dict of chain_type -> float multiplier."""
+    eng, driver = _make_neo4j_engine()
+    mock_sess = MagicMock()
+    # 3 successes and 1 failure for a chain type
+    mock_sess.run.return_value = [
+        {"chain_type": "XSS → Session Hijacking → ATO", "success": True},
+        {"chain_type": "XSS → Session Hijacking → ATO", "success": True},
+        {"chain_type": "XSS → Session Hijacking → ATO", "success": True},
+        {"chain_type": "XSS → Session Hijacking → ATO", "success": False},
+    ]
+    driver.session.return_value.__enter__ = lambda s: mock_sess
+    driver.session.return_value.__exit__ = MagicMock(return_value=False)
+
+    scores = eng.get_chain_feedback_scores()
+    assert isinstance(scores, dict)
+    multiplier = scores.get("XSS → Session Hijacking → ATO", 1.0)
+    # 3 success, 1 fail → rate=0.75 → multiplier = 0.5 + 1.5*0.75 = 1.625 > 1.0
+    assert multiplier > 1.0, f"Expected boost > 1.0, got {multiplier}"
+
+
+def test_get_chain_feedback_scores_empty_when_disconnected():
+    """Returns empty dict when driver is None."""
+    eng, _ = _make_neo4j_engine(connected=False)
+    assert eng.get_chain_feedback_scores() == {}

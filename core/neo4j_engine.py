@@ -389,6 +389,45 @@ class Neo4jEngine:
         except Exception as exc:
             log.debug("record_chain_feedback: %s", exc)
 
+    def get_chain_feedback_scores(self, limit: int = 1000) -> dict:
+        """
+        Read OI_ChainFeedback nodes and compute per-chain-type success-rate multipliers.
+
+        Returns:
+            dict[chain_type, float] where > 1.0 = boost, < 1.0 = penalty.
+            Empty dict when Neo4j unavailable.
+        """
+        if not self._driver:
+            return {}
+        try:
+            with self._driver.session(database=self._database) as sess:
+                rows = list(sess.run(
+                    "MATCH (f:OI_ChainFeedback) "
+                    "RETURN f.chain_type AS chain_type, f.success AS success "
+                    "LIMIT $lim",
+                    lim=limit,
+                ))
+        except Exception as exc:
+            log.debug("get_chain_feedback_scores failed: %s", exc)
+            return {}
+
+        counts: dict = {}
+        for row in rows:
+            ct = row.get("chain_type") or ""
+            ok = bool(row.get("success"))
+            counts.setdefault(ct, []).append(ok)
+
+        scores: dict = {}
+        for ct, results in counts.items():
+            if not ct:
+                continue
+            total = len(results)
+            successes = sum(1 for r in results if r)
+            rate = successes / total
+            # 0% success → 0.5 (penalty), 100% success → 2.0 (strong boost)
+            scores[ct] = 0.5 + 1.5 * rate
+        return scores
+
     # --- Optional: pull all into dicts for merge into local store ---------------
 
     def export_all_graph_dicts(self) -> tuple[list[dict], list[dict]]:
