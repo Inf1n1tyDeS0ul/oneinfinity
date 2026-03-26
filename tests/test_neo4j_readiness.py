@@ -457,3 +457,154 @@ class TestPhase5Persistence:
                 "Target node 'vulnbank.org' not found after SQLite reload"
         finally:
             os.unlink(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 — Execution Validation
+# ---------------------------------------------------------------------------
+
+class TestPhase6Execution:
+
+    def _tee(self):
+        """Return the singleton TokenExecutionEngine (has raw-token cache from sim_graph)."""
+        from core.token_execution_engine import get_token_execution_engine
+        tee = get_token_execution_engine()
+        tee._tested_pairs.clear()   # reset dedup so tests don't interfere
+        return tee
+
+    def test_execute_from_graph_sends_requests(self, sim_graph):
+        """execute_from_graph must send at least one real HTTP request (not just detect)."""
+        brain = sim_graph["brain"]
+        tee = self._tee()
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = '{"status": "ok"}'
+        mock_resp.headers = {}
+        mock_resp.json.return_value = {"status": "ok"}
+
+        with patch.object(tee, "_request", return_value=mock_resp) as mock_req:
+            tee.execute_from_graph(brain, target="vulnbank.org")
+
+        assert mock_req.call_count >= 1, (
+            "execute_from_graph sent 0 requests — execution not happening, only detection"
+        )
+
+    def test_execute_from_graph_injects_auth_header(self, sim_graph):
+        """Requests sent by execute_from_graph must include an Authorization header."""
+        brain = sim_graph["brain"]
+        tee = self._tee()
+
+        captured_headers = []
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "{}"
+        mock_resp.headers = {}
+        mock_resp.json.return_value = {}
+
+        def capture(method, url, **kwargs):
+            captured_headers.append(kwargs.get("headers", {}))
+            return mock_resp
+
+        with patch.object(tee, "_request", side_effect=capture):
+            tee.execute_from_graph(brain, target="vulnbank.org")
+
+        auth_headers = [h.get("Authorization", "") for h in captured_headers if h]
+        assert any(auth_headers), (
+            "No Authorization header found in any request — token not injected"
+        )
+
+    def test_token_cache_populated_by_integrate_token(self, sim_graph):
+        """W1 regression: brain.integrate_token must populate the same-run token cache."""
+        from core.token_execution_engine import get_token_execution_engine
+        tee = get_token_execution_engine()
+        assert len(tee._token_cache) > 0, (
+            "W1 regression: _token_cache is empty after brain.integrate_token() — "
+            "store_raw_token() was not called from integrate_token()"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 — Pipeline Integration
+# ---------------------------------------------------------------------------
+
+class TestPhase7PipelineIntegration:
+
+    def _fresh(self):
+        """Return a fresh (engine, brain) pair — isolated from session fixture."""
+        eng = AttackGraphEngine()
+        br = AttackGraphBrain()
+        br._engine = eng
+        return eng, br
+
+    def test_recon_phase_adds_nodes(self):
+        """integrate_node (recon) must add a node to the graph."""
+        eng, brain = self._fresh()
+        before = len(eng._nodes)
+        brain.integrate_node("SUBDOMAIN", "api2.vulnbank.org", "vulnbank.org")
+        assert len(eng._nodes) > before, \
+            "integrate_node did not grow node count — recon not wired to graph"
+
+    def test_scan_phase_adds_vuln_node(self):
+        """integrate_vuln (scan) must add a VULNERABILITY node and edge."""
+        eng, brain = self._fresh()
+        GraphUpdater(engine=eng).add_target("vulnbank.org")
+        GraphUpdater(engine=eng).add_url("https://vulnbank.org/api", "vulnbank.org")
+        before_nodes = len(eng._nodes)
+        before_edges = len(eng._edges)
+
+        brain.integrate_vuln({
+            "finding_id": "test_sqli_001",
+            "target": "vulnbank.org",
+            "url": "https://vulnbank.org/api",
+            "severity": "critical",
+            "vuln_type": "sqli",
+            "title": "SQL Injection",
+            "tool": "test",
+        })
+        assert len(eng._nodes) > before_nodes, \
+            "integrate_vuln did not add a node — scan phase not wired to graph"
+        assert len(eng._edges) > before_edges, \
+            "integrate_vuln did not add an edge — vulnerability not linked to parent"
+
+    def test_chaining_phase_uses_graph(self):
+        """ExploitChainEngine must use graph edges — connected nodes produce chains."""
+        eng, brain = self._fresh()
+        v1, _ = eng.get_or_create_node(
+            NodeType.VULNERABILITY, "sqli@chain_test",
+            properties={"vuln_type": "sqli"}, severity="high",
+        )
+        v2, _ = eng.get_or_create_node(
+            NodeType.VULNERABILITY, "auth_bypass@chain_test",
+            properties={"vuln_type": "auth_bypass"}, severity="high",
+        )
+        eng.add_edge(v1.id, v2.id, EdgeType.LEADS_TO, label="chain")
+
+        chains = InnerChainEngine(engine=eng).detect_chains()
+        assert len(chains) >= 1, \
+            "Chaining phase produced no chains from connected nodes"
+
+    def test_feedback_phase_updates_penalty(self):
+        """record_chain_failure must set brain_penalty < 1.0 on matched vulnerability nodes."""
+        eng, brain = self._fresh()
+        GraphUpdater(engine=eng).add_target("vulnbank.org")
+        brain.integrate_vuln({
+            "finding_id": "sqli_fb_001",
+            "target": "vulnbank.org",
+            "url": "https://vulnbank.org/api",
+            "severity": "critical",
+            "vuln_type": "sqli",
+            "title": "SQL Injection test",
+            "tool": "test",
+        })
+        brain.record_chain_failure("sqli_to_rce", "sqli", "vulnbank.org")
+
+        sqli_nodes = eng.find_nodes(node_type=NodeType.VULNERABILITY,
+                                    label_contains="sqli")
+        assert sqli_nodes, "No sqli vuln node found after integrate_vuln"
+        penalized = any(
+            n.properties.get("brain_penalty", 1.0) < 1.0 for n in sqli_nodes
+        )
+        assert penalized, (
+            "record_chain_failure did not set brain_penalty < 1.0 on any sqli node"
+        )
