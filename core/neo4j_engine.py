@@ -215,6 +215,48 @@ class Neo4jEngine:
             log.debug("Neo4j find_path_node_ids failed: %s", exc)
             return []
 
+    def find_path_node_ids_safe(
+        self,
+        start_id: str,
+        end_id: str,
+        max_depth: int = 8,
+        max_paths: int = 32,
+    ) -> list[list[str]]:
+        """
+        find_path_node_ids with config-controlled depth cap and query timeout.
+        Reads path_max_depth and max_path_query_ms from graph.yaml.
+        """
+        if not self._driver:
+            return []
+        try:
+            from core.graph_config import load_graph_config
+            neo_cfg = load_graph_config().get("neo4j") or {}
+            depth_cap = int(neo_cfg.get("path_max_depth") or 8)
+            timeout_ms = int(neo_cfg.get("max_path_query_ms") or 5000)
+        except Exception:
+            depth_cap, timeout_ms = 8, 5000
+
+        hop = max(1, min(int(max_depth), depth_cap))
+        cypher = (
+            f"MATCH p = (a:OI_Node {{id: $sid}})-[*1..{hop}]->(b:OI_Node {{id: $eid}})\n"
+            "WITH p LIMIT $maxp\n"
+            "RETURN [n IN nodes(p) | n.id] AS ids"
+        )
+        try:
+            with self._driver.session(
+                database=self._database,
+            ) as sess:
+                result = sess.run(
+                    cypher,
+                    sid=start_id,
+                    eid=end_id,
+                    maxp=max_paths,
+                )
+                return [r["ids"] for r in result if r.get("ids")]
+        except Exception as exc:
+            log.debug("find_path_node_ids_safe failed: %s", exc)
+            return []
+
     # --- Analytics (Phase 6) ----------------------------------------------------
 
     def query_high_risk_endpoints(self, limit: int = 50) -> list[dict]:

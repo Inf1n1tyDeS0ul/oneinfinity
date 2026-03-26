@@ -38,3 +38,29 @@ def test_bootstrap_schema_noop_when_disconnected():
     eng, mock_driver = _make_neo4j_engine(connected=False)
     eng.bootstrap_schema()  # should not raise
     assert mock_driver.session.call_count == 0, "session must not be called when disconnected"
+
+
+# ---------------------------------------------------------------------------
+# Task 3 — safe path query with timeout
+# ---------------------------------------------------------------------------
+
+def test_find_path_node_ids_safe_respects_depth_cap():
+    """find_path_node_ids_safe must cap depth at path_max_depth from config."""
+    eng, driver = _make_neo4j_engine()
+    mock_sess = MagicMock()
+    mock_sess.run.return_value = []
+    driver.session.return_value.__enter__ = lambda s: mock_sess
+    driver.session.return_value.__exit__ = MagicMock(return_value=False)
+
+    with patch("core.graph_config.load_graph_config", return_value={"neo4j": {"path_max_depth": 8, "max_path_query_ms": 5000}}):
+        eng.find_path_node_ids_safe("a", "b", max_depth=999)
+
+    cypher_str = mock_sess.run.call_args_list[0][0][0]
+    assert "[*1..8]" in cypher_str, f"depth not clamped to 8: {cypher_str}"
+
+
+def test_find_path_node_ids_safe_noop_when_disconnected():
+    """Returns empty list when driver is None."""
+    eng, _ = _make_neo4j_engine(connected=False)
+    result = eng.find_path_node_ids_safe("x", "y")
+    assert result == []
