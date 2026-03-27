@@ -16,6 +16,21 @@
         plugin-install plugin-list plugin-update \
         update image-push shell test
 
+# ── Embedded scripts (define avoids "missing separator" for multi-line -c args) ─
+define WORKERS_PY
+import sys, json
+lines = sys.stdin.read().strip().split('\n')
+pairs = list(zip(lines[::2], lines[1::2]))
+for wid, info in pairs:
+    try:
+        d = json.loads(info)
+        caps = json.loads(d.get('capabilities', '[]'))
+        print('  %s: status=%s, caps=%s, load=%s, active=%s' % (wid, d.get('status','?'), caps, d.get('load','?'), d.get('active_tasks',0)))
+    except:
+        print('  %s: %s' % (wid, info[:80]))
+endef
+export WORKERS_PY
+
 # ── Configuration ─────────────────────────────────────────────
 COMPOSE       := docker compose -f docker-compose.distributed.yml
 COMPOSE_FULL  := $(COMPOSE) --profile monitoring --profile updater
@@ -144,17 +159,8 @@ scale-exploit:
 workers-status:
 	@echo "[workers] Registered workers in Redis:"
 	@docker exec oneinfinity-redis redis-cli HGETALL swarm:workers 2>/dev/null | \
-	    python3 -c "
-import sys, json
-lines = sys.stdin.read().strip().split('\n')
-pairs = list(zip(lines[::2], lines[1::2]))
-for wid, info in pairs:
-    try:
-        d = json.loads(info)
-        caps = json.loads(d.get('capabilities','[]'))
-        print(f'  {wid}: status={d.get(\"status\",\"?\")}, caps={caps}, load={d.get(\"load\",\"?\")}, active={d.get(\"active_tasks\",0)}')
-    except: print(f'  {wid}: {info[:80]}')
-" || echo "  (Redis not running or no workers registered)"
+	    python3 -c "$${WORKERS_PY}" \
+	    || echo "  (Redis not running or no workers registered)"
 
 queue-status:
 	@echo "[queue] Task queue lengths:"

@@ -10,10 +10,10 @@ Bug bounty mode:
   oneinfinity setup <program-name> --pentest --target <domain> [--target <domain> ...]
 
 Autonomous framework (runs all phases):
-  oneinfinity run <domain> [options]
+  oneinfinity run <target> [options]
 
 Pentest scan (generates recon script — YOU run it):
-  oneinfinity scan <domain> [<domain> ...]
+  oneinfinity scan <target> [<target> ...]
 
 Other commands:
   oneinfinity scope
@@ -39,7 +39,7 @@ Other commands:
   oneinfinity waf-bypass <waf> <vuln-type>
   oneinfinity methodology <vuln-class>
   oneinfinity dedup <title>
-  oneinfinity adaptive-recon <domain> [--depth quick|standard|deep] [--json] [--no-graph]
+  oneinfinity adaptive-recon <target> [--depth quick|standard|deep] [--json] [--no-graph]
 """
 
 import sys
@@ -159,7 +159,7 @@ def cmd_scan(args):
     """
     from modules.utils import banner, section, ok, info, warn, err, bold
 
-    targets = getattr(args, "domains", []) or []
+    targets = getattr(args, "targets", []) or []
     if not targets:
         err("No target specified.  Usage: oneinfinity scan <target> [--yes]")
         sys.exit(1)
@@ -242,7 +242,7 @@ def _cmd_scan_legacy(args):
             print("  Aborted.")
             sys.exit(0)
 
-    targets = getattr(args, "domains", []) or []
+    targets = getattr(args, "targets", []) or []
     if not targets:
         err("No domains specified.")
         sys.exit(1)
@@ -618,22 +618,21 @@ def cmd_run(args):
     from modules.utils import banner, info, warn, err
     from unified_scan_engine import get_engine
 
-    banner(f"Starting Unified Scan: {args.domain}")
-    
+    banner(f"Starting Unified Scan: {args.target}")
+
     engine = get_engine()
-    
+
     def on_progress(phase, pct, msg):
         info(f"[{pct}%] {phase}: {msg}")
 
     try:
-        session = engine.scan(args.domain, on_progress=on_progress)
+        session = engine.scan(args.target, on_progress=on_progress)
         if session.status == "failed":
             err(f"Scan failed.")
         else:
             info(f"Scan completed. Found {len(session.findings)} findings.")
     except Exception as exc:
         err(f"Scan failed: {exc}")
-
 
 def cmd_toolcheck(args):
     """Show which tools are installed and their categories."""
@@ -742,6 +741,7 @@ def cmd_pipeline_vulnscan(args):
         output_dir=output_dir,
         rate_limit=args.rate or 30,
         nuclei_severity=args.severity or "medium,high,critical",
+        nuclei_tags=[t.strip() for t in (args.nuclei_tags or "").split(",") if t.strip()] or None,
         oob_url=args.oob or "",
     )
 
@@ -750,7 +750,11 @@ def cmd_pipeline_vulnscan(args):
         from waf_detection_engine import WAFDetectionEngine
         print("[*] Detecting WAF...")
         waf_engine = WAFDetectionEngine()
-        probe_url = f"https://{target}" if not target.startswith("http") else target
+        if target.startswith("http"):
+            probe_url = target
+        else:
+            # Heuristic: if a non-TLS port is present, probe over http first to avoid SSL noise.
+            probe_url = f"http://{target}" if ":" in target and not target.endswith((":443", ":8443")) else f"https://{target}"
         waf_profile = waf_engine.detect(probe_url)
         if waf_profile.detected:
             waf_cfg = waf_profile.as_scan_config()
@@ -1088,13 +1092,13 @@ def cmd_capmap(args):
 
 def cmd_workflow(args):
     """
-    oneinfinity workflow <domain> — build and execute the optimal scan plan.
+    oneinfinity workflow <target> — build and execute the optimal scan plan.
     Uses the capability map to select the right tools in the right order.
     """
     from modules.utils import banner, warn
     from modules.workflow import WorkflowEngine
 
-    target = args.domain
+    target = args.target
     output_dir = resolve_output_dir(args.output, target)
     phases = args.phases.split(",") if args.phases else None
 
@@ -1238,12 +1242,12 @@ def cmd_graph(args):
 
 def cmd_attack_graph(args):
     """
-    oneinfinity attack-graph <domain> — build and visualise the attack graph.
+    oneinfinity attack-graph <target> — build and visualise the attack graph.
     """
     from modules.utils import banner, section, ok, warn, info
     from pathlib import Path
 
-    target = args.domain
+    target = args.target
     output_dir = resolve_output_dir(args.output, target)
     out_path = Path(output_dir)
 
@@ -1301,14 +1305,14 @@ def cmd_attack_graph(args):
 
 def cmd_agents(args):
     """
-    oneinfinity agents run <domain> — launch the full multi-agent autonomous pentest.
+    oneinfinity agents run <target> — launch the full multi-agent autonomous pentest.
     """
     from modules.utils import banner, section, ok, warn, err, info
 
     subcommand = args.subcommand
 
     if subcommand == "run":
-        target = args.domain
+        target = args.target
         output_dir = args.output or "recon"
         platform = args.platform or "HackerOne"
         phases = args.phases.split(",") if args.phases else None
@@ -1406,13 +1410,13 @@ def cmd_agents(args):
 
 def cmd_chains(args):
     """
-    oneinfinity chains <domain> — detect exploit chains from confirmed findings.
+    oneinfinity chains <target> — detect exploit chains from confirmed findings.
     """
     from modules.utils import banner, section, ok, warn, info
     from pathlib import Path
     import json
 
-    target = args.domain
+    target = args.target
     output_dir = resolve_output_dir(args.output, target)
     out_path = Path(output_dir)
 
@@ -1481,7 +1485,7 @@ def cmd_chains(args):
 
 def cmd_adaptive_recon(args):
     """
-    oneinfinity adaptive-recon <domain> — adaptive recon intelligence.
+    oneinfinity adaptive-recon <target> — adaptive recon intelligence.
     Detects tech stack, maps API endpoints, extracts JS endpoints,
     enumerates cloud assets, and generates a prioritized attack strategy.
     """
@@ -1491,7 +1495,7 @@ def cmd_adaptive_recon(args):
 
 def cmd_analyze_app(args):
     """
-    oneinfinity analyze-app <domain> — build a structured application model.
+    oneinfinity analyze-app <target> — build a structured application model.
     Maps auth flows, API structure, user roles, and sensitive endpoints.
     """
     from application_intelligence import main_cli
@@ -1500,7 +1504,7 @@ def cmd_analyze_app(args):
 
 def cmd_generate_theories(args):
     """
-    oneinfinity generate-theories <domain> — generate vulnerability theories from app model.
+    oneinfinity generate-theories <target> — generate vulnerability theories from app model.
     Analyzes AppModel and outputs prioritized vulnerability theories with reasoning.
     """
     from vulnerability_theory_engine import main_cli
@@ -1509,7 +1513,7 @@ def cmd_generate_theories(args):
 
 def cmd_run_custom_tests(args):
     """
-    oneinfinity run-custom-tests <domain> — design and execute custom attack tests.
+    oneinfinity run-custom-tests <target> — design and execute custom attack tests.
     Generates test cases from theories and executes them against the target.
     """
     from custom_test_engine import main_cli
@@ -1518,7 +1522,7 @@ def cmd_run_custom_tests(args):
 
 def cmd_zero_day(args):
     """
-    oneinfinity zero-day <domain> — run zero-day anomaly detection engine.
+    oneinfinity zero-day <target> — run zero-day anomaly detection engine.
     Probes the target for unusual behaviors, data leakage, and access control flips.
     """
     from zero_day_engine import main_cli
@@ -1587,7 +1591,7 @@ def cmd_ai_agent_test(args):
 
 def cmd_research(args):
     """
-    oneinfinity research <domain> — autonomous vulnerability research mode.
+    oneinfinity research <target> — autonomous vulnerability research mode.
     Runs the full research loop: analyze → theorize → test → detect → report.
 
     Examples:
@@ -1888,7 +1892,7 @@ def cmd_cache(args):
 def cmd_learn(args):
     """
     oneinfinity learn stats — show learning system statistics.
-    oneinfinity learn plan <domain> — show adaptive plan for a domain.
+    oneinfinity learn plan <target> — show adaptive plan for a domain.
     """
     from modules.utils import banner, section, ok, warn, info
 
@@ -1906,7 +1910,7 @@ def cmd_learn(args):
         ls.show_stats()
 
     elif subcommand == "plan":
-        target = args.domain
+        target = args.target
         tech = args.tech.split(",") if args.tech else None
         banner(f"Adaptive Scan Plan — {target}")
         plan = ls.plan_for(target, tech_stack=tech, quick=args.quick)
@@ -1923,7 +1927,7 @@ def cmd_learn(args):
     else:
         warn(f"Unknown subcommand: {subcommand}")
         print("  Usage: oneinfinity learn stats")
-        print("         oneinfinity learn plan <domain> [--tech php,mysql] [--quick]")
+        print("         oneinfinity learn plan <target> [--tech php,mysql] [--quick]")
 
     ls.close()
 
@@ -2070,7 +2074,7 @@ def build_parser():
 
     # run (autonomous framework)
     ru = sub.add_parser("run", help="Autonomous framework: recon → exploit → report")
-    ru.add_argument("domain", help="Target domain to test")
+    ru.add_argument("target", help="Target domain to test")
     ru.add_argument("--auth", choices=["bugbounty", "contract", "owner", "scope_yaml"],
                     default=None,
                     help="Authorization type (default: auto-detect from scope.yaml)")
@@ -2093,14 +2097,14 @@ def build_parser():
 
     # scan
     sc2 = sub.add_parser("scan", help="Generate recon script for target domain(s)")
-    sc2.add_argument("domains", nargs="+", metavar="domain",
-                     help="Domain(s) to generate recon script for")
+    sc2.add_argument("targets", nargs="+", metavar="target",
+                     help="Target(s) to generate recon script for")
     sc2.add_argument("--yes", "-y", action="store_true",
                      help="Run full autonomous 9-phase scan pipeline")
 
     # ── Full canonical pipeline ──────────────────────────────────────────────
     fs = sub.add_parser("full-scan",
-        help="Run the canonical 10-phase pipeline (Docker + CLI parity guaranteed)")
+        help="Run the canonical pipeline (Docker + CLI parity guaranteed)")
     fs.add_argument("target", help="Target URL or domain")
     fs.add_argument("--output", "-o", default="", metavar="DIR",
                     help="Output directory (default: auto under ONEINFINITY_HOME)")
@@ -2248,6 +2252,10 @@ def build_parser():
     pv.add_argument("--rate", type=int, metavar="N", help="Requests per minute (default: 30)")
     pv.add_argument("--severity", metavar="SEV",
                     help="Nuclei severity filter (default: medium,high,critical)")
+    pv.add_argument("--nuclei-tags", metavar="TAGS", default="",
+                    help="Override nuclei -tags list (comma-separated). "
+                         "Example: cves,exposures,misconfiguration,default-login "
+                         "(default: curated high-signal tags)")
     pv.add_argument("--oob", metavar="URL", help="OOB callback URL for blind SSRF/XSS")
 
     # fuzz (pipeline)
@@ -2304,9 +2312,9 @@ def build_parser():
     # attack-graph — build and visualise attack graph from recon data
     ag = sub.add_parser("attack-graph",
                          help="Build and display the attack graph for a target")
-    ag.add_argument("domain", help="Target domain")
+    ag.add_argument("target", help="Target domain")
     ag.add_argument("--output", "-o", metavar="DIR",
-                    help="Recon output directory (default: ~/.oneinfinity/raw/<domain>)")
+                    help="Recon output directory (default: ~/.oneinfinity/raw/<target>)")
     ag.add_argument("--mermaid", action="store_true", help="Save Mermaid diagram file")
     ag.add_argument("--dot",     action="store_true", help="Save GraphViz DOT file")
 
@@ -2314,7 +2322,7 @@ def build_parser():
     pa = sub.add_parser("agents", help="Multi-agent autonomous pentesting system")
     pasub = pa.add_subparsers(dest="subcommand")
     par = pasub.add_parser("run", help="Launch full autonomous pentest")
-    par.add_argument("domain", help="Target domain")
+    par.add_argument("target", help="Target domain")
     par.add_argument("--output", "-o", metavar="DIR",
                      help="Base output directory (default: ~/.oneinfinity/raw/)")
     par.add_argument("--platform", choices=["HackerOne", "Bugcrowd", "generic"],
@@ -2333,9 +2341,9 @@ def build_parser():
 
     # chains — exploit chain detection and PoC generation
     pc = sub.add_parser("chains", help="Detect exploit chains from confirmed findings")
-    pc.add_argument("domain", help="Target domain")
+    pc.add_argument("target", help="Target domain")
     pc.add_argument("--output", "-o", metavar="DIR",
-                    help="Output directory (default: ~/.oneinfinity/raw/<domain>)")
+                    help="Output directory (default: ~/.oneinfinity/raw/<target>)")
     pc.add_argument("--no-poc", dest="no_poc", action="store_true",
                     help="Skip PoC script generation")
 
@@ -2345,7 +2353,7 @@ def build_parser():
     pl2sub.add_parser("stats", help="Show learning statistics")
     pl2sub.add_parser("show",  help="Show learning statistics (alias for stats)")
     ll = pl2sub.add_parser("plan", help="Show adaptive scan plan for a domain")
-    ll.add_argument("domain", help="Target domain")
+    ll.add_argument("target", help="Target domain")
     ll.add_argument("--tech", metavar="LIST",
                     help="Comma-separated tech stack (e.g. wordpress,mysql,nginx)")
     ll.add_argument("--quick", action="store_true",
@@ -2356,10 +2364,10 @@ def build_parser():
     # research — full autonomous research loop
     pr2 = sub.add_parser("research",
                           help="Autonomous vulnerability research mode (analyze→theorize→test→report)")
-    pr2.add_argument("domain", nargs="?", default="",
+    pr2.add_argument("target", nargs="?", default="",
                      help="Target domain (omit to use --stats)")
     pr2.add_argument("--output", "-o", metavar="DIR",
-                     help="Output directory (default: ~/.oneinfinity/raw/<domain>)")
+                     help="Output directory (default: ~/.oneinfinity/raw/<target>)")
     pr2.add_argument("--platform", choices=["HackerOne", "Bugcrowd", "generic"],
                      default="HackerOne", help="Bug bounty platform")
     pr2.add_argument("--iterations", type=int, default=3, metavar="N",
@@ -2384,23 +2392,23 @@ def build_parser():
     # analyze-app — application intelligence engine
     aap = sub.add_parser("analyze-app",
                           help="Build structured application model from recon data")
-    aap.add_argument("domain", help="Target domain")
+    aap.add_argument("target", help="Target domain")
     aap.add_argument("--output", "-o", metavar="DIR",
-                     help="Recon output directory (default: ~/.oneinfinity/raw/<domain>)")
+                     help="Recon output directory (default: ~/.oneinfinity/raw/<target>)")
 
     # generate-theories — vulnerability theory generator
     gt = sub.add_parser("generate-theories",
                          help="Generate vulnerability theories from app model")
-    gt.add_argument("domain", help="Target domain")
+    gt.add_argument("target", help="Target domain")
     gt.add_argument("--output", "-o", metavar="DIR",
-                    help="Recon output directory (default: ~/.oneinfinity/raw/<domain>)")
+                    help="Recon output directory (default: ~/.oneinfinity/raw/<target>)")
 
     # run-custom-tests — custom test executor
     rct = sub.add_parser("run-custom-tests",
                           help="Design and execute custom attack tests from theories")
-    rct.add_argument("domain", help="Target domain")
+    rct.add_argument("target", help="Target domain")
     rct.add_argument("--output", "-o", metavar="DIR",
-                     help="Recon output directory (default: ~/.oneinfinity/raw/<domain>)")
+                     help="Recon output directory (default: ~/.oneinfinity/raw/<target>)")
     rct.add_argument("--min-severity", dest="min_severity",
                      choices=["critical", "high", "medium", "low"], default="medium",
                      help="Minimum severity to test (default: medium)")
@@ -2413,9 +2421,9 @@ def build_parser():
     # zero-day — zero-day discovery engine
     zd = sub.add_parser("zero-day",
                          help="Zero-day anomaly detection: probe for unusual behaviors")
-    zd.add_argument("domain", help="Target domain")
+    zd.add_argument("target", help="Target domain")
     zd.add_argument("--output", "-o", metavar="DIR",
-                    help="Recon output directory (default: ~/.oneinfinity/raw/<domain>)")
+                    help="Recon output directory (default: ~/.oneinfinity/raw/<target>)")
     zd.add_argument("--rate", type=float, default=0.5, metavar="SEC",
                     help="Seconds between requests (default: 0.5)")
     zd.add_argument("--timeout", type=int, default=12, metavar="SEC",
@@ -2424,9 +2432,9 @@ def build_parser():
     # adaptive-recon — adaptive recon intelligence engine
     ar = sub.add_parser("adaptive-recon",
                          help="Adaptive recon intelligence: tech detect, API map, JS endpoints, cloud assets")
-    ar.add_argument("domain", help="Target domain")
+    ar.add_argument("target", help="Target domain")
     ar.add_argument("--output", "-o", metavar="DIR",
-                    help="Output directory (default: ~/.oneinfinity/raw/<domain>)")
+                    help="Output directory (default: ~/.oneinfinity/raw/<target>)")
     ar.add_argument("--depth", choices=["quick", "standard", "deep"], default="standard",
                     help="Recon depth (default: standard)")
     ar.add_argument("--json", action="store_true",
@@ -2437,9 +2445,9 @@ def build_parser():
     # workflow — optimal automated scan plan + execution
     pw = sub.add_parser("workflow",
                          help="Build and execute an optimal scan workflow using the capability map")
-    pw.add_argument("domain", help="Target domain")
+    pw.add_argument("target", help="Target domain")
     pw.add_argument("--output", "-o", metavar="DIR",
-                    help="Output directory (default: ~/.oneinfinity/raw/<domain>)")
+                    help="Output directory (default: ~/.oneinfinity/raw/<target>)")
     pw.add_argument("--phases", metavar="LIST",
                     help="Comma-separated phases: passive,subdomain,dns,http,fingerprint,"
                          "ports,crawl,content,api,triage,vuln,cloud,secrets")

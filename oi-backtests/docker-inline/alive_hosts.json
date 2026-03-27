@@ -1,0 +1,36 @@
+{
+  "hosts": [
+    {
+      "timestamp": "2026-03-26T11:46:12.744980709Z",
+      "port": "3000",
+      "url": "http://oi-juice:3000",
+      "input": "oi-juice:3000",
+      "title": "OWASP Juice Shop",
+      "scheme": "http",
+      "content_type": "text/html",
+      "method": "GET",
+      "host": "oi-juice",
+      "host_ip": "172.21.0.2",
+      "path": "/",
+      "time": "87.391042ms",
+      "a": [
+        "172.21.0.2"
+      ],
+      "words": 3679,
+      "lines": 30,
+      "status_code": 200,
+      "content_length": 75002,
+      "failed": false,
+      "knowledgebase": {
+        "pHash": 0
+      },
+      "resolvers": [
+        "1.1.1.1:53",
+        "1.0.0.1:53",
+        "8.8.8.8:53",
+        "8.8.4.4:53",
+        "127.0.0.11:53"
+      ]
+    }
+  ]
+}

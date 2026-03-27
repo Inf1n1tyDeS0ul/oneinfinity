@@ -103,10 +103,11 @@ def _run_cmd(
 
 
 def _wrap(tool: str, cmd: list[str], timeout: int = 300,
-          parse_fn=None, input_data: Optional[str] = None) -> ToolResult:
+          parse_fn=None, input_data: Optional[str] = None,
+          env: Optional[dict] = None) -> ToolResult:
     """Execute a tool command and return a ToolResult."""
     t0 = time.time()
-    rc, stdout, stderr = _run_cmd(cmd, timeout=timeout, input_data=input_data)
+    rc, stdout, stderr = _run_cmd(cmd, timeout=timeout, input_data=input_data, env=env)
     duration = time.time() - t0
     command_str = " ".join(str(c) for c in cmd)
     success = rc == 0
@@ -663,6 +664,14 @@ def run_nuclei(target: str, templates: str = "",
             cmd.extend(["-t", templates])
         else:
             cmd.extend(["-tags", templates])
+    else:
+        # Fall back to the configured templates directory (set via NUCLEI_TEMPLATES_PATH)
+        tmpl_dir = os.environ.get("NUCLEI_TEMPLATES_PATH", "")
+        if tmpl_dir and os.path.isdir(tmpl_dir):
+            cmd.extend(["-t", tmpl_dir])
+            cmd.extend(["-tags",
+                        "cves,exposures,misconfiguration,default-login,"
+                        "xss,sqli,ssrf,lfi,rce,ssti,xxe,auth-bypass"])
     result = _wrap("nuclei", cmd, timeout=timeout, parse_fn=_parse_ndjson)
     findings = result.data if isinstance(result.data, list) else []
     parsed = []
@@ -694,7 +703,7 @@ def run_nuclei(target: str, templates: str = "",
 
 def run_nuclei_on_list(targets_file: str, templates: str = "",
                        severity: str = "medium,high,critical",
-                       timeout: int = 900) -> ToolResult:
+                       timeout: int = 1800) -> ToolResult:
     """Run nuclei against a file of targets."""
     cmd = [
         "nuclei", "-l", targets_file,
@@ -708,18 +717,65 @@ def run_nuclei_on_list(targets_file: str, templates: str = "",
             cmd.extend(["-t", templates])
         else:
             cmd.extend(["-tags", templates])
-    return _wrap("nuclei", cmd, timeout=timeout, parse_fn=_parse_ndjson)
+    else:
+        tmpl_dir = os.environ.get("NUCLEI_TEMPLATES_PATH", "")
+        if tmpl_dir and os.path.isdir(tmpl_dir):
+            cmd.extend(["-t", tmpl_dir])
+            # Scope to high-value categories so we don't exhaust the timeout
+            # running all ~9 000 templates. Users can still override via `templates`.
+            cmd.extend(["-tags",
+                        "cves,exposures,misconfiguration,default-login,"
+                        "xss,sqli,ssrf,lfi,rce,ssti,xxe,auth-bypass"])
+    result = _wrap("nuclei", cmd, timeout=timeout, parse_fn=_parse_ndjson)
+    findings = result.data if isinstance(result.data, list) else []
+    parsed = []
+    for f in findings:
+        if not isinstance(f, dict):
+            continue
+        norm = normalize_nuclei_finding(f)
+        name = norm.get("info", {}).get("name", "")
+        http_evidence = (
+            f.get("response") or f.get("curl-command") or
+            f.get("request") or norm.get("info", {}).get("description", "")
+        )
+        parsed.append({
+            **norm,
+            "name": name,
+            "vuln_type": name or "nuclei",
+            "endpoint": norm.get("matched-at") or norm.get("url") or "",
+            "description": norm.get("info", {}).get("description", ""),
+            "tags": norm.get("info", {}).get("tags", []),
+            "evidence": http_evidence,
+            "request": f.get("request", ""),
+            "response": f.get("response", ""),
+            "curl_command": f.get("curl-command", ""),
+        })
+    result.data = {"findings": parsed, "count": len(parsed)}
+    return result
 
 
-def run_dalfox(url: str, params: list[str] = None,
+def run_dalfox(url: str | list[str], params: list[str] = None,
                timeout: int = 180, payload: str = None) -> ToolResult:
-    """XSS scanning with dalfox."""
-    _check_scope(url)
-    cmd = ["dalfox", "url", url, "--skip-bav", "--format", "json"]
-    if params:
-        cmd.extend(["--data", "&".join(f"{p}=FUZZ" for p in params)])
-    result = _wrap("dalfox", cmd, timeout=timeout)
-    # dalfox outputs its own JSON format
+    """XSS scanning with dalfox (single URL or pipe-mode list)."""
+    urls: list[str]
+    if isinstance(url, list):
+        urls = [u for u in url if isinstance(u, str) and u.strip()]
+        for u in urls[:200]:
+            _check_scope(u)
+        cmd = ["dalfox", "pipe", "--skip-bav", "--format", "json"]
+        input_data = "\n".join(urls)
+        result = _wrap("dalfox", cmd, timeout=timeout, input_data=input_data)
+        target_label = f"{len(urls)} targets"
+    else:
+        _check_scope(url)
+        urls = [url]
+        cmd = ["dalfox", "url", url, "--skip-bav", "--format", "json"]
+        if params:
+            cmd.extend(["--data", "&".join(f"{p}=FUZZ" for p in params)])
+        result = _wrap("dalfox", cmd, timeout=timeout)
+        target_label = url
+
+    # dalfox outputs JSON lines mixed with text
     findings = []
     for line in result.raw.splitlines():
         line = line.strip()
@@ -730,7 +786,7 @@ def run_dalfox(url: str, params: list[str] = None,
         except Exception:
             if "POC" in line or "VULN" in line:
                 findings.append({"raw": line})
-    result.data = {"findings": findings, "count": len(findings), "target": url}
+    result.data = {"findings": findings, "count": len(findings), "target": target_label}
     return result
 
 
@@ -738,19 +794,27 @@ def run_sqlmap(url: str, params: str = "", data: str = "",
                level: int = 1, risk: int = 1,
                timeout: int = 300, param: str = "") -> ToolResult:
     """SQL injection testing with sqlmap (non-interactive)."""
+    import sys as _sys
     _check_scope(url)
     params = params or param  # accept either kwarg name
+    tmpdir = tempfile.mkdtemp(prefix="sqlmap_")
+    # Resolve the full path to the sqlmap wrapper script and run it through
+    # the current interpreter so exec-permission on the script is irrelevant.
+    import shutil as _shutil
+    _sqlmap_bin = _shutil.which("sqlmap") or "sqlmap"
     cmd = [
-        "sqlmap", "-u", url,
+        _sys.executable, _sqlmap_bin,
+        "-u", url,
         "--level", str(level), "--risk", str(risk),
         "--batch", "--quiet",
-        "--output-dir", tempfile.mkdtemp(prefix="sqlmap_"),
+        "--output-dir", tmpdir,
     ]
     if params:
         cmd.extend(["-p", params])
     if data:
         cmd.extend(["--data", data])
-    result = _wrap("sqlmap", cmd, timeout=timeout)
+    result = _wrap("sqlmap", cmd, timeout=timeout,
+                   env={"HOME": tmpdir, "SQLMAP_OUTPUT_DIRECTORY": tmpdir})
     # Parse vulnerable parameter from output
     vulns = re.findall(r"Parameter:\s+(.+?)\s+\(", result.raw)
     injections = re.findall(r"Type:\s+(.+)", result.raw)

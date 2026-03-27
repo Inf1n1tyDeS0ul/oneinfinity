@@ -81,11 +81,23 @@ class GraphRiskReport:
 class RiskAnalyzer:
     """Analyzes graph nodes and exploit chains to produce a risk report."""
 
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            cls._instance = super(RiskAnalyzer, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
     def __init__(self, graph_engine=None, chain_engine=None):
+        if self._initialized and graph_engine is None and chain_engine is None:
+            return
         self.graph = graph_engine
         self.chain_engine = chain_engine
+        self._initialized = True
 
     def analyze(self, target: str) -> GraphRiskReport:
+        from .graph_store import _enum_to_str
         report = GraphRiskReport(target=target)
 
         if self.graph is None:
@@ -100,8 +112,9 @@ class RiskAnalyzer:
         risk_scores = []
 
         for node in nodes:
-            nt = str(getattr(node, "node_type", ""))
-            if "vulnerability" not in nt.lower():
+            # Normalise NodeType: handles Enum instances and repr strings
+            nt = _enum_to_str(getattr(node, "node_type", ""))
+            if "vulnerability" not in nt:
                 continue
             report.vuln_nodes += 1
             meta = getattr(node, "metadata", {})
@@ -215,3 +228,7 @@ class RiskAnalyzer:
                 "2 exploit chain(s) detected — prioritize chain-breaking patches",
             ],
         )
+
+
+# Module-level singleton instance (used by attack_planner and other callers)
+risk_analyzer = RiskAnalyzer()

@@ -12,7 +12,7 @@ The graph intelligence layer is architecturally sound with a genuine graph-nativ
 1. The inner `attack_graph_core/exploit_chain_engine.py` produces chains from **disconnected nodes** via keyword matching — no graph path is required or verified.
 2. The canonical edge types `HAS_ENDPOINT` and `HAS_PARAM` are **defined but never used** — `graph_updater.py` uses `EXPOSES` for all structural relationships, breaking the stated schema.
 
-These must be fixed before Neo4j integration, as Neo4j's Cypher queries will rely on specific edge types and graph connectivity.
+These must be fixed before Neo4j integration. The canonical wire format for edge types uses lowercase enum values (e.g., `"has_endpoint"`, `"has_param"`, `"has_vulnerability"`) as defined by `EdgeType.value` — this is what Neo4j Cypher relationship type names must match.
 
 ---
 
@@ -45,8 +45,8 @@ These have different behaviors for the same conceptual operation. The outer engi
 
 | Edge Type | Defined | Used By | Status |
 |-----------|---------|---------|--------|
-| `HAS_ENDPOINT` | ✅ `EdgeType.HAS_ENDPOINT` | ❌ Never used | **FAIL** |
-| `HAS_PARAM` | ✅ `EdgeType.HAS_PARAM` | ❌ Never used | **FAIL** |
+| `HAS_ENDPOINT` | ✅ `EdgeType.HAS_ENDPOINT` | `unified_scan_engine.py:800` (partial, bypasses updater) | **PARTIAL FAIL** |
+| `HAS_PARAM` | ✅ `EdgeType.HAS_PARAM` | ❌ Zero emission sites in entire codebase | **FAIL** |
 | `HAS_VULNERABILITY` | ✅ | `graph_updater.add_vulnerability()` | PASS |
 | `LEADS_TO` | ✅ | `link_vuln_to_impact()` | PASS |
 | `CALLS` | ✅ | `integrate_api_relationships()` | PASS |
@@ -55,12 +55,19 @@ These have different behaviors for the same conceptual operation. The outer engi
 
 ### Root Cause
 
-`graph_updater.py` uses `EdgeType.EXPOSES` for:
+`graph_updater.py` uses `EdgeType.EXPOSES` for three structurally distinct relationships:
 - Target/Subdomain → URL (should be `HAS_ENDPOINT`)
 - Target/Subdomain → API_ENDPOINT (should be `HAS_ENDPOINT`)
 - URL → Parameter (should be `HAS_PARAM`)
+- Domain → Technology node (should be a distinct `USES_TECHNOLOGY` or similar — currently also `EXPOSES`)
 
-**Live verification:** `HAS_ENDPOINT` and `HAS_PARAM` are NEVER present in the graph at runtime. Neo4j Cypher queries relying on `HAS_ENDPOINT` or `HAS_PARAM` edge types will return zero results.
+`unified_scan_engine.py:800` does emit `EdgeType.HAS_ENDPOINT` directly for URLs discovered during active scans, bypassing `graph_updater`. This creates **inconsistent edge types for the same semantic relationship** depending on which code path populated the graph:
+- Via `graph_updater.add_url()` → `EXPOSES`
+- Via `unified_scan_engine` direct add → `HAS_ENDPOINT`
+
+`HAS_PARAM` has **zero emission sites** anywhere in the codebase.
+
+**Active runtime impact (not just Neo4j concern):** `core/graph_path_validator.py` lists `has_endpoint` and `has_param` as valid allowed transitions in strict-mode path validation. Graphs populated via `graph_updater` will have `EXPOSES` edges where the validator expects `has_endpoint`, causing path validation failures today — before any Neo4j migration.
 
 ---
 
@@ -89,7 +96,12 @@ Chains detected: 1
   DFS idor→bac: 0 paths found
 ```
 
-The chain is built purely from keyword matching — the two nodes have no graph connection whatsoever. This inner engine is called by `ExploitChainEngine.detect_chains()` which is used by `RiskAnalyzer` and `AttackGraphBrain.get_chain_summary()`.
+The chain is built purely from keyword matching — the two nodes have no graph connection whatsoever.
+
+**Blast radius (verified by call-site analysis):**
+- The inner engine reaches `RiskAnalyzer` via the **web API only** — `web/backend/graph_api.py` injects `attack_graph_core.exploit_chain_engine.ExploitChainEngine` into `RiskAnalyzer` for the `/risk-report` and `/exploit-chains` endpoints.
+- All **CLI, worker, and scan pipeline** call-sites (`unified_scan_engine.py:2055`, `oneinfinity.py`, `worker/executor.py`) import from `exploit_chains.engine` (the outer, correct engine).
+- `get_chain_summary()` is defined in the inner engine but has **no call sites** in the codebase — it is dead code.
 
 ### Additional Chaining Issue
 
@@ -157,13 +169,15 @@ LEADS_TO edges: ✅ (vuln → impact)
 
 ### BFS
 
-Correctly implemented with `visited_states` tracking (prevents revisiting `(node_id, path)` pairs):
+Correctly implemented in `GraphQueryEngine.bfs()` with `visited_states` tracking (prevents revisiting `(node_id, path)` pairs):
 
 ```python
 state = (current_id, tuple(path))
 if state in visited_states or depth > max_depth:
     continue
 ```
+
+Note: The base `AttackGraphEngine.find_path()` uses the simpler `nid not in path` cycle check — the full visited-state tracking is a `GraphQueryEngine` enhancement.
 
 **Live test:** BFS from `/login` to VULN/EXPLOIT nodes returned 11 valid paths.
 
@@ -221,7 +235,7 @@ Persistence: PASS
 
 **Status: PARTIAL PASS**
 
-vulnbank.org is reachable (HTTP 200). Most external scan tools are not installed (ffuf, nuclei, sqlmap, etc.), limiting the live scan output. The graph mechanics were validated via a controlled simulation against vulnbank.org's endpoint structure.
+vulnbank.org is reachable (HTTP 200). Most external scan tools are not installed (ffuf, nuclei, sqlmap, etc.), so a full automated pipeline run was not possible. Graph mechanics were validated via a **Python simulation**: `graph_updater` and `attack_graph_brain` APIs were called directly with vulnbank.org as target, injecting realistic recon/scan data (subdomains, URLs, vulnerabilities, tokens) to exercise every graph layer. The node/edge counts below reflect this simulation, not a live crawl.
 
 ### Graph Build (Simulated with Real Target)
 
@@ -271,8 +285,8 @@ From live simulation:
 
 | # | File | Issue | Impact |
 |---|------|-------|--------|
-| C1 | `attack_graph_core/exploit_chain_engine.py:258-288` | `_find_vuln_sequence()` matches chains by keyword without graph path — confirmed with 0-edge chain between disconnected nodes | Phantom chains reach `RiskAnalyzer`, `get_chain_summary()`. Chains are SIMULATED not REAL. |
-| C2 | `attack_graph_core/graph_updater.py` (all methods) | `HAS_ENDPOINT`, `HAS_PARAM` never emitted — `EXPOSES` used instead | Neo4j Cypher queries on `HAS_ENDPOINT`/`HAS_PARAM` return empty. Schema mismatch breaks migration. |
+| C1 | `attack_graph_core/exploit_chain_engine.py:258-288` | `_find_vuln_sequence()` matches chains by keyword without graph path — confirmed with 0-edge chain between disconnected nodes | Phantom chains feed web API `/risk-report` and `/exploit-chains` endpoints via `graph_api.py`. CLI pipelines use the correct outer engine. |
+| C2 | `attack_graph_core/graph_updater.py` (all methods) + `HAS_PARAM` system-wide | `graph_updater` emits `EXPOSES` for `HAS_ENDPOINT` relationships; `HAS_PARAM` has zero emission sites; `graph_path_validator.py` expects both edge types — causing path validation failures today. | Active runtime defect (not just Neo4j concern): path validator fails on `graph_updater`-populated graphs. Neo4j migration impossible without schema alignment. |
 
 ### ⚠️ Weak Areas
 

@@ -9,9 +9,12 @@ from .graph_query_engine import GraphQueryEngine
 from .attack_planner import AttackPlanner
 from .exploit_chain_engine import ExploitChainEngine
 from .risk_analyzer import RiskAnalyzer
+from .graph_store import GraphStore, _enum_to_str
+
 
 __all__ = [
     "AttackGraphEngine", "Node", "Edge", "NodeType", "EdgeType",
     "GraphStore", "GraphUpdater", "GraphQueryEngine",
     "AttackPlanner", "ExploitChainEngine", "RiskAnalyzer",
+    "_enum_to_str",
 ]

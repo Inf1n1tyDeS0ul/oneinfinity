@@ -1652,7 +1652,7 @@ def print_intelligence_report(intel: ReconIntelligence, output_dir: str | Path |
 def main_cli(args):
     """Called by oneinfinity.py for 'oneinfinity adaptive-recon <domain>' command."""
     from modules.utils import banner
-    target = args.domain
+    target = getattr(args, "domain", None) or getattr(args, "target", None)
     depth = getattr(args, "depth", "standard")
     output = resolve_output_dir(getattr(args, "output", None), target)
 

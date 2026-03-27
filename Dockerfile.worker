@@ -18,7 +18,7 @@
 # ==============================================================
 
 ARG PYTHON_VERSION=3.11
-ARG GO_VERSION=1.22
+ARG GO_VERSION=1.24
 ARG CAPABILITIES=recon,vuln_scan,exploit
 ARG INSTALL_AI=0
 ARG INSTALL_MOBILE=0
@@ -27,8 +27,9 @@ ARG INSTALL_MOBILE=0
 # (Use BuildKit build cache from a prior `docker build .` run,
 #  or let Docker build this stage from scratch)
 FROM golang:${GO_VERSION}-bookworm AS go-tools
-ENV DEBIAN_FRONTEND=noninteractive GOBIN=/go-bins
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+ENV DEBIAN_FRONTEND=noninteractive GOBIN=/go-bins GOTOOLCHAIN=auto
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates libpcap-dev build-essential gcc \
     && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /go-bins
 RUN go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
@@ -44,8 +45,11 @@ RUN go install github.com/tomnomnom/assetfinder@latest
 RUN go install github.com/ffuf/ffuf/v2@latest
 RUN go install github.com/hahwul/dalfox/v2@latest
 RUN go install github.com/Emoe/kxss@latest
-RUN go install github.com/dwisiswant0/crlfuzz@latest
-RUN go install github.com/trufflesecurity/trufflehog/v3@latest
+RUN go install github.com/dwisiswant0/crlfuzz/cmd/crlfuzz@latest
+RUN git clone --depth 1 --branch v3.93.8 https://github.com/trufflesecurity/trufflehog.git /tmp/trufflehog \
+    && cd /tmp/trufflehog \
+    && go build -o /go-bins/trufflehog . \
+    && rm -rf /tmp/trufflehog
 RUN go install github.com/zricethezav/gitleaks/v8@latest
 RUN go install github.com/tomnomnom/gf@latest
 
@@ -98,9 +102,21 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # System packages required by scan tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        nmap masscan nikto whatweb curl wget git dnsutils \
-        procps libssl3 libffi8 perl ruby bash less \
+        nmap masscan curl wget git dnsutils \
+        procps libssl3 libffi8 perl ruby ruby-dev rubygems bash less \
+        netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Nikto and WhatWeb from source (not available via apt on bookworm)
+RUN git clone --depth=1 https://github.com/sullo/nikto /opt/nikto \
+    && ln -sf /opt/nikto/program/nikto.pl /usr/local/bin/nikto \
+    && chmod +x /opt/nikto/program/nikto.pl
+
+RUN git clone --depth=1 https://github.com/urbanadventurer/WhatWeb /opt/whatweb \
+    && ln -sf /opt/whatweb/whatweb /usr/local/bin/whatweb \
+    && chmod +x /opt/whatweb/whatweb \
+    && cd /opt/whatweb && gem install bundler --no-document \
+    && bundle install --without development 2>/dev/null || true
 
 # Python pip tools
 RUN pip install --no-cache-dir sqlmap dirsearch sublist3r \
@@ -122,7 +138,8 @@ RUN chmod +x /usr/local/bin/worker-entrypoint.sh \
     && ln -sf /app/oneinfinity.py /usr/local/bin/oneinfinity
 
 RUN groupadd -r oi && useradd -r -g oi -d /data -s /bin/bash oi \
-    && mkdir -p /data && chown -R oi:oi /data /go-bins
+    && mkdir -p /data /data/.nuclei-templates /data/raw /data/databases /data/logs \
+    && chown -R oi:oi /data /go-bins
 
 VOLUME ["/data", "/app/plugins"]
 USER oi

@@ -1,0 +1,3089 @@
+{
+	"info": {
+		"_postman_id": "9345d925-369b-44a4-825d-ca96f61a5bc5",
+		"name": "12Build REST API GC 1.1",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "10058404"
+	},
+	"item": [
+		{
+			"name": "Token",
+			"item": [
+				{
+					"name": "Get Token",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var data = JSON.parse(responseBody);\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Check if token is present in dataset\",function () {\r",
+									"  pm.expect(data.token).to.not.be.undefined;\r",
+									"});\r",
+									"\r",
+									"if ('token' in data) {\r",
+									"    pm.collectionVariables.set(\"Token\", data.token);\r",
+									"}\r",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{ \r\n\t\"login\":\"{{Login}}\",\r\n\t\"apiKey\":\"{{ApiKey}}\",\r\n\t\"forceNew\":\"1\"\r\n}"
+						},
+						"url": {
+							"raw": "{{Endpoint}}/tokens",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"tokens"
+							]
+						}
+					},
+					"response": [
+						{
+							"name": "Get Token",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"name": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{ \r\n\t\"login\":\"{{Login}}\",\r\n\t\"apiKey\":\"{{ApiKey}}\",\r\n\t\"forceNew\":\"1\"\r\n}"
+								},
+								"url": {
+									"raw": "{{Endpoint}}/tokens",
+									"host": [
+										"{{Endpoint}}"
+									],
+									"path": [
+										"tokens"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Server",
+									"value": "nginx/1.4.6 (Ubuntu)"
+								},
+								{
+									"key": "Date",
+									"value": "Wed, 04 Dec 2019 13:44:14 GMT"
+								},
+								{
+									"key": "Content-Type",
+									"value": "application/json; charset=utf-8"
+								},
+								{
+									"key": "Content-Length",
+									"value": "142"
+								},
+								{
+									"key": "Connection",
+									"value": "keep-alive"
+								},
+								{
+									"key": "X-Powered-By",
+									"value": "PHP/7.0.33-12+ubuntu18.04.1+deb.sury.org+1"
+								},
+								{
+									"key": "Strict-Transport-Security",
+									"value": "max-age=604800; includeSubDomains"
+								},
+								{
+									"key": "Access-Control-Allow-Origin",
+									"value": "*"
+								},
+								{
+									"key": "Access-Control-Allow-Headers",
+									"value": "*"
+								},
+								{
+									"key": "Vary",
+									"value": "Accept-Encoding"
+								},
+								{
+									"key": "Content-Encoding",
+									"value": "gzip"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"token\": \"d189de8836f7fb39dfdc1177ce223064b3e2365eb527922859864bdec836ae58c0f7061e6f3032b76ac5c4f2973bc0385b678572ff44d6749c40ec6e8776151d\",\n    \"expireDate\": 1575474254\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Projects",
+			"item": [
+				{
+					"name": "addProject",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"project id is present in dataset\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.id).to.not.be.undefined;",
+									"});",
+									"",
+									"var data = JSON.parse(responseBody);",
+									"if (typeof data !== 'undefined' && 'id' in data) {",
+									"    pm.collectionVariables.set(\"ProjectId\", data.id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"value": "{{Token}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n\t\"name\":\"Api test project {{$timestamp}}\",\r\n\t\"phaseId\": \"{{PhaseId}}\",\r\n\t\"product\":\"tender\",\r\n\t\"calcNumber\":\"1234\",\r\n\t\"workNumber\":\"2222\",\r\n\t\"address_1\":\"Ernst Machstraat 10\",\r\n\t\"address_2\":\"\",\r\n\t\"zip\":\"7442DL\",\r\n\t\"city\":\"Nijverdal\",\r\n\t\"countryCode\":\"nl\",\r\n\t\"buildingSectors\":\"Infra\",\r\n\t\"buildingActivities\":\"Verbouw\",\r\n\t\"calculator\":\"Simon Jansen\",\r\n\t\"constructor\":\"Tessa de Wit\",\r\n\t\"buildingFunctions\":\"Woon,Parkeergarages\",\r\n\t\"sharePointSiteWebUrl\":\"https://onetwobuild.sharepoint.com/sites/test-site-collectie\"\r\n}"
+						},
+						"url": {
+							"raw": "{{Endpoint}}/project",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "addProject without product",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"project id is present in dataset\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.id).to.not.be.undefined;",
+									"});",
+									"",
+									"var data = JSON.parse(responseBody);",
+									"if (typeof data !== 'undefined' && 'id' in data) {",
+									"    pm.collectionVariables.set(\"ProjectId\", data.id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n\t\"name\":\"Api test project without product {{$timestamp}}\",\r\n\t\"phaseId\": \"{{PhaseId}}\",\r\n\t\"calcNumber\":\"1234\",\r\n\t\"workNumber\":\"2222\",\r\n\t\"address_1\":\"Ernst Machstraat 10\",\r\n\t\"address_2\":\"\",\r\n\t\"zip\":\"7442DL\",\r\n\t\"city\":\"Nijverdal\",\r\n\t\"countryCode\":\"nl\",\r\n\t\"buildingSectors\":\"Infra\",\r\n\t\"buildingActivities\":\"Verbouw\",\r\n\t\"calculator\":\"Simon Jansen\",\r\n\t\"constructor\":\"Tessa de Wit\",\r\n\t\"buildingFunctions\":\"Woon,Parkeergarages\",\r\n\t\"sharePointSiteWebUrl\":\"https://onetwobuild.sharepoint.com/sites/test-site-collectie\"\r\n}"
+						},
+						"url": {
+							"raw": "{{Endpoint}}/project",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "listProjects",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"protocolProfileBehavior": {
+						"disableBodyPruning": true
+					},
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": []
+						},
+						"url": {
+							"raw": "{{Endpoint}}/project/list?active=1&product=tender&pageSize=100&page=1",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project",
+								"list"
+							],
+							"query": [
+								{
+									"key": "active",
+									"value": "1"
+								},
+								{
+									"key": "product",
+									"value": "tender"
+								},
+								{
+									"key": "pageSize",
+									"value": "100"
+								},
+								{
+									"key": "page",
+									"value": "1"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "listProjectsByType",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"protocolProfileBehavior": {
+						"disableBodyPruning": true
+					},
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": []
+						},
+						"url": {
+							"raw": "{{Endpoint}}/project/list/template",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project",
+								"list",
+								"template"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "getProject",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/project/{{ProjectId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project",
+								"{{ProjectId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "updateProject",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"name\": \"Updated test project\",\n\t\"phaseId\": 238073,\n\t\"sharePointSiteWebUrl\":\"https://onetwobuild.sharepoint.com/sites/test-site-collectie\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/project/{{ProjectId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project",
+								"{{ProjectId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "closeProject",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": []
+						},
+						"url": {
+							"raw": "{{Endpoint}}/project/{{ProjectId}}/close",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project",
+								"{{ProjectId}}",
+								"close"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "openProject",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": []
+						},
+						"url": {
+							"raw": "{{Endpoint}}/project/{{ProjectId}}/open",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project",
+								"{{ProjectId}}",
+								"open"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "listCommunication",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"value": "{{Token}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/project/{{ProjectId}}/communication/{{PhaseId}}/list",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project",
+								"{{ProjectId}}",
+								"communication",
+								"{{PhaseId}}",
+								"list"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "getCommunication",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/project/{{ProjectId}}/communication/{{CommunicationId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project",
+								"{{ProjectId}}",
+								"communication",
+								"{{CommunicationId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "deleteProject",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/project/{{ProjectId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project",
+								"{{ProjectId}}"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Project phases",
+			"item": [
+				{
+					"name": "listPhases",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/project/phases/",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project",
+								"phases",
+								""
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "listProjectPhases",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/project/{{ProjectId}}/phases",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project",
+								"{{ProjectId}}",
+								"phases"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "closeProjectPhase",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": [
+								{
+									"key": "phaseId",
+									"value": "238084,238085",
+									"type": "text"
+								},
+								{
+									"key": "phase",
+									"value": "Calculatie",
+									"type": "text",
+									"disabled": true
+								}
+							]
+						},
+						"url": {
+							"raw": "{{Endpoint}}/project/{{ProjectId}}/projectphase/close",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project",
+								"{{ProjectId}}",
+								"projectphase",
+								"close"
+							],
+							"query": [
+								{
+									"key": "phaseId",
+									"value": "",
+									"disabled": true
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "openProjectPhase",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/x-www-form-urlencoded"
+							}
+						],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": [
+								{
+									"key": "phaseId",
+									"value": "238084,238085",
+									"type": "text"
+								},
+								{
+									"key": "phase",
+									"value": "Calculatie",
+									"type": "text",
+									"disabled": true
+								}
+							]
+						},
+						"url": {
+							"raw": "{{Endpoint}}/project/{{ProjectId}}/projectphase/open",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project",
+								"{{ProjectId}}",
+								"projectphase",
+								"open"
+							],
+							"query": [
+								{
+									"key": "phaseId",
+									"value": "",
+									"disabled": true
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Documents",
+			"item": [
+				{
+					"name": "createDocument",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (!pm.collectionVariables.get(\"SkipTest\")) {",
+									"    var data = JSON.parse(responseBody);",
+									"",
+									"    if (typeof data !== 'undefined' && 'url' in data) {",
+									"        pm.collectionVariables.set(\"DocumentUrl\", data.url);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"value": "{{Token}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "multipart/form-data",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "product",
+									"value": "tender",
+									"type": "text"
+								},
+								{
+									"key": "phaseId",
+									"value": "238073",
+									"type": "text"
+								},
+								{
+									"key": "path",
+									"value": "/sdv/sdf",
+									"type": "text"
+								},
+								{
+									"key": "externalData",
+									"value": "external123123",
+									"type": "text"
+								},
+								{
+									"key": "versionText",
+									"value": "g2",
+									"type": "text"
+								},
+								{
+									"key": "file_contents",
+									"type": "file",
+									"src": "/home/nicole/Pictures/12Build Logo.svg"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{Endpoint}}/project/{{ProjectId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project",
+								"{{ProjectId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "listDocument",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"phaseId\": 238072\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/project/{{ProjectId}}/document/list",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project",
+								"{{ProjectId}}",
+								"document",
+								"list"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "getDocument",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/document/{{DocumentId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"document",
+								"{{DocumentId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "removeDocument",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": []
+						},
+						"url": {
+							"raw": "{{Endpoint}}/document/{{DocumentId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"document",
+								"{{DocumentId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "setDocument",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": [
+								{
+									"key": "name",
+									"value": "TestDoc-{{DocumentId}}",
+									"type": "text"
+								},
+								{
+									"key": "externalData",
+									"value": "newEx",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{Endpoint}}/document/{{DocumentId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"document",
+								"{{DocumentId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Add document",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test.skip(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"pm.test.skip(\"documentId is present in dataset\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    pm.expect(jsonData.documentId).to.not.be.undefined;\r",
+									"});\r",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"value": "{{Token}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "file",
+							"file": {
+								"src": "/home/nicole/Pictures/12Build Logo.svg"
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/documents/groups/{{DocumentGroupId}}/{{PhaseId}}/12Build_logo.png",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"documents",
+								"groups",
+								"{{DocumentGroupId}}",
+								"{{PhaseId}}",
+								"12Build_logo.png"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "setExternalReference",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/x-www-form-urlencoded",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": [
+								{
+									"key": "type",
+									"value": "sharePoint",
+									"type": "text"
+								},
+								{
+									"key": "referenceId",
+									"value": "1234567wertyui",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{Endpoint}}/document/{{DocumentId}}/externalreference",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"document",
+								"{{DocumentId}}",
+								"externalreference"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Document groups",
+			"item": [
+				{
+					"name": "listDocumentGroups",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"\r",
+									"pm.test.skip(\"Document group 1 is present in dataset\",function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    var documentGroup = null;\r",
+									"    jsonData.forEach(documentGroupData => {\r",
+									"        if (documentGroupData.id === 1) {\r",
+									"            documentGroup = documentGroupData;\r",
+									"        }\r",
+									"    });\r",
+									"    \r",
+									"    pm.expect(documentGroup.name).to.equal('Document group 1');\r",
+									"});\r",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/project/{{ProjectId}}/document/group",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project",
+								"{{ProjectId}}",
+								"document",
+								"group"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "createDocumentGroup",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var data = JSON.parse(responseBody);",
+									"if (typeof data !== 'undefined' && 'id' in data) {",
+									"    pm.collectionVariables.set(\"DocumentGroupId\", data.id);",
+									"}",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Document group id is present in dataset\",function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.id).to.not.be.undefined;",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"name\": \"New document group\",\n\t\"order\": 1,\n\t\"parentId\": 0\n}"
+						},
+						"url": {
+							"raw": "{{Endpoint}}/project/{{ProjectId}}/document/group",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"project",
+								"{{ProjectId}}",
+								"document",
+								"group"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "getDocumentGroup",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/document/group/{{DocumentGroupId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"document",
+								"group",
+								"{{DocumentGroupId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "updateDocumentGroup",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"name\": \"Updated documentGroup name\",\n\t\"order\": 2,\n\t\"parentId\": 0\n}"
+						},
+						"url": {
+							"raw": "{{Endpoint}}/document/group/{{DocumentGroupId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"document",
+								"group",
+								"{{DocumentGroupId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "deleteDocumentGroup",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/document/group/{{DocumentGroupId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"document",
+								"group",
+								"{{DocumentGroupId}}"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Files",
+			"item": [
+				{
+					"name": "getFile",
+					"protocolProfileBehavior": {
+						"disableBodyPruning": true
+					},
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": []
+						},
+						"url": {
+							"raw": "{{Endpoint}}/file/project/{{DocumentId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"file",
+								"project",
+								"{{DocumentId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "getMessagePdf",
+					"protocolProfileBehavior": {
+						"disableBodyPruning": true
+					},
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": []
+						},
+						"url": {
+							"raw": "{{Endpoint}}/message/{{MessageId}}/pdf",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"message",
+								"{{MessageId}}",
+								"pdf"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Relations",
+			"item": [
+				{
+					"name": "addRelation",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"companyId\": {{CompanyId}},\n    \"relation\": \"gold\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/relation",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"relation"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "updateRelation",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"companyId\": {{CompanyId}},\n    \"relation\": \"green\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/relation",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"relation"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "getRelations",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"relation\": \"green\",\n    \"dataKey\": \"\",\n    \"dataValue\": \"\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/relation/list",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"relation",
+								"list"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "addRelationData",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"key\": \"sourceId\",\n\t\"value\": \"123\",\n\t\"source\": \"Postman\",\n    \"showInProfile\": 0,\n    \"type\": \"text\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/relation/{{CompanyId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"relation",
+								"{{CompanyId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "putRelationData",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": [
+								{
+									"key": "key",
+									"value": "sourceId",
+									"type": "text"
+								},
+								{
+									"key": "value\n",
+									"value": "2345",
+									"type": "text"
+								},
+								{
+									"key": "source",
+									"value": "postman",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{Endpoint}}/relation/{{CompanyId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"relation",
+								"{{CompanyId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "removeRelation",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"companyId\": {{CompanyId}}\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/relation",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"relation"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "removeRelationData",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"key\": \"sourceId\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/relation/{{CompanyId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"relation",
+								"{{CompanyId}}"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Stabu chapters",
+			"item": [
+				{
+					"name": "List stabu chapters",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"pm.test(\"There are multiple chapters\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    pm.expect(Object.keys(jsonData)).to.have.lengthOf.above(1);\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Chapter contains expected fields\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    var firstChapterData = Object.values(jsonData)[0];\r",
+									"    \r",
+									"    pm.expect(firstChapterData).to.have.all.keys('id', 'number', 'name', 'description');\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"value": "{{Token}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/chapters/list/1",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"chapters",
+								"list",
+								"1"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Classification systems",
+			"item": [
+				{
+					"name": "listCompanyClassificationSystems",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"pm.test(\"There is one classification linked to the company\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    pm.expect(Object.keys(jsonData)).to.have.lengthOf(1);\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Classification contains expected fields\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    var firstClassificationSystemData = Object.values(jsonData)[0];\r",
+									"    \r",
+									"    pm.expect(firstClassificationSystemData).to.have.all.keys('id', 'name', 'countryCodes', 'description');\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"value": "{{Token}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/classification-systems/list",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"classification-systems",
+								"list"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "listAllClassificationSystems",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"\r",
+									"pm.test(\"There are at least five classifications\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    pm.expect(Object.keys(jsonData)).to.have.lengthOf.above(5);\r",
+									"});\r",
+									"\r",
+									"\r",
+									"pm.test(\"Classification contains expected fields\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    var firstClassificationSystemData = Object.values(jsonData)[0];\r",
+									"    \r",
+									"    pm.expect(firstClassificationSystemData).to.have.all.keys('id', 'name', 'countryCodes', 'description');\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/classification-systems/list/all",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"classification-systems",
+								"list",
+								"all"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Work components",
+			"item": [
+				{
+					"name": "addWorkComponent",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var data = JSON.parse(responseBody);",
+									"if (typeof data !== 'undefined' && 'id' in data) {",
+									"    pm.collectionVariables.set(\"WorkComponentId\", data.id);",
+									"}",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Work component id is present in dataset\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.id).to.not.be.undefined;",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"value": "{{Token}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n    \"product\": \"tender\",\r\n    \"name\": \"New work component\",\r\n    \"projectId\": \"{{ProjectId}}\",\r\n    \"stabuChapterIds\": [555, 568],\r\n    \"internalNote\": \"Internal note\",\r\n    \"plannedStart\": \"Start 2024\",\r\n    \"plannedComplete\": \"End 2036\",\r\n    \"externalData\":\"MG-123\"\r\n}"
+						},
+						"url": {
+							"raw": "{{Endpoint}}/work-component",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"work-component"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "updateWorkComponent",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Work component id is present in dataset\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.id).to.not.be.undefined;",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n\t\"name\": \"Updated work component\",\r\n\t\"stabuChapterIds\": [555, 568],\r\n\t\"internalNote\": \"Description\",\r\n\t\"plannedStart\": \"Start 2021\",\r\n\t\"plannedComplete\": \"End 2036\",\r\n    \"externalData\":\"MG-456\"\r\n}"
+						},
+						"url": {
+							"raw": "{{Endpoint}}/work-component/{{WorkComponentId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"work-component",
+								"{{WorkComponentId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "deleteWorkComponent",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/work-component/{{WorkComponentId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"work-component",
+								"{{WorkComponentId}}"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Invitations",
+			"item": [
+				{
+					"name": "addInvitation",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var data = JSON.parse(responseBody);\r",
+									"if (typeof data !== 'undefined' && 'id' in data) {\r",
+									"    pm.collectionVariables.set(\"InvitationId\", data.id);\r",
+									"}\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Auth-Token",
+								"value": "{{Token}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"workComponentId\": {{WorkComponentId}},\n\t\"phaseId\": {{PhaseId}},\n\t\"companyId\": 3\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/invitation",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"invitation"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "updateInvitation",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							},
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"status\": \"calculating\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/invitation/{{InvitationId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"invitation",
+								"{{InvitationId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "deleteInvitation",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							},
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"status\": \"calculating\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/invitation/{{InvitationId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"invitation",
+								"{{InvitationId}}"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Specialist",
+			"item": [
+				{
+					"name": "getSpecialist",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"var data = JSON.parse(responseBody);",
+									"if (typeof data !== 'undefined' && 'id' in data) {",
+									"    pm.collectionVariables.set(\"SpecialsitId\", data.id);",
+									"}",
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"protocolProfileBehavior": {
+						"disableBodyPruning": true
+					},
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": ""
+						},
+						"url": {
+							"raw": "{{Endpoint}}/specialist/{{CompanyId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"specialist",
+								"{{CompanyId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "createSpecialist",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (!pm.collectionVariables.get(\"SkipTest\")) {",
+									"    pm.test(\"Status code is 200\", function () {",
+									"        pm.response.to.have.status(200);",
+									"    });",
+									"}",
+									"",
+									"var data = JSON.parse(responseBody);",
+									"if (typeof data !== 'undefined' && 'id' in data) {",
+									"",
+									"    pm.collectionVariables.set(\"CompanyId\", data.id);",
+									"}",
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"var timestamp = Date.now().toString();\r",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n\t\"name\":\"Api test specialist {{$timestamp}}\",\r\n    \"description\":\"Testing adding another specialist\",\r\n\t\"registrationNumber\":\"{{RegistrationNumber}}\",\r\n\t\"countryCode\":\"{{CountryCode}}\"\r\n}"
+						},
+						"url": {
+							"raw": "{{Endpoint}}/specialist",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"specialist"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Company",
+			"item": [
+				{
+					"name": "findByRegistrationNumber",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"protocolProfileBehavior": {
+						"disableBodyPruning": true
+					},
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": ""
+						},
+						"url": {
+							"raw": "{{Endpoint}}/company/findByRegistrationNumber/nl/123456780000",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"company",
+								"findByRegistrationNumber",
+								"nl",
+								"123456780000"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Budget",
+			"item": [
+				{
+					"name": "addBudget",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 201\", function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"",
+									"",
+									"pm.test(\"budgetId is present in dataset\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.budgetId).to.not.be.undefined;",
+									"});",
+									"",
+									"var data = JSON.parse(responseBody);",
+									"if (typeof data !== 'undefined' && 'budgetId' in data) {",
+									"    pm.collectionVariables.set(\"BudgetId\", data.budgetId);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"value": "{{Token}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "Cookie",
+								"value": "XDEBUG_SESSION=PHPSTORM",
+								"type": "text",
+								"disabled": true
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n    \"projectId\": {{ProjectId}}, \r\n    \"phaseId\": 238072\r\n}"
+						},
+						"url": {
+							"raw": "{{Endpoint}}/budget",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"budget"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "getBudget",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"",
+									"pm.test(\"project id is present in dataset\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.id).to.not.be.undefined;",
+									"});",
+									"",
+									"var data = JSON.parse(responseBody);",
+									"if (typeof data !== 'undefined' && 'id' in data) {",
+									"    postman.setEnvironmentVariable(\"ProjectId\", data.id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"protocolProfileBehavior": {
+						"disableBodyPruning": true
+					},
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"value": "{{Token}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "Cookie",
+								"value": "XDEBUG_SESSION=PHPSTORM",
+								"type": "text",
+								"disabled": true
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": ""
+						},
+						"url": {
+							"raw": "{{Endpoint}}/budget?projectId=6&phaseId=10",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"budget"
+							],
+							"query": [
+								{
+									"key": "projectId",
+									"value": "6"
+								},
+								{
+									"key": "phaseId",
+									"value": "10"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "BudgetRows",
+			"item": [
+				{
+					"name": "addBudgetRow",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var data = JSON.parse(responseBody);",
+									"",
+									"if (typeof data !== 'undefined' && 'budgetRowId' in data) {",
+									"    pm.collectionVariables.set(\"BudgetRowId\", data.budgetRowId);",
+									"}",
+									"",
+									"pm.test(\"Status code is 201\", function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"protocolProfileBehavior": {
+						"disabledSystemHeaders": {}
+					},
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Auth-Token",
+								"value": "{{Token}} ",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"budgetId\": \"1\",\n    \"rowNumber\": \"1\",\n    \"properties\": {\n        \"price\": \"150\",\n        \"measurement\": \"\",\n        \"projectSpecMt\": \"\",\n        \"details\": \"Quick-drying\",\n        \"unit\": \"bags\",\n        \"numberOfUnits\": \"20\",\n        \"name\": \"Cement\"\n    }\n}\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/budgetrow",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"budgetrow"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "updateBudgetRow",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var data = JSON.parse(responseBody);",
+									"",
+									"if (typeof data !== 'undefined' && 'budgetRowId' in data) {",
+									"    pm.collectionVariables.set(\"BudgetRowId\", data.budgetRowId);",
+									"}",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"protocolProfileBehavior": {
+						"disabledSystemHeaders": {}
+					},
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Auth-Token",
+								"value": "{{Token}} ",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"budgetRowId\": {{BudgetRowId}},\n    \"properties\": {\n        \"price\": \"151\",\n        \"measurement\": \"\",\n        \"projectSpecMt\": \"\",\n        \"details\": \"New details\",\n        \"unit\": \"bag\",\n        \"numberOfUnits\": \"23\",\n        \"name\": \"Cement\"\n    }\n}\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/budgetrow",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"budgetrow"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "listBudgetRows",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"protocolProfileBehavior": {
+						"disabledSystemHeaders": {},
+						"disableBodyPruning": true
+					},
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Auth-Token",
+								"value": "{{Token}} ",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/budgetrow/{{BudgetId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"budgetrow",
+								"{{BudgetId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "unlinkBudgetRow",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var data = JSON.parse(responseBody);",
+									"",
+									"pm.test(\"Status code is 204\", function () {",
+									"    pm.response.to.have.status(204);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"protocolProfileBehavior": {
+						"disabledSystemHeaders": {}
+					},
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Auth-Token",
+								"value": "{{Token}} ",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"budgetRowId\": \"{{BudgetRowId}}\",\n    \"messageGroupId\": \"{{WorkComponentId}}\"\n}\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/budgetrow/unlink",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"budgetrow",
+								"unlink"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "deleteBudgetRow",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 204\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"protocolProfileBehavior": {
+						"disabledSystemHeaders": {}
+					},
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Auth-Token",
+								"value": "{{Token}} ",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/budgetrow/{{BudgetRowId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"budgetrow",
+								"{{BudgetRowId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "linkBudgetRow",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 201\", function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"protocolProfileBehavior": {
+						"disabledSystemHeaders": {}
+					},
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"value": "{{Token}} ",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"budgetRowId\": \"{{BudgetRowId}}\",\n    \"messageGroupId\": \"{{WorkComponentId}}\"\n}\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{Endpoint}}/budgetrow/link",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"budgetrow",
+								"link"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "Url",
+			"value": "https://www.12build.com",
+			"type": "string"
+		},
+		{
+			"key": "Endpoint",
+			"value": "{{Url}}/nl_NL/rest/1.1",
+			"type": "string"
+		},
+		{
+			"key": "Login",
+			"value": ""
+		},
+		{
+			"key": "ApiKey",
+			"value": ""
+		},
+		{
+			"key": "Token",
+			"value": ""
+		},
+		{
+			"key": "PhaseId",
+			"value": "238072",
+			"type": "string"
+		},
+		{
+			"key": "ProjectId",
+			"value": "1",
+			"type": "string"
+		},
+		{
+			"key": "CommunicationId",
+			"value": "1",
+			"type": "string"
+		},
+		{
+			"key": "MessageId",
+			"value": "1",
+			"type": "string"
+		},
+		{
+			"key": "DocumentId",
+			"value": "1",
+			"type": "string"
+		},
+		{
+			"key": "SkipTest",
+			"value": "false",
+			"type": "string"
+		},
+		{
+			"key": "DocumentUrl",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "DocumentGroupId",
+			"value": "1",
+			"type": "string"
+		},
+		{
+			"key": "CompanyId",
+			"value": "1",
+			"type": "string"
+		},
+		{
+			"key": "WorkComponentId",
+			"value": "1",
+			"type": "string"
+		},
+		{
+			"key": "InvitationId",
+			"value": "1",
+			"type": "string"
+		},
+		{
+			"key": "SpecialistId",
+			"value": "1",
+			"type": "string"
+		},
+		{
+			"key": "RegistrationNumber",
+			"value": "12345678",
+			"type": "string"
+		},
+		{
+			"key": "CountryCode",
+			"value": "NL",
+			"type": "string"
+		},
+		{
+			"key": "BudgetId",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "BudgetRowId",
+			"value": "",
+			"type": "string"
+		}
+	]
+}

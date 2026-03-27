@@ -114,3 +114,5 @@ desktop.ini
 .claude/
 uploads/
 tmp/
+data/.gf/.src/
+data/

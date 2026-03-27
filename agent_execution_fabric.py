@@ -645,6 +645,8 @@ class AgentExecutionFabric:
 
         # Global completion callback
         self._global_on_complete: Optional[Callable] = None
+        # Internal finding buffer — drained by drain()
+        self._collected_findings: List[dict] = []
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -736,6 +738,9 @@ class AgentExecutionFabric:
             else:
                 self._failed += 1
             self._futures.pop(task.task_id, None)
+            # Collect findings for drain()
+            for _f in result.findings:
+                self._collected_findings.append({**_f, "_fabric_task": task.task_id})
 
         # Publish to event bus
         self._publish_result(result)
@@ -789,6 +794,46 @@ class AgentExecutionFabric:
 
     def list_agent_types(self) -> List[str]:
         return list(_AGENT_CLASSES.keys())
+
+    def drain(self, timeout_s: float = 30.0) -> List[dict]:
+        """
+        Wait for all pending tasks to complete and collect their findings.
+
+        Blocks until the task queue is empty AND all active futures resolve,
+        or until *timeout_s* seconds elapse (whichever comes first).
+
+        Returns
+        -------
+        List[dict]
+            All findings produced by completed tasks since the last drain.
+        """
+        import time as _time
+        deadline = _time.time() + timeout_s
+        # 1. Wait for the queue to drain
+        while _time.time() < deadline:
+            if self._task_queue.empty():
+                break
+            _time.sleep(0.25)
+        # 2. Wait for in-flight futures to complete
+        while _time.time() < deadline:
+            with self._lock:
+                pending = dict(self._futures)
+            if not pending:
+                break
+            # Wait on up to 8 futures at a time
+            for _future in list(pending.values())[:8]:
+                remaining = max(0.1, deadline - _time.time())
+                try:
+                    _future.result(timeout=remaining)
+                except Exception:
+                    pass
+        # 3. Collect findings from the callback buffer
+        with self._lock:
+            collected = list(self._collected_findings)
+            self._collected_findings.clear()
+        log.info("Fabric drain: %d findings collected (%d completed, %d failed)",
+                 len(collected), self._completed, self._failed)
+        return collected
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────────

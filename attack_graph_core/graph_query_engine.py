@@ -93,16 +93,92 @@ class GraphQueryEngine:
     """
     Advanced graph traversal and attack path analysis engine.
     All methods are read-only against the AttackGraphEngine.
+
+    Caching: BFS/DFS results are cached by (start_id, target_types_key, max_depth).
+    Cache is invalidated when the underlying engine's node/edge count changes.
     """
 
     def __init__(self, engine: AttackGraphEngine = None):
         self._engine = engine  # resolved lazily
+        self._cache: dict = {}              # key → cached result
+        self._cache_snapshot: tuple = (0, 0)  # (node_count, edge_count) at last cache fill
 
     @property
     def engine(self) -> AttackGraphEngine:
         if self._engine is None:
             self._engine = get_engine()
         return self._engine
+
+    def _cache_key(self, method: str, *args) -> tuple:
+        return (method,) + args
+
+    def _cache_valid(self) -> bool:
+        """Return True if the graph hasn't changed since last cache fill."""
+        try:
+            stats = self.engine.get_stats()
+            snap = (stats["total_nodes"], stats["total_edges"])
+            return snap == self._cache_snapshot
+        except Exception:
+            return False
+
+    def _cache_get(self, key: tuple):
+        if not self._cache_valid():
+            self._cache.clear()
+            try:
+                stats = self.engine.get_stats()
+                self._cache_snapshot = (stats["total_nodes"], stats["total_edges"])
+            except Exception:
+                pass
+            return None
+        return self._cache.get(key)
+
+    def _cache_set(self, key: tuple, value):
+        try:
+            stats = self.engine.get_stats()
+            self._cache_snapshot = (stats["total_nodes"], stats["total_edges"])
+        except Exception:
+            pass
+        self._cache[key] = value
+        # Keep cache bounded
+        if len(self._cache) > 256:
+            oldest = next(iter(self._cache))
+            del self._cache[oldest]
+        return value
+
+    def invalidate_cache(self):
+        """Force full cache invalidation (call after batch graph mutations)."""
+        self._cache.clear()
+        self._cache_snapshot = (0, 0)
+
+    # ------------------------------------------------------------------
+    # Additional query APIs
+    # ------------------------------------------------------------------
+
+    def get_neighbors(self, node_id: str, edge_type: EdgeType = None) -> list:
+        """Return immediate neighbor nodes of node_id (thin wrapper over engine)."""
+        return self.engine.get_neighbors(node_id, edge_type=edge_type)
+
+    def find_paths(self, source_id: str, target_id: str, max_depth: int = 6) -> list:
+        """All paths from source to target (cached DFS)."""
+        key = self._cache_key("find_paths", source_id, target_id, max_depth)
+        cached = self._cache_get(key)
+        if cached is not None:
+            return cached
+        result = self.dfs_paths(source_id, target_id, max_depth)
+        return self._cache_set(key, result)
+
+    def filter_nodes(self, node_type: NodeType = None, severity: str = None,
+                     exploitable: bool = None, label_contains: str = None) -> list:
+        """Convenience wrapper for engine.find_nodes with caching."""
+        key = self._cache_key("filter_nodes", node_type, severity, exploitable, label_contains)
+        cached = self._cache_get(key)
+        if cached is not None:
+            return cached
+        result = self.engine.find_nodes(
+            node_type=node_type, severity=severity,
+            exploitable=exploitable, label_contains=label_contains,
+        )
+        return self._cache_set(key, result)
 
     # ------------------------------------------------------------------
     # BFS / DFS primitives
@@ -117,7 +193,14 @@ class GraphQueryEngine:
         """
         BFS from start_id. Returns all paths (as node lists) that reach
         a node whose type is in target_types (or all paths if target_types is None).
+        Results are cached per (start_id, target_types, max_depth).
         """
+        tt_key = tuple(sorted(str(t) for t in target_types)) if target_types else None
+        cache_key = self._cache_key("bfs", start_id, tt_key, max_depth)
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+
         all_paths = []
         queue = deque([(start_id, [start_id], 0)])
         visited_states = set()
@@ -141,14 +224,63 @@ class GraphQueryEngine:
                 if nid not in path:
                     queue.append((nid, path + [nid], depth + 1))
 
-        # If no target_types filter, return all reachable paths
+        # If no target_types filter, collect all visited paths
         if not target_types:
-            return [[self.engine.get_node(nid) for nid in path] for path in []]
+            seen_paths = []
+            visited_for_all: set = set()
+            q2 = deque([(start_id, [start_id], 0)])
+            while q2:
+                cur, pth, dep = q2.popleft()
+                state = (cur, tuple(pth))
+                if state in visited_for_all or dep > max_depth:
+                    continue
+                visited_for_all.add(state)
+                if len(pth) > 1:
+                    node_path = [self.engine.get_node(nid) for nid in pth]
+                    node_path = [n for n in node_path if n]
+                    if node_path:
+                        seen_paths.append(node_path)
+                for edge in self.engine.get_edges_from(cur):
+                    nid = edge.target_id
+                    if nid not in pth:
+                        q2.append((nid, pth + [nid], dep + 1))
+            return self._cache_set(cache_key, seen_paths)
 
-        return all_paths
+        return self._cache_set(cache_key, all_paths)
 
     def dfs_paths(self, start_id: str, end_id: str, max_depth: int = 6) -> list:
-        """DFS to find all paths from start_id to end_id."""
+        """DFS to find all paths from start_id to end_id.
+
+        Hybrid: when max_depth exceeds ``hybrid_depth_threshold`` (config/graph.yaml)
+        and Neo4j sync is active, try Neo4j variable-length paths first; fall back to
+        in-memory DFS if empty or unavailable.
+        """
+        try:
+            from core.graph_config import load_graph_config
+            thr = int((load_graph_config().get("neo4j") or {}).get("hybrid_depth_threshold") or 3)
+        except Exception:
+            thr = 3
+
+        if max_depth > thr:
+            try:
+                from core.graph_neo4j_bootstrap import get_neo4j_sync_backend
+                back = get_neo4j_sync_backend()
+                if back is not None and hasattr(back, "find_paths_node_ids"):
+                    id_paths = back.find_paths_node_ids(
+                        start_id, end_id, max_depth=max_depth, max_paths=48
+                    )
+                    if id_paths:
+                        resolved = []
+                        for pids in id_paths:
+                            node_path = [self.engine.get_node(nid) for nid in pids]
+                            node_path = [n for n in node_path if n]
+                            if len(node_path) > 1:
+                                resolved.append(node_path)
+                        if resolved:
+                            return resolved
+            except Exception:
+                pass
+
         all_paths = []
 
         def _dfs(current_id: str, path: list, depth: int):

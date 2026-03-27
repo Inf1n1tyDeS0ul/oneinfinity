@@ -37,8 +37,6 @@
 #   open http://localhost:9090    # Prometheus
 # ==============================================================
 
-version: "3.9"
-
 # ==============================================================
 # Shared configuration fragments
 # ==============================================================
@@ -133,7 +131,7 @@ services:
       - "--host=0.0.0.0"
       - "--port=8000"
       - "--workers=2"
-      - "--log-level=${LOG_LEVEL:-info}"
+      - "--log-level=info"
       - "--access-log"
     environment:
       <<: *common-env
@@ -168,9 +166,8 @@ services:
   # ── Recon Workers — Subdomain/URL discovery ────────────────
   # Scale with: docker compose up --scale worker-recon=4
   worker-recon:
-    <<: *worker-base
-    <<: *resource-limits-worker
-    image: ghcr.io/inf1n1tydes0ul/oneinfinity:${IMAGE_TAG:-latest}
+    <<: [*worker-base, *resource-limits-worker]
+    image: ghcr.io/inf1n1tydes0ul/oneinfinity-worker:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile.worker
@@ -191,9 +188,8 @@ services:
   # ── Vuln Scan Workers — Nuclei/Dalfox/SQLMap ──────────────
   # Scale with: docker compose up --scale worker-vuln=3
   worker-vuln:
-    <<: *worker-base
-    <<: *resource-limits-worker
-    image: ghcr.io/inf1n1tydes0ul/oneinfinity:${IMAGE_TAG:-latest}
+    <<: [*worker-base, *resource-limits-worker]
+    image: ghcr.io/inf1n1tydes0ul/oneinfinity-worker:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile.worker
@@ -212,7 +208,7 @@ services:
   # ── Exploit Workers — Chain detection + PoC gen ──────────
   worker-exploit:
     <<: *worker-base
-    image: ghcr.io/inf1n1tydes0ul/oneinfinity:${IMAGE_TAG:-latest}
+    image: ghcr.io/inf1n1tydes0ul/oneinfinity-worker:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile.worker
@@ -222,6 +218,12 @@ services:
       <<: *common-env
       WORKER_CAPABILITIES: "exploit,zero_day,research"
       WORKER_CONCURRENCY: "${EXPLOIT_CONCURRENCY:-2}"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import redis; redis.from_url('redis://redis:6379/0').ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     deploy:
       resources:
         limits:
@@ -232,7 +234,7 @@ services:
   # Uses the AI image variant (INSTALL_AI=1)
   worker-ai:
     <<: *worker-base
-    image: ghcr.io/inf1n1tydes0ul/oneinfinity:${IMAGE_TAG:-latest-ai}
+    image: ghcr.io/inf1n1tydes0ul/oneinfinity-worker:${IMAGE_TAG:-latest-ai}
     build:
       context: .
       dockerfile: Dockerfile.worker
@@ -253,7 +255,7 @@ services:
   # ── Secrets Workers ───────────────────────────────────────
   worker-secrets:
     <<: *worker-base
-    image: ghcr.io/inf1n1tydes0ul/oneinfinity:${IMAGE_TAG:-latest}
+    image: ghcr.io/inf1n1tydes0ul/oneinfinity-worker:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile.worker
@@ -306,7 +308,13 @@ services:
       - internal
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -347,6 +355,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: oneinfinity-updater
+    user: root
     entrypoint: ["/bin/bash"]
     command: ["/app/scripts/auto-update.sh", "--cron"]
     environment:

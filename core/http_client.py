@@ -19,6 +19,32 @@ DEFAULT_TIMEOUT = 30
 MAX_RETRIES = 5
 BACKOFF_FACTOR = 1.0
 STATUS_FORCELIST = [429, 500, 502, 503, 504]
+MAX_BACKOFF_SECONDS = 8.0
+
+
+def _parse_retry_after_seconds(headers: Any) -> Optional[float]:
+    try:
+        if headers is None:
+            return None
+        getter = headers.get if hasattr(headers, "get") else None
+        value = getter("Retry-After") if getter else None
+        if value is None and getter:
+            value = getter("retry-after")
+        if value is None:
+            return None
+        seconds = float(value)
+        if seconds < 0:
+            return None
+        return seconds
+    except Exception:
+        return None
+
+
+def _backoff_seconds(attempt: int, retry_after_seconds: Optional[float] = None) -> float:
+    if retry_after_seconds is not None:
+        return min(float(retry_after_seconds), MAX_BACKOFF_SECONDS)
+    base = BACKOFF_FACTOR * (2 ** max(0, attempt - 1))
+    return min(base + random.uniform(0, 1), MAX_BACKOFF_SECONDS)
 
 class OneInfinityHTTPClient:
     """
@@ -94,11 +120,23 @@ class OneInfinityHTTPClient:
                     timeout=req_timeout
                 )
                 
-                # If we get a response, return it (even if 4xx/5xx, caller handles logic)
-                # Note: HTTPAdapter already retried 5xx if configured.
-                if resp.status_code >= 400:
-                    logger.debug(f"[http] {method} {url} -> {resp.status_code}")
-                    
+                status_code = int(getattr(resp, "status_code", 0) or 0)
+
+                # If we get a response, return it (even if 4xx/5xx, caller handles logic).
+                if status_code >= 400:
+                    logger.debug(f"[http] {method} {url} -> {status_code}")
+
+                # Retry on transient upstream failures / throttling when transport-level
+                # retries are bypassed (e.g., mocked sessions in tests).
+                if status_code in STATUS_FORCELIST and attempt < MAX_RETRIES:
+                    retry_after = _parse_retry_after_seconds(getattr(resp, "headers", None))
+                    wait = _backoff_seconds(attempt, retry_after_seconds=retry_after if handle_rate_limit else None)
+                    logger.warning(
+                        f"[retry] attempt {attempt}/{MAX_RETRIES} for {url} after HTTP {status_code} (sleep={wait:.2f}s)"
+                    )
+                    time.sleep(wait)
+                    continue
+
                 return resp
                 
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
@@ -108,7 +146,7 @@ class OneInfinityHTTPClient:
                     return None
                 
                 # Exponential backoff for manual retries
-                wait = (2 ** attempt) + random.uniform(0, 1)
+                wait = _backoff_seconds(attempt)
                 time.sleep(wait)
                 
             except requests.exceptions.RequestException as e:

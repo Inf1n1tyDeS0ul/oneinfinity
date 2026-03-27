@@ -47,27 +47,45 @@ class NormalizedFinding:
     confidence: float = 0.8
     cvss: float = 0.0
     status: str = "new"   # new/confirmed/false_positive
+    # source_type classifies the evidence quality:
+    #   "tool"       — confirmed by a security tool (nuclei, dalfox, sqlmap, etc.)
+    #   "simulated"  — result of a simulation engine (workflow sim, Monte Carlo)
+    #   "ai_theory"  — AI-generated theory not yet confirmed by a tool
+    #   "manual"     — manually added finding
+    source_type: str = "tool"
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     raw: dict = field(default_factory=dict)
+    poc_steps: list = field(default_factory=list)     # ordered PoC reproduction steps
+    reproduction_cmd: str = ""                         # exact CLI command to reproduce
 
     def to_dict(self) -> dict:
         return {
-            "finding_id": self.finding_id,
-            "scan_id": self.scan_id,
-            "target": self.target,
-            "title": self.title,
-            "severity": self.severity,
-            "vuln_type": self.vuln_type,
-            "evidence": self.evidence,
-            "payload": self.payload,
-            "url": self.url,
-            "tool": self.tool,
-            "confidence": self.confidence,
-            "cvss": self.cvss,
-            "status": self.status,
-            "created_at": self.created_at,
-            "raw": self.raw,
+            "finding_id":       self.finding_id,
+            "scan_id":          self.scan_id,
+            "target":           self.target,
+            "title":            self.title,
+            "severity":         self.severity,
+            "vuln_type":        self.vuln_type,
+            "evidence":         self.evidence,
+            "payload":          self.payload,
+            "url":              self.url,
+            "tool":             self.tool,
+            "confidence":       self.confidence,
+            "cvss":             self.cvss,
+            "status":           self.status,
+            "source_type":      self.source_type,
+            "created_at":       self.created_at,
+            "raw":              self.raw,
+            "poc_steps":        self.poc_steps,
+            "reproduction_cmd": self.reproduction_cmd,
         }
+
+    def safe_raw_json(self) -> str:
+        """Return finding.raw as JSON, coercing any non-serializable values to str."""
+        try:
+            return json.dumps(self.raw, default=str)
+        except Exception:
+            return "{}"
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +333,7 @@ CREATE TABLE IF NOT EXISTS findings (
     confidence  REAL,
     cvss        REAL,
     status      TEXT DEFAULT 'new',
+    source_type TEXT DEFAULT 'tool',
     created_at  TEXT,
     raw_json    TEXT
 );
@@ -362,6 +381,15 @@ class ResultIngestionEngine:
                 conn.execute(_CREATE_FINDINGS_TABLE)
                 conn.execute(_CREATE_RECON_ASSETS_TABLE)
                 conn.execute(_CREATE_RAW_FINDINGS_TABLE)
+                # Schema migration: add source_type column if missing (existing DBs)
+                existing_cols = {
+                    row[1] for row in conn.execute("PRAGMA table_info(findings)").fetchall()
+                }
+                if "source_type" not in existing_cols:
+                    conn.execute(
+                        "ALTER TABLE findings ADD COLUMN source_type TEXT DEFAULT 'tool'"
+                    )
+                    log.info("ResultIngestionEngine: migrated findings table — added source_type column")
                 conn.commit()
             log.debug("ResultIngestionEngine: DB initialised at %s", self._db_path)
         except Exception as exc:
@@ -438,8 +466,8 @@ class ResultIngestionEngine:
                             "INSERT OR REPLACE INTO findings "
                             "(finding_id, scan_id, target, title, severity, vuln_type, "
                             " evidence, payload, url, tool, confidence, cvss, status, "
-                            " created_at, raw_json) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            " source_type, created_at, raw_json) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             (
                                 finding.finding_id,
                                 finding.scan_id,
@@ -454,8 +482,9 @@ class ResultIngestionEngine:
                                 finding.confidence,
                                 finding.cvss,
                                 finding.status,
+                                finding.source_type,
                                 finding.created_at,
-                                json.dumps(finding.raw),
+                                finding.safe_raw_json(),
                             ),
                         )
                         conn.commit()
@@ -659,8 +688,8 @@ class ResultIngestionEngine:
                             "INSERT OR REPLACE INTO findings "
                             "(finding_id, scan_id, target, title, severity, vuln_type, "
                             " evidence, payload, url, tool, confidence, cvss, status, "
-                            " created_at, raw_json) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            " source_type, created_at, raw_json) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             (
                                 finding.finding_id,
                                 finding.scan_id,
@@ -675,8 +704,9 @@ class ResultIngestionEngine:
                                 finding.confidence,
                                 finding.cvss,
                                 finding.status,
+                                finding.source_type,
                                 finding.created_at,
-                                json.dumps(finding.raw),
+                                finding.safe_raw_json(),
                             ),
                         )
                         conn.commit()

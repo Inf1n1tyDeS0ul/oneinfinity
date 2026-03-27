@@ -1949,9 +1949,6 @@ oneinfinity traffic-export [--format json|csv|har]
 
 # Replay a request
 oneinfinity replay-request <request-id> [options]
-
-# Replay an attack
-oneinfinity replay-attack <attack-id> [options]
 ```
 
 **traffic-list Filters:**
@@ -2044,6 +2041,8 @@ oneinfinity hunter-report <session-id> [--format markdown|json|html]
 | `--platforms LIST` | all | `hackerone,bugcrowd,intigriti` |
 | `--output DIR` | auto | Output directory |
 | `--yes` | false | Auto-run without confirmation |
+| `--strategy MODE` | *(none)* | Elite scan strategy: `aggressive` (8 workers, broad), `stealthy` (1 worker, human-paced, ban-evading), `high-value` (auth/API/payment targets only, full chaining) |
+| `--benchmark-ref FILE` | *(none)* | Burp/Nuclei reference findings file — emits precision/recall/F1 after the hunt completes |
 
 ### Real Example
 
@@ -2487,6 +2486,19 @@ Extracts `VulnPattern` (which tool+technique found a vuln on which tech stack) a
 **learning/adaptive_planner.py:**
 Uses mined patterns to recommend the highest-yield scan plan for a new target based on its tech stack similarity to past targets.
 
+**learning/persistent_memory.py:**
+JSON-backed cross-run intelligence store (`data/raw/memory/persistent_memory.json`) that survives individual scan sessions:
+
+| Data Stored | How It's Used |
+|-------------|---------------|
+| Successful payloads (ranked by hit count) | Injected into future scans with `get_boosted_payloads(vuln_type)` |
+| Failed payloads | Avoided in future scans to save time |
+| High-value hosts (with severity history) | Re-prioritized by `BountyStrategyEngine` on next run |
+| Successful exploit chains (chain_type, steps) | Replayed first on matching targets |
+| Missed vuln types / patterns (from benchmark feedback) | Added to agent_plan for follow-up scans |
+
+The memory is loaded at the start of every scan into `ctx["persistent_memory"]` and automatically saved in `_phase_done` after each scan completes.
+
 ### How to Use (CLI)
 
 ```bash
@@ -2894,13 +2906,27 @@ Tests:
 
 ## Exploit Validation Engine
 
-`finding_validation_engine.py` performs automated validation of findings before reporting:
+Finding validation runs in two stages before anything reaches a report:
 
+**Stage 1 — Active re-testing** (`finding_validation_engine.py`):
 1. **Canary Injection** — Re-sends the exact request that triggered the finding with a unique canary value
 2. **Response Comparison** — Compares response structure, not just content, to filter coincidental matches
 3. **Endpoint Liveness** — Verifies the endpoint is still accessible before filing a report
 4. **CVSS Calculation** — Automatically calculates CVSS 3.1 score from vulnerability properties
 5. **Duplicate Detection** — SHA-256 fingerprint comparison against all prior findings
+
+**Stage 2 — Confidence classification** (`core/finding_validator.py` — `FindingClassifier`):
+
+Every finding is assigned a confidence score and classified into one of four buckets:
+
+| Status | Threshold | Description |
+|--------|-----------|-------------|
+| `confirmed` | ≥ 0.70 + evidence/payload | Tool-confirmed with real evidence — included in report |
+| `unverified` | 0.35–0.69 | Plausible but not proven — included in report (flagged) |
+| `false_positive` | < 0.35 | Low-confidence result — excluded from report |
+| `simulated` | `source_type=simulated` | Monte Carlo / workflow simulation — excluded from report |
+
+AI-theory findings (`source_type=ai_theory`) are always capped at `unverified` regardless of confidence. Each confirmed/unverified finding receives an auto-generated CLI reproduction command from `ReproducibilityMapper` (e.g., `oneinfinity vuln-scan --target <url> --xss --payload "..."`).
 
 ## Correlation Engine
 
@@ -2978,7 +3004,6 @@ oneinfinity <command> [subcommand] [options]
 | `proxy-set` | Configure proxy |
 | `proxy-status` | Show proxy configuration |
 | `recon` | Full recon pipeline |
-| `replay-attack` | Replay a captured attack |
 | `replay-request` | Replay a captured HTTP request |
 | `report` | Generate bug bounty reports |
 | `research` | Autonomous vulnerability research |

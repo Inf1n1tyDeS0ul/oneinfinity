@@ -652,6 +652,13 @@ class AttackGraphBrain:
                 eng.update_node(node.id, properties={"brain_penalty": penalty * 0.7,
                                                       "chain_failure": chain_type})
                 log.debug("record_chain_failure: penalized node %s (chain=%s)", node.id[:8], chain_type)
+            try:
+                from core.graph_neo4j_bootstrap import publish_chain_feedback_neo4j
+                publish_chain_feedback_neo4j(
+                    chain_type, False, target=target or "", vuln_type=vuln_type or "",
+                )
+            except Exception:
+                pass
         except Exception as exc:
             log.debug("record_chain_failure: %s", exc)
 

@@ -21,16 +21,10 @@ REDIS_HOST=$(echo "${REDIS_URL:-redis://redis:6379}" | sed 's|redis://||' | cut 
 REDIS_PORT=$(echo "${REDIS_URL:-redis://redis:6379}" | sed 's|redis://||' | cut -d: -f2 | cut -d/ -f1)
 REDIS_PORT=${REDIS_PORT:-6379}
 
-info "Waiting for Redis at ${REDIS_HOST}:${REDIS_PORT}…"
-RETRIES=30
-while ! nc -z "${REDIS_HOST}" "${REDIS_PORT}" 2>/dev/null; do
-    RETRIES=$((RETRIES - 1))
-    if [ $RETRIES -le 0 ]; then
-        die "Redis not reachable after 30 attempts"
-    fi
-    sleep 2
-done
-ok "Redis is up"
+info "Redis connectivity will be verified by worker/main.py (built-in retry, 10 attempts × 3 s)"
+# NOTE: nc/netcat is not available in python:slim images.
+# worker/main.py._connect_redis() already retries 10× with 3 s backoff,
+# so a duplicate shell-level wait-loop here is unnecessary and fragile.
 
 # ── Ensure data dirs ──────────────────────────────────────────
 mkdir -p "${ONEINFINITY_HOME:-/data}/raw" \
@@ -39,13 +33,15 @@ mkdir -p "${ONEINFINITY_HOME:-/data}/raw" \
 # ── Nuclei template sync ──────────────────────────────────────
 if [ "${NUCLEI_UPDATE:-1}" = "1" ] && command -v nuclei > /dev/null 2>&1; then
     TMPL_DIR="${NUCLEI_TEMPLATES_PATH:-/data/.nuclei-templates}"
-    if [ ! -d "${TMPL_DIR}/http" ]; then
-        info "Syncing Nuclei templates (first run)…"
+    mkdir -p "${TMPL_DIR}"
+    TEMPLATE_COUNT=$(find "${TMPL_DIR}" -name "*.yaml" 2>/dev/null | wc -l | tr -d ' ')
+    if [ ! -d "${TMPL_DIR}/http" ] || [ "${TEMPLATE_COUNT:-0}" -lt 100 ]; then
+        info "Syncing Nuclei templates (count=${TEMPLATE_COUNT})…"
         nuclei -update-templates -update-template-dir "${TMPL_DIR}" \
                > /dev/null 2>&1 && ok "Templates synced" \
                || warn "Template sync failed (offline?)"
     else
-        info "Nuclei templates present, skipping sync (set NUCLEI_UPDATE=0 to always skip)"
+        info "Nuclei templates present (${TEMPLATE_COUNT} templates, set NUCLEI_UPDATE=0 to skip)"
     fi
 fi
 

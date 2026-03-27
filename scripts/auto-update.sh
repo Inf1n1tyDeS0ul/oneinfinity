@@ -289,8 +289,14 @@ if [ "${1:-}" = "--cron" ]; then
     # Run once immediately on startup
     main
 
-    # Start cron daemon in foreground
-    exec crond -f -l 8
+    # Start cron daemon in foreground (Debian uses "cron", Alpine uses "crond")
+    if command -v crond >/dev/null 2>&1; then
+        exec crond -f -l 8
+    elif command -v cron >/dev/null 2>&1; then
+        exec cron -f
+    else
+        die "No cron daemon found (crond/cron missing)"
+    fi
 else
     main
 fi

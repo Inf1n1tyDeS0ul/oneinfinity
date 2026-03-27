@@ -15,6 +15,8 @@ from collections import defaultdict, deque
 
 logger = logging.getLogger(__name__)
 
+_SEVERITY_ORDER = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+
 
 class NodeType(str, Enum):
     TARGET       = "target"
@@ -29,12 +31,15 @@ class NodeType(str, Enum):
     SERVICE      = "service"
     TECHNOLOGY   = "technology"
     AUTH_FLOW    = "auth_flow"
+    # Token/session graph nodes
+    TOKEN        = "token"      # JWT, API key, OAuth token
+    SESSION      = "session"    # HTTP session, cookie-based session
 
 
 class EdgeType(str, Enum):
+    # Legacy / general
     HOSTS            = "hosts"
     EXPOSES          = "exposes"
-    HAS_VULNERABILITY = "has_vulnerability"
     LEADS_TO         = "leads_to"
     ENABLES          = "enables"
     REQUIRES         = "requires"
@@ -42,6 +47,14 @@ class EdgeType(str, Enum):
     DISCOVERED_VIA   = "discovered_via"
     CHAINED_WITH     = "chained_with"
     PART_OF          = "part_of"
+    # Canonical structural edges (explicit, typed)
+    HAS_TARGET       = "has_target"     # root → target
+    HAS_ENDPOINT     = "has_endpoint"   # target/subdomain → url/api_endpoint
+    HAS_PARAM        = "has_param"      # url/endpoint → parameter
+    HAS_VULNERABILITY = "has_vulnerability"  # endpoint/param → vulnerability
+    CALLS            = "calls"          # endpoint → endpoint (API call chain)
+    AUTH_FOR         = "auth_for"       # token/credential → endpoint/service
+    ISSUES_TOKEN     = "issues_token"   # auth_flow/service → token
 
 
 @dataclass
@@ -443,6 +456,94 @@ class AttackGraphEngine:
             "vulnerabilities_by_severity": dict(severity_counts),
         }
 
+    def merge_graph(self, other: "AttackGraphEngine") -> dict:
+        """
+        Merge nodes and edges from `other` into this engine.
+        New nodes/edges are added; existing ones are updated (properties merged).
+        Returns {"nodes_added": int, "edges_added": int}.
+        """
+        nodes_added = 0
+        edges_added = 0
+
+        for node in other._nodes.values():
+            key = (node.node_type, node.label)
+            if key not in self._label_index:
+                # New node — deep copy and insert
+                new_node = Node(
+                    id=node.id,
+                    node_type=node.node_type,
+                    label=node.label,
+                    properties=dict(node.properties),
+                    severity=node.severity,
+                    risk_score=node.risk_score,
+                    exploitable=node.exploitable,
+                    validated=node.validated,
+                    discovered_at=node.discovered_at,
+                    updated_at=node.updated_at,
+                    source=node.source,
+                    tags=list(node.tags),
+                )
+                self._nodes[new_node.id] = new_node
+                self._label_index[key] = new_node.id
+                if self._store:
+                    self._store.save_node(new_node)
+                nodes_added += 1
+            else:
+                # Existing node — merge properties and upgrade severity/exploitable
+                existing_id = self._label_index[key]
+                existing = self._nodes[existing_id]
+                if node.properties:
+                    existing.properties.update(node.properties)
+                if node.exploitable:
+                    existing.exploitable = True
+                if node.severity and (
+                    not existing.severity or
+                    _SEVERITY_ORDER.get(node.severity, 0) > _SEVERITY_ORDER.get(existing.severity, 0)
+                ):
+                    existing.severity = node.severity
+                existing.updated_at = str(time.time())
+                if self._store:
+                    self._store.save_node(existing)
+
+        for edge in other._edges.values():
+            # Remap node IDs — source/target may have different IDs in this engine
+            src_node = other._nodes.get(edge.source_id)
+            tgt_node = other._nodes.get(edge.target_id)
+            if src_node is None or tgt_node is None:
+                continue
+
+            src_key = (src_node.node_type, src_node.label)
+            tgt_key = (tgt_node.node_type, tgt_node.label)
+            mapped_src = self._label_index.get(src_key)
+            mapped_tgt = self._label_index.get(tgt_key)
+            if mapped_src is None or mapped_tgt is None:
+                continue
+
+            ekey = (mapped_src, mapped_tgt, edge.edge_type)
+            if ekey not in self._edge_index:
+                new_edge = Edge(
+                    id=str(uuid.uuid4()),
+                    source_id=mapped_src,
+                    target_id=mapped_tgt,
+                    edge_type=edge.edge_type,
+                    label=edge.label,
+                    properties=dict(edge.properties),
+                    probability=edge.probability,
+                    weight=edge.weight,
+                    requires_auth=edge.requires_auth,
+                    source_engine=edge.source_engine,
+                )
+                self._edges[new_edge.id] = new_edge
+                self._adj_out[mapped_src].append(new_edge.id)
+                self._adj_in[mapped_tgt].append(new_edge.id)
+                self._edge_index[ekey] = new_edge.id
+                if self._store:
+                    self._store.save_edge(new_edge)
+                edges_added += 1
+
+        logger.info("merge_graph: +%d nodes, +%d edges", nodes_added, edges_added)
+        return {"nodes_added": nodes_added, "edges_added": edges_added}
+
     def to_dict(self) -> dict:
         """Full serialization for frontend or export."""
         return {
@@ -529,11 +630,23 @@ def get_engine() -> AttackGraphEngine:
     global _global_engine
     if _global_engine is None:
         try:
-            from .graph_store import GraphStore
-            store = GraphStore()
+            try:
+                from core.graph_neo4j_bootstrap import (
+                    create_default_graph_store,
+                    maybe_merge_neo4j_into_store,
+                )
+                store, _ = create_default_graph_store()
+            except Exception:
+                from .graph_store import GraphStore
+                store = GraphStore()
             store.initialize()
+            try:
+                from core.graph_neo4j_bootstrap import maybe_merge_neo4j_into_store
+                maybe_merge_neo4j_into_store(store)
+            except Exception:
+                pass
             _global_engine = AttackGraphEngine(store=store)
-            logger.info("Global AttackGraphEngine initialised with SQLite store.")
+            logger.info("Global AttackGraphEngine initialised (SQLite + optional Neo4j sync).")
         except Exception as e:
             logger.warning(f"Could not initialise GraphStore, running in-memory only: {e}")
             _global_engine = AttackGraphEngine()

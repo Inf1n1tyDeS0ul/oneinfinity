@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import json
 import time
+import re
+from html.parser import HTMLParser
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urljoin, urlparse, urlencode, urlunparse, parse_qsl
 
 from modules.utils import banner, section, ok, info, warn, err
 from modules.tool_wrappers import ToolRegistry, ToolResult, is_available
@@ -139,6 +142,94 @@ class ToolSelector:
 ALL_PHASES = ["recon", "ports", "crawl", "content", "vuln", "secrets"]
 
 
+# ── Lightweight SPA/API heuristics (no external deps) ────────────────────────
+
+_JS_ENDPOINT_PATTERNS: list[re.Pattern] = [
+    re.compile(r"""['"]((?:https?://)[^'"]+/(?:api|v\d+|graphql|rest|ws|rpc|admin|internal)[^'"]*)['"]"""),
+    re.compile(r"""['"](/(?:api|v\d+|graphql|rest|ws|rpc|admin|internal)[/\w\-\.\{\}?&=]*)['"]"""),
+    re.compile(r"""fetch\s*\(\s*['"]((?:https?://|/)[^'"]+)['"]\s*\)"""),
+    re.compile(r"""axios\.[a-z]+\s*\(\s*['"]((?:https?://|/)[^'"]+)['"]\s*\)"""),
+    re.compile(r"""(?:url|endpoint|path|route)\s*[:=]\s*['"]((?:https?://|/)[^'"]{4,})['"]"""),
+    re.compile(r"""(?:\.get|\.post|\.put|\.delete|\.patch)\s*\(\s*['"]((?:https?://|/)[^'"]+)['"]\s*[,\)]"""),
+]
+_PARAM_NAME_RE = re.compile(r"""[?&]([a-zA-Z0-9_\-]{1,32})=""")
+
+
+def extract_js_endpoints_and_params(js_text: str) -> tuple[set[str], set[str]]:
+    endpoints: set[str] = set()
+    params: set[str] = set()
+    if not js_text:
+        return endpoints, params
+    for pat in _JS_ENDPOINT_PATTERNS:
+        for m in pat.finditer(js_text):
+            ep = (m.group(1) or "").strip()
+            if not ep:
+                continue
+            if ep.endswith((".png", ".jpg", ".jpeg", ".gif", ".css", ".ico", ".svg", ".woff", ".woff2")):
+                continue
+            endpoints.add(ep)
+    for m in _PARAM_NAME_RE.finditer(js_text):
+        params.add(m.group(1))
+    return endpoints, params
+
+
+class _FormParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self._in_form = False
+        self.forms: list[dict[str, Any]] = []
+        self._cur: dict[str, Any] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr = {k.lower(): (v or "") for k, v in attrs}
+        if tag.lower() == "form":
+            self._in_form = True
+            self._cur = {
+                "action": attr.get("action", ""),
+                "method": (attr.get("method", "get") or "get").lower(),
+                "inputs": [],
+            }
+        if self._in_form and tag.lower() in ("input", "select", "textarea"):
+            if not self._cur:
+                return
+            name = (attr.get("name", "") or "").strip()
+            if name:
+                self._cur["inputs"].append(name)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "form" and self._in_form:
+            self._in_form = False
+            if self._cur:
+                self.forms.append(self._cur)
+            self._cur = None
+
+
+def build_get_form_urls(base_url: str, html_text: str, max_forms: int = 25) -> list[str]:
+    if not html_text:
+        return []
+    p = _FormParser()
+    try:
+        p.feed(html_text)
+    except Exception:
+        return []
+    out: list[str] = []
+    for f in p.forms[:max_forms]:
+        if (f.get("method") or "get").lower() != "get":
+            continue
+        action = (f.get("action") or "").strip() or base_url
+        inputs = [i for i in (f.get("inputs") or []) if isinstance(i, str) and i][:10]
+        if not inputs:
+            continue
+        full = urljoin(base_url, action)
+        q = urlencode({k: "1" for k in inputs}, doseq=True)
+        u = urlparse(full)
+        merged = dict(parse_qsl(u.query, keep_blank_values=True))
+        merged.update({k: "1" for k in inputs})
+        new_query = urlencode(merged, doseq=True)
+        out.append(urlunparse(u._replace(query=new_query)))
+    return out
+
+
 class Pipeline:
     """
     Modular pipeline: recon → ports → crawl → content → vuln → secrets
@@ -155,6 +246,7 @@ class Pipeline:
         timeout_multiplier: float = 1.0,
         subdomain_tools: list[str] = None,
         nuclei_severity: str = "medium,high,critical",
+        nuclei_tags: Optional[list[str]] = None,
         oob_url: str = "",
     ):
         self.target = target
@@ -163,6 +255,7 @@ class Pipeline:
         self.rate_limit = rate_limit
         self.timeout_mult = timeout_multiplier
         self.nuclei_severity = nuclei_severity
+        self.nuclei_tags = nuclei_tags
         self.oob_url = oob_url
 
         self.reg = ToolRegistry()
@@ -173,12 +266,146 @@ class Pipeline:
         """Apply timeout multiplier."""
         return int(base * self.timeout_mult)
 
+    def _candidate_base_urls(self) -> list[str]:
+        """
+        Build a small set of candidate base URLs for the target.
+
+        This is crucial for vuln-only runs where no recon has populated
+        alive_hosts yet.
+        """
+        t = (self.target or "").strip()
+        if not t:
+            return []
+        if "://" in t:
+            return [t]
+
+        hostport = t
+        port = None
+        m = re.search(r":(\d{2,5})$", hostport)
+        if m:
+            try:
+                port = int(m.group(1))
+            except Exception:
+                port = None
+
+        # Heuristic: non-TLS ports default to http; TLS ports default to https.
+        if port in (443, 8443):
+            schemes = ["https", "http"]
+        elif port is not None:
+            schemes = ["http", "https"]
+        else:
+            schemes = ["https", "http"]
+
+        return [f"{s}://{hostport}" for s in schemes]
+
+    def _seed_alive_urls(self, max_urls: int = 10) -> list[str]:
+        alive_urls = [h.get("url", f"https://{h.get('host', '')}") for h in self.result.alive_hosts[:max_urls]]
+        alive_urls = [u for u in alive_urls if isinstance(u, str) and "://" in u]
+        if alive_urls:
+            return alive_urls
+
+        # No recon run yet — seed from target itself
+        candidates = self._candidate_base_urls()
+        if not candidates:
+            return []
+
+        # Prefer a reachable candidate, but always return at least one URL.
+        try:
+            import requests
+            for u in candidates:
+                try:
+                    r = requests.get(u, timeout=3, allow_redirects=True, verify=False)
+                    if getattr(r, "status_code", 0) > 0:
+                        return [r.url] if getattr(r, "url", "") else [u]
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        return [candidates[0]]
+
     def _save(self, name: str, data: Any):
         """Write phase output to disk as JSON."""
         out_path = self.output_dir / f"{name}.json"
         with open(out_path, "w") as f:
             json.dump(data, f, indent=2, default=str)
         return str(out_path)
+
+    def _http_probe_ok(self, status_code: int) -> bool:
+        return status_code in (200, 201, 202, 204, 301, 302, 307, 308, 400, 401, 403, 405)
+
+    def _probe_urls(self, urls: list[str], timeout: int = 4, max_ok: int = 50) -> list[str]:
+        """Return URLs that respond (2xx/3xx/401/403/405/400). Best-effort."""
+        ok_urls: list[str] = []
+        try:
+            import requests
+        except Exception:
+            return []
+        for u in urls:
+            if len(ok_urls) >= max_ok:
+                break
+            try:
+                r = requests.get(u, timeout=timeout, allow_redirects=True, verify=False, headers={"User-Agent": "Mozilla/5.0"})
+                if self._http_probe_ok(getattr(r, "status_code", 0)):
+                    ok_urls.append(getattr(r, "url", "") or u)
+            except Exception:
+                continue
+        return ok_urls
+
+    def _discover_spa_api_urls(self, seed_pages: list[str], max_pages: int = 10, max_scripts: int = 20) -> tuple[set[str], set[str]]:
+        """
+        Fetch a handful of pages and their scripts to extract API endpoints and parameter names.
+        Returns: (full_urls, param_names)
+        """
+        discovered: set[str] = set()
+        params: set[str] = set()
+        try:
+            import requests
+        except Exception:
+            return discovered, params
+
+        pages = [u for u in seed_pages if isinstance(u, str) and u.startswith(("http://", "https://"))][:max_pages]
+        for page in pages:
+            try:
+                r = requests.get(page, timeout=6, allow_redirects=True, verify=False, headers={"User-Agent": "Mozilla/5.0"})
+                ctype = (r.headers.get("content-type") or "").lower()
+                if "html" not in ctype and not (r.text or "").lstrip().startswith("<"):
+                    continue
+                html = r.text or ""
+            except Exception:
+                continue
+
+            # GET-form mining (helps SQLi/XSS tools trigger even when SPA hides params)
+            for u in build_get_form_urls(page, html):
+                discovered.add(u)
+                if "?" in u:
+                    for k, _ in parse_qsl(urlparse(u).query, keep_blank_values=True):
+                        if k:
+                            params.add(k)
+
+            # Extract script src and inline JS
+            script_srcs: list[str] = []
+            for m in re.finditer(r"""<script[^>]+src=['"]([^'"]+)['"]""", html, flags=re.IGNORECASE):
+                script_srcs.append(m.group(1))
+            inline_js = "\n".join(re.findall(r"""<script[^>]*>(.*?)</script>""", html, flags=re.IGNORECASE | re.DOTALL))[:200_000]
+            eps, ps = extract_js_endpoints_and_params(inline_js)
+            params.update(ps)
+            for ep in eps:
+                discovered.add(urljoin(page, ep))
+
+            for src in script_srcs[:max_scripts]:
+                js_url = urljoin(page, src)
+                try:
+                    jr = requests.get(js_url, timeout=6, allow_redirects=True, verify=False, headers={"User-Agent": "Mozilla/5.0"})
+                    js_text = jr.text or ""
+                except Exception:
+                    continue
+                eps, ps = extract_js_endpoints_and_params(js_text[:400_000])
+                params.update(ps)
+                for ep in eps:
+                    discovered.add(urljoin(page, ep))
+
+        return discovered, params
 
     def _collect_subdomains(self, result: ToolResult) -> list[str]:
         if not result.success or not result.data:
@@ -310,6 +537,26 @@ class Pipeline:
         alive_urls = [h.get("url", f"https://{h.get('host', '')}") for h in
                       self.result.alive_hosts[:15]]
         alive_urls = [u for u in alive_urls if u and "://" in u]
+        if not alive_urls:
+            alive_urls = self._seed_alive_urls(max_urls=10)
+
+        # Seed common SPA/API entrypoints so deeper tools actually trigger
+        api_seeds: list[str] = []
+        common_paths = [
+            "/", "/login", "/register",
+            "/api", "/api/", "/api/v1", "/api/v1/",
+            "/rest", "/rest/", "/graphql", "/graphql/",
+            "/swagger", "/swagger/", "/swagger/index.html",
+            "/swagger.json", "/openapi.json", "/api-docs",
+        ]
+        for base in alive_urls[:5]:
+            for pth in common_paths:
+                api_seeds.append(urljoin(base.rstrip("/") + "/", pth.lstrip("/")))
+        api_seeds_ok = self._probe_urls(api_seeds, timeout=4, max_ok=60)
+        all_urls.update(api_seeds_ok)
+        if api_seeds_ok:
+            self._save("api_seed_urls", sorted(set(api_seeds_ok)))
+            phase.data["api_seed_urls"] = len(set(api_seeds_ok))
 
         # Historical URLs (Wayback / gauplus) — domain level
         for tool_name in ["gauplus", "waybackurls"]:
@@ -332,11 +579,16 @@ class Pipeline:
                     continue
                 info(f"Crawling {url} with {tool_name}...")
                 if tool_name == "katana":
-                    result = self.reg.run("katana", target=url,
-                                          timeout=self._t(180))
+                    result = self.reg.run(
+                        "katana",
+                        target=url,
+                        depth=5,
+                        js_crawl=True,
+                        timeout=self._t(240),
+                    )
                 else:
-                    result = self.reg.run("hakrawler", url=url,
-                                          timeout=self._t(120))
+                    result = self.reg.run("hakrawler", url=url, depth=3,
+                                          timeout=self._t(180))
                 if result.success and isinstance(result.data, dict):
                     urls = result.data.get("urls", [])
                     all_urls.update(urls)
@@ -355,17 +607,45 @@ class Pipeline:
                 ok(f"paramspider: +{len(param_urls)} parameterized URLs")
                 phase.tools_run.append("paramspider")
 
+        # SPA/API mining: fetch a few pages + their JS and extract endpoint strings
+        seed_pages = list(dict.fromkeys(alive_urls + sorted(all_urls)[:10]))
+        js_urls, js_params = self._discover_spa_api_urls(seed_pages, max_pages=8, max_scripts=20)
+        if js_urls:
+            all_urls.update(js_urls)
+            self._save("js_endpoints", sorted(js_urls))
+        if js_params:
+            self._save("js_param_names", sorted(js_params))
+        phase.data["js_endpoints"] = len(js_urls)
+        phase.data["js_param_names"] = len(js_params)
+
         self.result.urls = sorted(all_urls)
         self._save("urls", self.result.urls)
 
-        # Classify as endpoints (URLs with parameters)
-        self.result.endpoints = [u for u in self.result.urls if "?" in u]
+        # Classify as endpoints (URLs with parameters); synthesize a few when JS reveals param names
+        endpoints: set[str] = set(u for u in self.result.urls if "?" in u)
+        # Add a small set of synthetic parameterized URLs so dalfox/sqlmap can engage on SPAs/APIs
+        param_names = [p for p in sorted(js_params) if p.lower() not in ("utm_source", "utm_campaign", "utm_medium", "gclid")][:8]
+        synth_budget = 40
+        if param_names:
+            synth_bases = list(dict.fromkeys(api_seeds_ok + alive_urls))[:10]
+            for b in synth_bases:
+                if synth_budget <= 0:
+                    break
+                u = urlparse(b)
+                merged = dict(parse_qsl(u.query, keep_blank_values=True))
+                for p in param_names[: min(4, len(param_names))]:
+                    merged.setdefault(p, "1")
+                new_query = urlencode(merged, doseq=True)
+                endpoints.add(urlunparse(u._replace(query=new_query)))
+                synth_budget -= 1
+
+        self.result.endpoints = sorted(endpoints)
         self._save("endpoints", self.result.endpoints)
 
-        phase.data = {
+        phase.data.update({
             "total_urls": len(self.result.urls),
             "endpoints_with_params": len(self.result.endpoints),
-        }
+        })
         phase.duration = time.time() - t0
         return phase
 
@@ -415,8 +695,13 @@ class Pipeline:
                 warn(f"{tool_name} on {url}: {result.error[:60]}")
                 phase.tools_failed.append(tool_name)
 
-        self.result.endpoints = list(set(self.result.endpoints) | new_endpoints)
+        self.result.endpoints = sorted(set(self.result.endpoints) | new_endpoints)
+        # Keep `endpoints.json` as the canonical artifact; preserve legacy `all_endpoints.json`
+        self._save("endpoints", self.result.endpoints)
         self._save("all_endpoints", self.result.endpoints)
+        # Content discovery paths are also useful for kxss/etc
+        self.result.urls = sorted(set(self.result.urls) | new_endpoints)
+        self._save("urls", self.result.urls)
         phase.data = {"new_paths_found": len(new_endpoints)}
         phase.duration = time.time() - t0
         return phase
@@ -429,42 +714,74 @@ class Pipeline:
         phase = PhaseOutput(phase="vuln")
         all_findings: list[dict] = []
 
-        alive_urls = [h.get("url", f"https://{h.get('host', '')}") for h in
-                      self.result.alive_hosts[:10]]
-        alive_urls = [u for u in alive_urls if "://" in u]
+        alive_urls = self._seed_alive_urls(max_urls=50)
 
         # 1. Nuclei — broad scan across all alive hosts
         if is_available("nuclei") and alive_urls:
             info(f"Nuclei scan on {len(alive_urls)} hosts...")
-            # Write targets to temp file and scan
-            import tempfile
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tf:
-                tf.write("\n".join(alive_urls))
-                tf_name = tf.name
-            result = self.reg.run("nuclei", target=alive_urls[0],
-                                  severity=self.nuclei_severity,
-                                  timeout=self._t(600))
-            import os; os.unlink(tf_name)
-            if result.success and isinstance(result.data, dict):
-                findings = result.data.get("findings", [])
-                for f in findings:
-                    f["source_tool"] = "nuclei"
-                all_findings.extend(findings)
-                ok(f"nuclei: {len(findings)} findings")
-                phase.tools_run.append("nuclei")
+            try:
+                if len(alive_urls) > 1:
+                    import os
+                    import tempfile
+                    from modules.tool_wrappers import run_nuclei_on_list
 
-        # 2. Dalfox — XSS on parameterized endpoints
-        param_endpoints = [u for u in self.result.endpoints
-                           if "?" in u][:20]
-        if is_available("dalfox") and param_endpoints:
-            info(f"Dalfox XSS scan on {len(param_endpoints)} endpoints...")
-            for url in param_endpoints[:5]:
-                result = self.reg.run("dalfox", url=url, timeout=self._t(120))
+                    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tf:
+                        tf.write("\n".join(alive_urls))
+                        tf_name = tf.name
+                    result = run_nuclei_on_list(
+                        tf_name,
+                        severity=self.nuclei_severity,
+                        timeout=self._t(1800),
+                    )
+                    os.unlink(tf_name)
+                else:
+                    result = self.reg.run(
+                        "nuclei",
+                        target=alive_urls[0],
+                        severity=self.nuclei_severity,
+                        tags=self.nuclei_tags,
+                        timeout=self._t(600),
+                    )
+
+                if result.success and isinstance(result.data, dict):
+                    findings = result.data.get("findings", [])
+                    for f in findings:
+                        f["source_tool"] = "nuclei"
+                    all_findings.extend(findings)
+                    ok(f"nuclei: {len(findings)} findings")
+                    phase.tools_run.append("nuclei")
+                else:
+                    warn(f"nuclei failed: {result.error[:120]}")
+                    phase.tools_failed.append("nuclei")
+            except Exception as exc:
+                warn(f"nuclei crashed: {exc}")
+                phase.tools_failed.append("nuclei")
+
+        # 2. Dalfox — XSS scan; use pipe-mode when params are scarce (SPA/APIs)
+        param_endpoints = [u for u in self.result.endpoints if isinstance(u, str) and "?" in u][:30]
+        if is_available("dalfox"):
+            dalfox_targets: list[str] = []
+            if param_endpoints:
+                dalfox_targets = param_endpoints[:10]
+                info(f"Dalfox XSS scan on {len(dalfox_targets)} parameterized endpoints...")
+                for url in dalfox_targets:
+                    result = self.reg.run("dalfox", url=url, timeout=self._t(180))
+                    if result.success and isinstance(result.data, dict):
+                        for f in result.data.get("findings", []):
+                            if isinstance(f, dict):
+                                f["source_tool"] = "dalfox"
+                            all_findings.append(f)
+            elif self.result.urls:
+                dalfox_targets = [u for u in self.result.urls if isinstance(u, str) and u.startswith(("http://", "https://"))][:20]
+                info(f"Dalfox XSS scan (pipe mode) on {len(dalfox_targets)} URLs...")
+                result = self.reg.run("dalfox", url=dalfox_targets, timeout=self._t(300))
                 if result.success and isinstance(result.data, dict):
                     for f in result.data.get("findings", []):
-                        f["source_tool"] = "dalfox"
+                        if isinstance(f, dict):
+                            f["source_tool"] = "dalfox"
                         all_findings.append(f)
-            phase.tools_run.append("dalfox")
+            if dalfox_targets:
+                phase.tools_run.append("dalfox")
 
         # 3. CRLF injection
         if is_available("crlfuzz") and alive_urls:
@@ -513,7 +830,7 @@ class Pipeline:
         # 6. SQLMap — on form/param endpoints (only high-confidence candidates)
         sqli_candidates = [u for u in param_endpoints
                            if any(p in u.lower() for p in
-                                  ["id=", "user=", "query=", "search=", "name="])][:3]
+                                  ["id=", "uid=", "pid=", "user=", "query=", "q=", "search=", "name=", "page=", "item="])][:3]
         if is_available("sqlmap") and sqli_candidates:
             info(f"SQLMap on {len(sqli_candidates)} likely SQLi candidates...")
             for url in sqli_candidates:

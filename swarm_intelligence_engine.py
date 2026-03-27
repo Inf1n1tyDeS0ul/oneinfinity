@@ -26,6 +26,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -226,6 +227,14 @@ class SwarmAgent(ABC):
         self.findings:  List[AgentFinding] = []
         self.hypotheses: List[Hypothesis]  = []
         self._stop_event = asyncio.Event()
+        # ── Priority 6: Memory persistence path ──────────────────────────
+        try:
+            from path_manager import db_path as _dp
+            _mem_dir = Path(str(_dp("."))).parent / "agent_memories"
+        except Exception:
+            _mem_dir = Path.home() / ".oneinfinity" / "agent_memories"
+        self._memory_path = _mem_dir / f"agent_{agent_type.value}.json"
+        self._load_memory()
         logger.debug("[%s] Initialized", self.name)
 
     @property
@@ -425,6 +434,49 @@ class SwarmAgent(ABC):
                     )
                 except Exception:
                     pass
+
+        # ── Priority 6: Persist memory to disk for cross-scan learning ────
+        self._save_memory()
+
+    # ── Memory Persistence ────────────────────────────────────────────────────
+
+    def _load_memory(self) -> None:
+        """Reload persisted AgentMemory from disk (cross-scan learning)."""
+        try:
+            if self._memory_path.exists():
+                data = json.loads(self._memory_path.read_text())
+                self.memory.pattern_rates = data.get("pattern_rates", {})
+                self.memory.total_tests = data.get("total_tests", 0)
+                self.memory.successful_tests = data.get("successful_tests", 0)
+                # Restore successful payloads (cap at 100 to bound memory)
+                self.memory.successful_payloads = data.get("successful_payloads", [])[-100:]
+                logger.info(
+                    "[%s] Memory loaded: %d vectors, %d/%d tests",
+                    self.agent_type.value,
+                    len(self.memory.pattern_rates),
+                    self.memory.successful_tests,
+                    self.memory.total_tests,
+                )
+        except Exception as exc:
+            logger.debug("[%s] Memory load skipped (starting fresh): %s", self.agent_type.value, exc)
+
+    def _save_memory(self) -> None:
+        """Persist AgentMemory to disk so the next scan benefits from current learnings."""
+        try:
+            self._memory_path.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "agent_type": self.agent_type.value,
+                "pattern_rates": self.memory.pattern_rates,
+                "total_tests": self.memory.total_tests,
+                "successful_tests": self.memory.successful_tests,
+                "successful_payloads": self.memory.successful_payloads[-100:],
+                "saved_at": time.time(),
+            }
+            self._memory_path.write_text(json.dumps(data, indent=2))
+            logger.debug("[%s] Memory saved (%d vectors)", self.agent_type.value,
+                         len(self.memory.pattern_rates))
+        except Exception as exc:
+            logger.debug("[%s] Memory save failed: %s", self.agent_type.value, exc)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

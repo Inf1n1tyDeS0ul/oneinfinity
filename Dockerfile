@@ -20,7 +20,7 @@
 # GO_VERSION      → Go toolchain version used for compiling tools
 ARG INSTALL_AI=0
 ARG INSTALL_MOBILE=0
-ARG GO_VERSION=1.22
+ARG GO_VERSION=1.24
 ARG PYTHON_VERSION=3.11
 
 # ==============================================================
@@ -34,9 +34,14 @@ FROM golang:${GO_VERSION}-bookworm AS go-tools
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install build dependencies
+# libpcap-dev  — required by naabu/gopacket (raw packet capture)
+# build-essential/gcc — required by trufflehog (CGO via go-re2/wazero)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates \
+        git ca-certificates libpcap-dev build-essential gcc \
     && rm -rf /var/lib/apt/lists/*
+
+# Allow Go to auto-download newer toolchains required by @latest modules
+ENV GOTOOLCHAIN=auto
 
 # Build output directory — copied wholesale into final image
 ENV GOBIN=/go-bins
@@ -61,10 +66,14 @@ RUN go install github.com/ffuf/ffuf/v2@latest
 # ── Vulnerability scanning ─────────────────────────────────────
 RUN go install github.com/hahwul/dalfox/v2@latest
 RUN go install github.com/Emoe/kxss@latest
-RUN go install github.com/dwisiswant0/crlfuzz@latest
+RUN go install github.com/dwisiswant0/crlfuzz/cmd/crlfuzz@latest
 
 # ── Secrets ────────────────────────────────────────────────────
-RUN go install github.com/trufflesecurity/trufflehog/v3@latest
+# trufflehog's go.mod includes replace directives, which blocks `go install module@version`
+RUN git clone --depth 1 --branch v3.93.8 https://github.com/trufflesecurity/trufflehog.git /tmp/trufflehog \
+    && cd /tmp/trufflehog \
+    && go build -o /go-bins/trufflehog . \
+    && rm -rf /tmp/trufflehog
 RUN go install github.com/zricethezav/gitleaks/v8@latest
 
 # ── DNS & misc ─────────────────────────────────────────────────
@@ -97,17 +106,19 @@ COPY requirements-ai.txt     .
 COPY requirements-mobile.txt .
 COPY requirements-web.txt    .
 
-# ── Always-on: core + web ─────────────────────────────────────
+# ── Always-on: core + web + browser engine ────────────────────
 RUN pip wheel --no-cache-dir --wheel-dir /wheels \
         -r requirements-core.txt \
-        -r requirements-web.txt
+        -r requirements-web.txt \
+        "playwright>=1.42.0" \
+        "beautifulsoup4>=4.12.0"
 
 # ── Optional: AI/ML (slow — ~600 MB extra wheels) ─────────────
 ARG INSTALL_AI=0
 RUN if [ "$INSTALL_AI" = "1" ]; then \
         pip wheel --no-cache-dir --wheel-dir /wheels \
             adversarial-robustness-toolbox>=1.17.0 \
-            playwright>=1.42.0 selenium>=4.18.0 \
+            selenium>=4.18.0 \
         ; fi
 
 # ── Optional: mobile ─────────────────────────────────────────
@@ -144,38 +155,69 @@ ENV DEBIAN_FRONTEND=noninteractive \
     # ── Nuclei templates directory ────────────────────────────
     NUCLEI_TEMPLATES_PATH=/data/.nuclei-templates \
     # ── PATH — includes Go bins and pip scripts ───────────────
-    PATH="/go-bins:/app/scripts:/usr/local/bin:${PATH}"
+    PATH="/go-bins:/app/scripts:/usr/local/bin:${PATH}" \
+    # ── Python module search path ─────────────────────────────
+    # Ensures `import oneinfinity`, `from core.reporter import ...` etc.
+    # all resolve without installing the package in editable mode.
+    PYTHONPATH=/app
 
 # ── System tools ──────────────────────────────────────────────
-# Ordered by frequency of use (Docker cache-friendly).
+# nikto and whatweb are not in Debian Bookworm repos; installed below via git.
+# Playwright/Chromium requires several system libraries (libnss3, libatk, etc.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        # Core pentesting tools
         nmap \
-        nikto \
-        whatweb \
-        # Build & language runtimes needed by wrappers
         perl \
         ruby \
-        # HTTP utilities
+        ruby-dev \
+        rubygems \
         curl \
         wget \
-        # Version control (secret scanning against repos)
         git \
-        # DNS utilities
         dnsutils \
-        # Process utilities
         procps \
-        # Required by some Python C-extensions at runtime
         libssl3 \
         libffi8 \
-        # masscan (fast port scanner — requires NET_RAW cap)
+        libpcap0.8 \
         masscan \
-        # Terminal niceties
+        cron \
         less \
-        # Shell (used by entrypoint and scripts)
         bash \
+        # Playwright/Chromium system dependencies
+        libnss3 \
+        libnspr4 \
+        libatk1.0-0 \
+        libatk-bridge2.0-0 \
+        libcups2 \
+        libdrm2 \
+        libdbus-1-3 \
+        libxcb1 \
+        libxkbcommon0 \
+        libx11-6 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxrandr2 \
+        libgbm1 \
+        libpango-1.0-0 \
+        libcairo2 \
+        libasound2 \
+        fonts-liberation \
+        xdg-utils \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
+
+# ── nikto (Perl web scanner — not in Debian Bookworm repos) ───
+RUN git clone --depth=1 https://github.com/sullo/nikto /opt/nikto \
+    && ln -sf /opt/nikto/program/nikto.pl /usr/local/bin/nikto \
+    && chmod +x /opt/nikto/program/nikto.pl
+
+# ── whatweb (web fingerprinting — not in Debian Bookworm repos) ─
+RUN git clone --depth=1 https://github.com/urbanadventurer/WhatWeb /opt/whatweb \
+    && ln -sf /opt/whatweb/whatweb /usr/local/bin/whatweb \
+    && chmod +x /opt/whatweb/whatweb \
+    && cd /opt/whatweb && gem install bundler --no-document \
+    && bundle install --without development 2>/dev/null || true
 
 # ── Python tools installed as packages ───────────────────────
 RUN pip install --no-cache-dir \
@@ -203,6 +245,14 @@ RUN pip install --no-cache-dir --no-index --find-links /wheels \
     pip install --no-cache-dir --no-index --find-links /wheels /wheels/*.whl \
     && rm -rf /wheels
 
+# ── Playwright browser install ────────────────────────────────
+# Must run as root (before USER oi) so chromium lands in /root/.cache/ms-playwright
+# and is accessible to all users via PLAYWRIGHT_BROWSERS_PATH.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN pip install --no-cache-dir playwright 2>/dev/null || true \
+    && playwright install chromium 2>/dev/null || true \
+    && chmod -R a+rx /opt/ms-playwright 2>/dev/null || true
+
 # ── Application source ────────────────────────────────────────
 WORKDIR /app
 COPY . /app/
@@ -223,8 +273,15 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
 # or with --cap-add=NET_RAW --cap-add=NET_ADMIN.
 # Default: create a dedicated user; escalation docs provided below.
 RUN groupadd -r oi && useradd -r -g oi -d /data -s /bin/bash oi \
-    && mkdir -p /data \
-    && chown -R oi:oi /data /go-bins
+    && mkdir -p /data /data/.nuclei-templates /data/raw /data/databases /data/logs \
+                /data/memory /data/reports \
+    # /app must be readable+executable by oi; __pycache__ dirs must be writable
+    && chown -R oi:oi /data /go-bins \
+    && chmod -R o+rX /app \
+    # Verify critical security binaries are present and executable
+    && test -x /go-bins/nuclei   || (echo "FATAL: nuclei missing"   && exit 1) \
+    && test -x /go-bins/httpx    || (echo "FATAL: httpx missing"    && exit 1) \
+    && test -x /go-bins/subfinder || (echo "FATAL: subfinder missing" && exit 1)
 
 # ── Nuclei GF patterns directory ─────────────────────────────
 RUN mkdir -p /home/oi/.gf \

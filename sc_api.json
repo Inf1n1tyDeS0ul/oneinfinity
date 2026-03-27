@@ -1,0 +1,675 @@
+{
+	"info": {
+		"_postman_id": "4e0efe5f-8577-4373-9884-94fb656b636b",
+		"name": "12Build REST API SC 1.0",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "10058404"
+	},
+	"item": [
+		{
+			"name": "Token",
+			"item": [
+				{
+					"name": "Get Token",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var data = JSON.parse(responseBody);\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Check if token is present in dataset\",function () {\r",
+									"  pm.expect(data.token).to.not.be.undefined;\r",
+									"});\r",
+									"\r",
+									"if ('token' in data) {\r",
+									"    pm.collectionVariables.set(\"Token\", data.token);\r",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{ \r\n\t\"login\":\"{{Login}}\",\r\n\t\"apiKey\":\"{{ApiKey}}\",\r\n\t\"forceNew\":\"1\"\r\n}"
+						},
+						"url": {
+							"raw": "{{Endpoint}}/tokens",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"tokens"
+							]
+						}
+					},
+					"response": [
+						{
+							"name": "Get Token",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"name": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{ \r\n\t\"login\":\"{{Login}}\",\r\n\t\"apiKey\":\"{{ApiKey}}\",\r\n\t\"forceNew\":\"1\"\r\n}"
+								},
+								"url": {
+									"raw": "{{Endpoint}}/tokens",
+									"host": [
+										"{{Endpoint}}"
+									],
+									"path": [
+										"tokens"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Server",
+									"value": "nginx/1.4.6 (Ubuntu)"
+								},
+								{
+									"key": "Date",
+									"value": "Wed, 04 Dec 2019 13:44:14 GMT"
+								},
+								{
+									"key": "Content-Type",
+									"value": "application/json; charset=utf-8"
+								},
+								{
+									"key": "Content-Length",
+									"value": "142"
+								},
+								{
+									"key": "Connection",
+									"value": "keep-alive"
+								},
+								{
+									"key": "X-Powered-By",
+									"value": "PHP/7.0.33-12+ubuntu18.04.1+deb.sury.org+1"
+								},
+								{
+									"key": "Strict-Transport-Security",
+									"value": "max-age=604800; includeSubDomains"
+								},
+								{
+									"key": "Access-Control-Allow-Origin",
+									"value": "*"
+								},
+								{
+									"key": "Access-Control-Allow-Headers",
+									"value": "*"
+								},
+								{
+									"key": "Vary",
+									"value": "Accept-Encoding"
+								},
+								{
+									"key": "Content-Encoding",
+									"value": "gzip"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"token\": \"d189de8836f7fb39dfdc1177ce223064b3e2365eb527922859864bdec836ae58c0f7061e6f3032b76ac5c4f2973bc0385b678572ff44d6749c40ec6e8776151d\",\n    \"expireDate\": 1575474254\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Invitation",
+			"item": [
+				{
+					"name": "List invitations",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"protocolProfileBehavior": {
+						"disabledSystemHeaders": {}
+					},
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "type",
+									"value": "recent",
+									"type": "text"
+								},
+								{
+									"key": "status",
+									"value": "unknown",
+									"type": "text"
+								},
+								{
+									"key": "offset",
+									"value": "0",
+									"type": "text"
+								},
+								{
+									"key": "limit",
+									"value": "1000",
+									"type": "text"
+								},
+								{
+									"key": "sort",
+									"value": "desc",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{Endpoint}}/invitation/list",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"invitation",
+								"list"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Receive Dummy Invitation",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/invitation/receive",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"invitation",
+								"receive"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Communication",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/invitation/{{CommunicationId}}/communication",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"invitation",
+								"{{CommunicationId}}",
+								"communication"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Project Documents",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/invitation/{{CommunicationId}}/projectDocuments",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"invitation",
+								"{{CommunicationId}}",
+								"projectDocuments"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Set Response",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "response",
+									"value": "calculating",
+									"type": "text"
+								},
+								{
+									"key": "reason",
+									"value": "We will process your request",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{Endpoint}}/invitation/{{CommunicationId}}/setResponse",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"invitation",
+								"{{CommunicationId}}",
+								"setResponse"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Send Message",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "senderEmail",
+									"value": "specialist@12build.com",
+									"type": "text"
+								},
+								{
+									"key": "subject",
+									"value": "Test subject",
+									"type": "text"
+								},
+								{
+									"key": "description",
+									"value": "This is my message",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{Endpoint}}/invitation/{{CommunicationId}}/sendMessage",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"invitation",
+								"{{CommunicationId}}",
+								"sendMessage"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Send Offer",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "senderEmail",
+									"value": "specialist@12build.com",
+									"type": "text"
+								},
+								{
+									"key": "subject",
+									"value": "Here is my offer",
+									"type": "text"
+								},
+								{
+									"key": "description",
+									"value": "Dear GC, my offer is in the attachment",
+									"type": "text"
+								},
+								{
+									"key": "attachment1",
+									"type": "file",
+									"src": "/home/nicole/Downloads/General-Terms-and-Conditions-12Build-version-date_-01-01-2020.pdf"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{Endpoint}}/invitation/{{CommunicationId}}/sendOffer",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"invitation",
+								"{{CommunicationId}}",
+								"sendOffer"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Message",
+			"item": [
+				{
+					"name": "Get Message HTML",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{Endpoint}}/message/{{MessageId}}/html",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"message",
+								"{{MessageId}}",
+								"html"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "File",
+			"item": [
+				{
+					"name": "Get File",
+					"protocolProfileBehavior": {
+						"disableBodyPruning": true
+					},
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Auth-Token",
+								"type": "text",
+								"value": "{{Token}}"
+							},
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "formdata",
+							"formdata": []
+						},
+						"url": {
+							"raw": "{{Endpoint}}/file/{{DocumentType}}/{{DocumentId}}",
+							"host": [
+								"{{Endpoint}}"
+							],
+							"path": [
+								"file",
+								"{{DocumentType}}",
+								"{{DocumentId}}"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "Url",
+			"value": "https://12build.com",
+			"type": "string"
+		},
+		{
+			"key": "Endpoint",
+			"value": "{{Url}}/nl_NL/rest/bs_1.0"
+		},
+		{
+			"key": "Login",
+			"value": ""
+		},
+		{
+			"key": "ApiKey",
+			"value": ""
+		},
+		{
+			"key": "Token",
+			"value": ""
+		},
+		{
+			"key": "CommunicationId",
+			"value": "1"
+		},
+		{
+			"key": "MessageId",
+			"value": "1"
+		},
+		{
+			"key": "DocumentId",
+			"value": "1"
+		},
+		{
+			"key": "DocumentType",
+			"value": "project"
+		}
+	]
+}

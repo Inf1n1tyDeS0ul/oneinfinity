@@ -27,3 +27,9 @@ cryptography>=42.0.0
 # Graph analysis (attack graph)
 networkx>=3.2.1
 matplotlib>=3.8.0
+
+# Optional Neo4j graph backend (disabled unless config/graph.yaml neo4j.enabled)
+neo4j>=5.14.0
+
+# Report generation (PDF)
+fpdf2>=2.7.0

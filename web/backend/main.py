@@ -60,7 +60,14 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost",        # nginx port 80
+        "http://localhost:80",
+        "http://127.0.0.1",
+        "http://localhost:3000",   # Vite dev server direct
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",   # direct orchestrator access
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -310,6 +317,10 @@ def _finding_to_api(f) -> dict:
         "confidence": f.get("confidence", 0.8),
         "cvss": f.get("cvss", 0.0),
         "status": f.get("status", "new"),
+        # source_type distinguishes evidence quality:
+        # "tool" = confirmed by scanner, "simulated" = simulation engine,
+        # "ai_theory" = AI hypothesis, "manual" = analyst-added
+        "source_type": f.get("source_type", "tool"),
         "created_at": f.get("created_at", datetime.utcnow().isoformat()),
         "bounty_score": f.get("bounty_score", 0.0),
         "estimated_payout": f.get("estimated_payout", ""),
@@ -336,6 +347,51 @@ async def _load_persisted_findings():
 
 
 # ── REST API Routes ───────────────────────────────────────────────────────────
+
+# Health check (used by Docker HEALTHCHECK and load-balancers)
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+# Health alias accessible via nginx /api/ prefix
+@app.get("/api/health")
+async def api_health():
+    return {"status": "ok", "service": "oneinfinity-orchestrator"}
+
+# Prometheus metrics endpoint
+@app.get("/metrics", include_in_schema=False)
+async def metrics():
+    from fastapi.responses import PlainTextResponse
+    active_scans = sum(1 for s in SCANS.values() if s.get("status") == "running")
+    total_vulns  = len(VULNERABILITIES)
+    total_scans  = len(SCANS)
+    total_targets = len(_target_db.list_all())
+    sev = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+    for v in VULNERABILITIES.values():
+        k = v.get("severity", "info").lower()
+        sev[k] = sev.get(k, 0) + 1
+    lines = [
+        "# HELP oneinfinity_active_scans Number of currently running scans",
+        "# TYPE oneinfinity_active_scans gauge",
+        f"oneinfinity_active_scans {active_scans}",
+        "# HELP oneinfinity_total_scans Total scans submitted",
+        "# TYPE oneinfinity_total_scans counter",
+        f"oneinfinity_total_scans {total_scans}",
+        "# HELP oneinfinity_vulnerabilities_total Total vulnerabilities by severity",
+        "# TYPE oneinfinity_vulnerabilities_total gauge",
+        f'oneinfinity_vulnerabilities_total{{severity="critical"}} {sev["critical"]}',
+        f'oneinfinity_vulnerabilities_total{{severity="high"}} {sev["high"]}',
+        f'oneinfinity_vulnerabilities_total{{severity="medium"}} {sev["medium"]}',
+        f'oneinfinity_vulnerabilities_total{{severity="low"}} {sev["low"]}',
+        f'oneinfinity_vulnerabilities_total{{severity="info"}} {sev["info"]}',
+        "# HELP oneinfinity_total_vulnerabilities Total vulnerabilities found",
+        "# TYPE oneinfinity_total_vulnerabilities gauge",
+        f"oneinfinity_total_vulnerabilities {total_vulns}",
+        "# HELP oneinfinity_targets_total Total targets added",
+        "# TYPE oneinfinity_targets_total gauge",
+        f"oneinfinity_targets_total {total_targets}",
+    ]
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 # Dashboard stats
 @app.get("/api/stats")
@@ -808,6 +864,7 @@ class SimpleScanRequest(BaseModel):
     target: str
 
 @app.post("/api/scan")
+@app.post("/api/scan/start")  # Makefile / distributed-compose alias
 async def simple_scan(req: SimpleScanRequest, background_tasks: BackgroundTasks):
     """Simplified scan endpoint - just provide a target, everything is auto."""
     scan_id = str(uuid.uuid4())[:8]
@@ -833,7 +890,7 @@ async def simple_scan(req: SimpleScanRequest, background_tasks: BackgroundTasks)
 # ── Background tasks ──────────────────────────────────────────────────────────
 
 async def _run_scan_via_engine(scan_id: str, target: str, scan_type: str):
-    """Run a scan via unified_scan_engine; falls back to _run_scan on import error."""
+    """Run a scan. For full scans, prefer the canonical pipeline for CLI/Docker parity."""
     scan = SCANS[scan_id]
     scan["status"] = "running"
     _add_log(f"Scan started: {scan_type} on {target}", "info", "scanner", scan_id)
@@ -841,87 +898,80 @@ async def _run_scan_via_engine(scan_id: str, target: str, scan_type: str):
     existing = [t for t in _target_db.list_all() if t["target_value"] == target]
     if existing:
         _target_db.update_status(existing[0]["target_id"], "scanning", datetime.utcnow().isoformat())
-    try:
-        from unified_scan_engine import get_engine
-        engine = get_engine()
-
-        def on_progress(phase: str, pct: int, msg: str):
-            scan["progress"] = pct
-            scan["phase"] = phase
-            level = "error" if "error" in msg.lower() or "fail" in msg.lower() else "info"
-            _add_log(msg, level, f"engine:{phase}", scan_id)
-
-        session = engine.scan_async(target, on_progress=on_progress)
-        while session.status == "running":
-            await asyncio.sleep(0.5)
-        if session.status != "completed":
-            raise RuntimeError(f"Unified scan finished with status={session.status}")
-        scan["status"] = session.status
-        scan["progress"] = 100
-        scan["completed_at"] = datetime.utcnow().isoformat()
-        scan["findings_count"] = len(session.findings)
-
-        # Store findings in VULNERABILITIES
-        for f in session.findings:
-            fid = f.get("finding_id", str(uuid.uuid4())[:8])
-            VULNERABILITIES[fid] = {
-                "id": fid, "target": target,
-                "title": f.get("title", "Unknown"),
-                "severity": f.get("severity", "info"),
-                "attack_type": f.get("vuln_type", ""),
-                "tool": f.get("tool", ""),
-                "evidence": f.get("evidence", ""),
-                "payload": f.get("payload", ""),
-                "confidence": f.get("confidence", 0.8),
-                "cvss": f.get("cvss", 0.0),
-                "status": "new",
-                "created_at": f.get("created_at", datetime.utcnow().isoformat()),
-                "bounty_score": f.get("bounty_score", 0.0),
-                "estimated_payout": f.get("estimated_payout", ""),
-                "priority_rank": f.get("priority_rank", 0),
-                "reproduction_steps": "",
-                "tags": [],
-                "remediation": "",
-                "response": "",
-            }
-            # Persist to ResultIngestionEngine SQLite so findings survive restarts
-            try:
-                from result_ingestion_engine import get_ingestion_engine as _get_rie2
-                _get_rie2().persist_finding({**VULNERABILITIES[fid], "scan_id": scan_id, "finding_id": fid})
-            except Exception as _pe:
-                log.warning("persist_finding failed: %s", _pe)
-
-        # Update target status in DB
-        existing = [t for t in _target_db.list_all() if t["target_value"] == target]
-        if existing:
-            tid = existing[0]["target_id"]
-            _target_db.update_status(tid, session.status, datetime.utcnow().isoformat())
-            with sqlite3.connect(_db_path("metadata.db")) as conn:
-                conn.execute("UPDATE targets SET vuln_count=? WHERE target_id=?",
-                             (len(session.findings), tid))
-                conn.commit()
-
-        _add_log(
-            f"Scan completed: {target} — {len(session.findings)} findings",
-            "success" if session.status == "completed" else "warn",
-            "scanner", scan_id,
-        )
-    except Exception as exc:
-        log.error("Scan engine error for %s: %s", target, exc, exc_info=True)
-        _add_log(f"Unified scan failed, falling back: {exc}", "warn", "scanner", scan_id)
+    # Full scans must run the canonical pipeline to preserve CLI/Docker parity.
+    if scan_type in ("full", "full_scan", "full-scan"):
         try:
-            fallback_req = ScanRequest(
+            from pipeline.executor import run_canonical_pipeline
+            from path_manager import get_target_path
+
+            out_dir = get_target_path(target, subdir="scans") / scan_id
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            def on_progress(phase: str, pct: int, msg: str):
+                scan["progress"] = int(pct or 0)
+                scan["phase"] = phase
+                level = "error" if "failed" in msg.lower() else "warn" if "skipped" in msg.lower() else "info"
+                _add_log(msg, level, f"pipeline:{phase}", scan_id)
+
+            result = await asyncio.to_thread(
+                run_canonical_pipeline,
                 target=target,
-                scan_type=scan_type,
-                profile=scan.get("profile", "auto"),
-                auth="",
-                options={},
+                output_dir=str(out_dir),
+                mode="inline",
+                waf_profile=None,
+                on_progress=on_progress,
+                skip_phases=None,
+                prior_results_dir=None,
             )
-            await _run_scan(scan_id, fallback_req)
-        except Exception as fallback_exc:
-            scan["status"] = "failed"
+
+            scan["status"] = "completed" if result.status in ("completed", "partial") else "failed"
+            scan["progress"] = 100
             scan["completed_at"] = datetime.utcnow().isoformat()
-            _add_log(f"Fallback scan failed: {fallback_exc}", "error", "scanner", scan_id)
+            scan["findings_count"] = len(result.findings)
+
+            for f in result.findings:
+                api_f = _finding_to_api(f)
+                fid = api_f["id"]
+                VULNERABILITIES[fid] = api_f
+                try:
+                    from result_ingestion_engine import get_ingestion_engine as _get_rie2
+                    _get_rie2().persist_finding({**api_f, "scan_id": scan_id, "finding_id": fid})
+                except Exception as _pe:
+                    log.warning("persist_finding failed: %s", _pe)
+
+            existing = [t for t in _target_db.list_all() if t["target_value"] == target]
+            if existing:
+                tid = existing[0]["target_id"]
+                _target_db.update_status(tid, scan["status"], datetime.utcnow().isoformat())
+                with sqlite3.connect(_db_path("metadata.db")) as conn:
+                    conn.execute("UPDATE targets SET vuln_count=? WHERE target_id=?", (len(result.findings), tid))
+                    conn.commit()
+
+            _add_log(
+                f"Scan completed (canonical): {target} — {len(result.findings)} findings (status={result.status})",
+                "success" if scan["status"] == "completed" else "warn",
+                "scanner",
+                scan_id,
+            )
+            return
+        except Exception as exc:
+            log.error("Canonical pipeline failed for %s: %s", target, exc, exc_info=True)
+            _add_log(f"Canonical pipeline failed, falling back: {exc}", "warn", "scanner", scan_id)
+
+    # Non-full scans (or canonical failure) fall back to CLI subprocess runner.
+    try:
+        fallback_req = ScanRequest(
+            target=target,
+            scan_type=scan_type,
+            profile=scan.get("profile", "auto"),
+            auth="",
+            options={},
+        )
+        await _run_scan(scan_id, fallback_req)
+    except Exception as fallback_exc:
+        scan["status"] = "failed"
+        scan["completed_at"] = datetime.utcnow().isoformat()
+        _add_log(f"Fallback scan failed: {fallback_exc}", "error", "scanner", scan_id)
 
 
 async def _run_scan(scan_id: str, req: ScanRequest):
@@ -939,7 +989,7 @@ async def _run_scan(scan_id: str, req: ScanRequest):
         "ai_test": [sys.executable, cli_cmd, "ai-test", req.target, "--all", "--yes"],
         "ai_redteam": [sys.executable, cli_cmd, "ai-redteam", req.target, "--yes"],
         "ai_agent_test": [sys.executable, cli_cmd, "ai-agent-test", req.target, "--all", "--yes"],
-        "full": [sys.executable, cli_cmd, "agents", "run", req.target, "--yes"],
+        "full": [sys.executable, cli_cmd, "full-scan", req.target, "--report", "none"],
     }
     cmd = cmd_map.get(req.scan_type, cmd_map["recon"])
 

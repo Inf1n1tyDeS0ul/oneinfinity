@@ -53,6 +53,10 @@ class ReportFinding:
     poc_steps: List[str] = field(default_factory=list)
     validated: bool = False
     bounty_estimate: int = 0
+    validation_status: str = ""        # confirmed / unverified / simulated / false_positive
+    reproduction_cmd: str = ""         # exact OneInfinity CLI command to reproduce
+    confidence: float = 0.0
+    confidence_breakdown: str = ""
 
 
 @dataclass
@@ -121,8 +125,21 @@ class BountyReportGenerator:
         if session_id is None:
             session_id = hashlib.sha256(f"{target}{time.time()}".encode()).hexdigest()[:8]
 
+        # Pre-validate and classify all findings before enrichment
+        raw_dicts = [
+            f.to_dict() if hasattr(f, "to_dict") else (f if isinstance(f, dict) else {})
+            for f in findings
+        ]
+        try:
+            from core.finding_validator import get_classifier
+            classified = get_classifier().classify(raw_dicts)
+            # Exclude confirmed false positives; keep confirmed + unverified
+            validated_dicts = classified.confirmed + classified.unverified
+        except Exception:
+            validated_dicts = raw_dicts   # fallback: include all
+
         enriched: List[ReportFinding] = []
-        for idx, raw in enumerate(findings):
+        for idx, raw in enumerate(validated_dicts):
             if isinstance(raw, ReportFinding):
                 f = raw
             else:
@@ -162,6 +179,12 @@ class BountyReportGenerator:
         vuln_type = (raw.get("vuln_type") or raw.get("name") or "misconfig").lower()
         severity = (raw.get("severity") or "info").lower()
         fid = raw.get("id") or hashlib.sha256(f"{vuln_type}{raw.get('url','')}{idx}".encode()).hexdigest()[:12]
+        vs = raw.get("validation_status", "")
+        is_validated = bool(
+            raw.get("validated", False)
+            or raw.get("status") == "confirmed"
+            or vs == "confirmed"
+        )
         return ReportFinding(
             id=fid,
             title=raw.get("title") or raw.get("name") or vuln_type.upper(),
@@ -172,7 +195,11 @@ class BountyReportGenerator:
             payload=raw.get("payload") or "",
             evidence=raw.get("evidence") or raw.get("output") or raw.get("description") or "",
             poc_steps=raw.get("poc_steps") or [],
-            validated=bool(raw.get("validated", False) or raw.get("status") == "confirmed"),
+            validated=is_validated,
+            validation_status=vs or ("confirmed" if is_validated else "unverified"),
+            reproduction_cmd=raw.get("reproduction_cmd") or "",
+            confidence=float(raw.get("confidence", 0.0)),
+            confidence_breakdown=raw.get("confidence_breakdown", ""),
         )
 
     def _enrich_finding(self, f: ReportFinding) -> ReportFinding:
@@ -752,6 +779,226 @@ ${finding.bounty_estimate:,} USD (based on CVSS {finding.cvss_score} and {findin
 ### Suggested Fix
 {finding.remediation}
 """
+
+
+    # ------------------------------------------------------------------ #
+    # Fix 5 — Submission-ready enhancements (Phase 6)
+    # ------------------------------------------------------------------ #
+
+    def calculate_confidence_score(self, finding: ReportFinding) -> float:
+        """
+        Score 0.0–1.0 based on evidence strength.
+
+        Scoring criteria:
+          +0.3  payload present
+          +0.3  evidence present (non-trivial)
+          +0.2  validated flag is True
+          +0.1  poc_steps present (≥2 steps)
+          +0.1  cvss_score > 0
+        """
+        score = 0.0
+        if finding.payload and len(finding.payload) > 3:
+            score += 0.3
+        if finding.evidence and len(finding.evidence) > 20:
+            score += 0.3
+        if finding.validated:
+            score += 0.2
+        if finding.poc_steps and len(finding.poc_steps) >= 2:
+            score += 0.1
+        if finding.cvss_score > 0:
+            score += 0.1
+        return round(min(score, 1.0), 2)
+
+    def strengthen_evidence(self, finding: ReportFinding) -> str:
+        """
+        Build a structured HTTP request/response pair block from available evidence.
+        Used to enrich reports for triagers.
+        """
+        lines = []
+        url = finding.url or "N/A"
+        param = finding.parameter or "N/A"
+        payload = finding.payload or "N/A"
+        evidence = finding.evidence or ""
+
+        lines.append("### HTTP Evidence")
+        lines.append("```")
+        lines.append(f"GET {url}")
+        if finding.parameter and finding.payload:
+            lines.append(f"Parameter: {param}")
+            lines.append(f"Injected:  {payload}")
+        lines.append("```")
+
+        if evidence:
+            lines.append("\n**Observed Response / Server Behaviour:**")
+            lines.append("```")
+            lines.append(evidence[:1000])
+            if len(evidence) > 1000:
+                lines.append(f"[... {len(evidence)-1000} bytes truncated ...]")
+            lines.append("```")
+
+        conf = self.calculate_confidence_score(finding)
+        lines.append(f"\n**Evidence Confidence:** {conf:.0%}")
+        return "\n".join(lines)
+
+    def group_by_endpoint(self, findings: List[ReportFinding]) -> Dict[str, List[ReportFinding]]:
+        """Group findings by normalised endpoint (path without query string)."""
+        from urllib.parse import urlparse
+        grouped: Dict[str, List[ReportFinding]] = {}
+        for f in findings:
+            try:
+                parsed = urlparse(f.url)
+                key = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")
+            except Exception:
+                key = f.url
+            grouped.setdefault(key, []).append(f)
+        return dict(sorted(grouped.items()))
+
+    def group_by_vuln_type(self, findings: List[ReportFinding]) -> Dict[str, List[ReportFinding]]:
+        """Group findings by vulnerability type, sorted by severity."""
+        grouped: Dict[str, List[ReportFinding]] = {}
+        for f in findings:
+            grouped.setdefault(f.vuln_type, []).append(f)
+        # Sort each group by severity
+        for key in grouped:
+            grouped[key].sort(
+                key=lambda x: SEVERITY_ORDER.index(x.severity) if x.severity in SEVERITY_ORDER else 99
+            )
+        return dict(sorted(grouped.items()))
+
+    def generate_ai_writeup(
+        self,
+        finding: ReportFinding,
+        target: str,
+        model: str = "claude-haiku-4-5-20251001",
+    ) -> str:
+        """
+        Optional: Use LLM to generate a tailored impact explanation and
+        reproduction steps.  Returns empty string if LLM is unavailable.
+
+        Requires ANTHROPIC_API_KEY in environment.
+        """
+        try:
+            import anthropic
+            client = anthropic.Anthropic()
+            prompt = (
+                f"You are a professional bug bounty report writer. "
+                f"Write a concise impact statement (2-3 sentences) and 4 numbered "
+                f"reproduction steps for the following vulnerability:\n\n"
+                f"Target: {target}\n"
+                f"Vulnerability: {finding.vuln_type.upper()} — {finding.title}\n"
+                f"URL: {finding.url}\n"
+                f"Payload: {finding.payload or 'see evidence'}\n"
+                f"Evidence: {finding.evidence[:300] if finding.evidence else 'N/A'}\n\n"
+                f"Format:\n"
+                f"IMPACT:\n<2-3 sentence impact>\n\n"
+                f"STEPS:\n1. ...\n2. ...\n3. ...\n4. ..."
+            )
+            message = client.messages.create(
+                model=model,
+                max_tokens=400,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return message.content[0].text if message.content else ""
+        except Exception as exc:
+            logger.debug("AI writeup unavailable: %s", exc)
+            return ""
+
+    def generate_intigriti_template(self, finding: ReportFinding) -> str:
+        """Generate an Intigriti-formatted submission report."""
+        poc_md = "\n".join(f"{i}. {s}" for i, s in enumerate(finding.poc_steps, 1))
+        conf = self.calculate_confidence_score(finding)
+        return f"""# {finding.title}
+
+**Severity:** {finding.severity.upper()}
+**CVSS Score:** {finding.cvss_score} | `{finding.cvss_vector}`
+**Type:** {finding.vuln_type}
+**Confidence:** {conf:.0%}
+
+---
+
+## Affected Endpoint
+`{finding.url}`{"  \n**Parameter:** `" + finding.parameter + "`" if finding.parameter else ""}
+
+## Description
+{finding.impact}
+
+## Steps to Reproduce
+{poc_md}
+
+## Payload
+```
+{finding.payload or "N/A"}
+```
+
+## Proof / Evidence
+```
+{finding.evidence or "N/A"}
+```
+
+## Impact
+{finding.impact}
+
+## Suggested Fix
+{finding.remediation}
+
+---
+*Report generated by OneInfinity | Confidence: {conf:.0%} | CVSS: {finding.cvss_score}*
+"""
+
+    def generate_submission_package(
+        self,
+        report: "BountyReport",
+        platform: str = "hackerone",
+        output_dir: Optional[Path] = None,
+    ) -> Dict[str, Path]:
+        """
+        Generate per-finding platform submission files + a grouped summary.
+
+        Returns dict of filename → path.
+        """
+        if output_dir is None:
+            output_dir = raw_dir() / "reports" / report.report_id / "submissions"
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        saved: Dict[str, Path] = {}
+        platform = platform.lower()
+
+        for f in report.findings:
+            if platform == "bugcrowd":
+                content = self.generate_bugcrowd_template(f)
+                ext = "bugcrowd"
+            elif platform == "intigriti":
+                content = self.generate_intigriti_template(f)
+                ext = "intigriti"
+            else:
+                content = self.generate_hackerone_template(f)
+                ext = "hackerone"
+
+            safe_id = f.id.replace("/", "_")[:20]
+            filename = f"{safe_id}_{f.severity}_{f.vuln_type}.md"
+            p = output_dir / filename
+            p.write_text(content, encoding="utf-8")
+            saved[filename] = p
+
+        # Grouped summary
+        by_type = self.group_by_vuln_type(report.findings)
+        summary_lines = [f"# Submission Package — {report.target}\n"]
+        for vtype, fs in by_type.items():
+            summary_lines.append(f"\n## {vtype.upper()} ({len(fs)} finding(s))\n")
+            for f in fs:
+                conf = self.calculate_confidence_score(f)
+                summary_lines.append(
+                    f"- [{f.severity.upper()}] {f.title} — "
+                    f"confidence={conf:.0%} bounty=${f.bounty_estimate:,}"
+                )
+
+        summary_path = output_dir / "SUBMISSION_SUMMARY.md"
+        summary_path.write_text("\n".join(summary_lines), encoding="utf-8")
+        saved["SUBMISSION_SUMMARY.md"] = summary_path
+
+        logger.info("Submission package: %d files → %s", len(saved), output_dir)
+        return saved
 
 
 # Global singleton

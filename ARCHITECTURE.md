@@ -107,9 +107,8 @@ oneinfinity/
 │
 ├── autonomous_exploit_engine.py       # Exploit session management
 ├── exploit_generator.py               # Payload library (130+ payloads, 12 vuln types)
-├── finding_validation_engine.py       # False-positive filtering, canary validation
+├── finding_validation_engine.py       # Per-type active re-testing (XSS canary, SQLi timing, SSRF OOB)
 ├── attack_path_planner.py             # BFS path finding, 6 chain patterns
-├── attack_replay_engine.py            # Attack registry + replay with permutations
 ├── browser_attack_engine.py           # Playwright/Selenium browser automation
 ├── application_crawler.py             # HTML crawler, form discovery, API call extraction
 ├── source_analysis_engine.py          # Python/JS/Java/Go static analysis
@@ -195,12 +194,20 @@ oneinfinity/
 │   ├── scope_validator.py             # Wildcard/CIDR scope, always-OOS list, audit log
 │   ├── scan_profiles.py               # quick/deep/research/swarm/stealth profiles
 │   ├── deduplicator.py                # SHA-256 fingerprint dedup, 20+ vuln aliases
-│   └── reporter.py                    # Multi-format reporter (Markdown/JSON/HTML) and Bounty ROI Engine
+│   ├── reporter.py                    # Multi-format reporter (Markdown/JSON/HTML/PDF) + Bounty ROI Engine
+│   ├── finding_validator.py           # FindingClassifier: confirmed/unverified/FP/simulated buckets
+│   │                                  #   + ReproducibilityMapper: CLI repro command per vuln type
+│   ├── bounty_strategy_engine.py      # ROI-driven URL scoring (auth/API/payment priority)
+│   ├── stealth_engine.py              # StealthSession: header randomization, proxy rotation, ban detection
+│   ├── benchmark_engine.py            # Precision/recall/F1 benchmarking vs. reference findings
+│   ├── ai_reasoning_engine.py         # LLM-backed attack plan generation
+│   └── exploit_chain_executor.py      # HTTP-level exploit chain execution
 │
 ├── learning/                          # Continuous learning layer
 │   ├── adaptive_planner.py            # AdaptivePlanner + LearningSystem facade
 │   ├── knowledge_base.py              # SQLite KB: sessions, findings, tool runs, patterns
-│   └── pattern_miner.py               # VulnPattern/TargetInsight extraction
+│   ├── pattern_miner.py               # VulnPattern/TargetInsight extraction
+│   └── persistent_memory.py           # Cross-run JSON store: successful payloads, chains, patterns
 │
 ├── exploit_chains/                    # Exploit chain detection and PoC generation
 │   ├── chain_patterns.py              # 16 ChainPattern definitions
@@ -1318,14 +1325,12 @@ Browser / Tool / Scanner
 │  SQLite storage         │
 └──────────┬──────────────┘
            │
-     ┌─────┴──────┐
-     │            │
-     ▼            ▼
-traffic_replay  attack_replay_engine
-_engine.py      .py
-                │
-                ▼
-           ReplayResult
+           │
+           ▼
+traffic_replay_engine.py
+           │
+           ▼
+      ReplayResult
            - status_code
            - response_diff
            - new_findings
@@ -1719,74 +1724,97 @@ class AIVulnFinding:
 
 ### `oneinfinity scan <target>` End-to-End Flow
 
+The primary scan engine (`unified_scan_engine.py`) executes a **17-phase autonomous pipeline**. Each phase is independently recoverable — non-fatal failures are logged and skipped; fatal failures in classify/recon abort and fall through to result_ingest.
+
 ```
 User: oneinfinity scan example.com --profile deep
 
 oneinfinity.py
  └─ cmd_scan(args)
-     └─ autonomous_scan_pipeline.run("example.com", config)
+     └─ UnifiedScanEngine.scan("example.com")
+         └─ _run_pipeline(session, stop_event, on_progress)
+             │
+             │  [Context initialized with stealth_session + persistent_memory]
+             │
 
-Phase 1: DISCOVERY  [autonomous_scan_pipeline._phase_discovery]
-  ├─ ToolRegistry.run("subfinder", domain="example.com")
-  ├─ ToolRegistry.run("assetfinder", domain="example.com")
-  ├─ ToolRegistry.run("httpx", hosts=[...])    # live probe
-  └─ Returns: PhaseResult{subdomains: [...], live_hosts: [...]}
+Phase 1:  CLASSIFY  [_phase_classify]
+  └─ Heuristic target-type detection → web / api / mobile / ai
+      (mobile=.apk/.ipa, api=/api/ or /graphql in path, ai=chat/llm/gpt in domain)
 
-Phase 2: RECON  [_phase_recon]
-  ├─ ToolRegistry.run("waybackurls", domain=...)
-  ├─ ToolRegistry.run("gauplus", domain=...)
-  ├─ ToolRegistry.run("katana", url=...)       # active crawl
-  ├─ AdaptiveReconEngine.run(target)           # tech detect
-  │   ├─ _detect_technologies()  → TechProfile
-  │   ├─ _extract_js_endpoints() → ["/api/v1/users", ...]
-  │   └─ _enumerate_cloud_assets()
-  └─ ApplicationIntelligence.build_model()     # auth, roles, sensitive features
+Phase 2:  RECON  [_phase_recon]
+  ├─ AdaptiveReconEngine.run()          → subdomains, URLs, tech stack, cloud assets
+  ├─ ResultIngestionEngine.ingest_recon_asset()   (subdomain/url/technology nodes)
+  ├─ KnowledgeBase.start_session() + get_target_profile()
+  └─ PatternMiner.predict_for_target()  → scan_priority, predicted_vulns, suggested_tools
 
-Phase 3: TEST SELECTION  [SecurityTestOrchestrator]
-  ├─ ApplicationDetector.detect()              → AppType.WEB
-  ├─ TechnologyDetector.fingerprint()          → TechProfile{django, jwt, postgres}
-  ├─ TestSelectionEngine.select()              → [SecurityTest × 23]
-  └─ AdaptivePlanner.plan()                    → AdaptivePlan{phase_order, tool_overrides}
-      └─ LearningSystem queries KB:
-          "django + postgres historically → sqli (0.73), idor (0.61)"
-          → Moves scan_sqli and triage to top of phase order
+Phase 3:  GRAPH UPDATE  [_phase_graph_update]
+  └─ AttackGraphBrain.integrate_node()  → SUBDOMAIN + URL nodes from recon intel
 
-Phase 4: VULNERABILITY SCANNING  [_phase_vuln_scan]
-  ├─ nuclei -tags "sqli,xss,ssrf,misconfig,cve" (combined single run)
-  ├─ dalfox (XSS on all params from gf patterns)
-  ├─ sqlmap --crawl=3 --level=2 (SQLi on parametered URLs)
-  ├─ custom_test_engine (IDOR, auth bypass, rate limit)
-  ├─ plugins/vuln/api_security.py (BOLA, GraphQL, mass assignment)
-  └─ zero_day_engine (timing anomalies, status fingerprinting)
+Phase 4:  AGENT TRIGGER  [_phase_agent_trigger]
+  ├─ Rule-based agent selection (target_type, graph nodes, pattern_insight)
+  ├─ AutonomousDecisionEngine (optional override)
+  └─ AI reasoning engine → attack plan injected into ctx["agent_plan"]
 
-Phase 5: EXPLOIT  [_phase_exploit]   (if --auto-exploit)
-  ├─ Sort VulnCandidates by CVSS score
-  ├─ ExploitGenerator.generate(vuln_type, context)  → [ExploitPayload × N]
-  ├─ FindingValidationEngine.validate(url, param, payload)
-  │   ├─ XSS: inject OICANARY → check reflection
-  │   ├─ SQLi: measure time delay / check error messages
-  │   └─ SSRF: interactsh OOB callback
-  └─ ExploitSession{confirmed_findings: [...]}
+Phase 5:  OOB INIT  [_phase_oob_init]
+  └─ OOBEngine.start()  → returns oob_domain for blind SSRF/XXE callbacks
 
-Phase 6: VALIDATE  [_phase_validate]
-  ├─ Check endpoint liveness (re-probe all finding URLs)
-  ├─ Deduplicator.deduplicate(findings)
-  ├─ CVSSCalculator.score(finding)
-  └─ AttackGraphBuilder.build(target, validated_findings, recon)
+Phase 6:  AUTH SETUP  [_phase_auth_setup]
+  └─ AuthSessionManager → configures cookies/tokens/headers for authenticated scans
 
-Phase 7: REPORT  [_phase_report]
-  ├─ BountyReportGenerator.generate(target, findings, platform="HackerOne")
-  │   ├─ _render_markdown()   → report.md
-  │   ├─ _render_html()       → report.html
-  │   └─ save_json()          → report.json
-  ├─ Save to ~/.oneinfinity/pipelines/{session_id}/
-  └─ LearningSystem.record_result()   → updates KB for next run
+Phase 7:  VULN SCAN  [_phase_vuln_scan]
+  ├─ nuclei (tags driven by agent_plan)
+  ├─ dalfox (XSS on prioritized param URLs)
+  ├─ sqlmap (SQLi on parametered URLs)
+  └─ Boosted payloads from persistent_memory injected into scans
+
+Phase 8:  GRAPHQL SCAN  [_phase_graphql_scan]
+  └─ GraphQL introspection, BOLA, injection, batch query abuse
+
+Phase 9:  BROWSER ANALYSIS  [_phase_browser_analysis]
+  └─ Playwright headless browser: DOM XSS, JS sink analysis, rendered endpoint extraction
+
+Phase 10: SMUGGLING TEST  [_phase_smuggling_test]
+  └─ HTTP request smuggling detection (CL.TE, TE.CL, TE.TE patterns)
+
+Phase 11: EXPLOIT VALIDATION  [_phase_exploit_validation]
+  ├─ FindingClassifier.classify(raw_findings)
+  │   ├─ confirmed   (confidence ≥ 0.70 + evidence) → report pipeline
+  │   ├─ unverified  (0.35–0.69)                    → report pipeline (flagged)
+  │   ├─ false_positive (< 0.35)                    → excluded from report
+  │   └─ simulated   (source_type=simulated)         → excluded from report
+  └─ ctx["classified_findings"] set for report phase
+
+Phase 12: EXPLOIT CHAINING  [_phase_exploit_chaining]
+  ├─ ExploitChainEngine.detect_chains(validated_findings)
+  │   └─ 6 patterns: SSRF→Cloud, XSS→ATO, SQLi→RCE, IDOR→PrivEsc, CORS→Cred, Redirect→OAuth
+  ├─ ExploitChainExecutor.execute()  → HTTP-level chain execution
+  └─ ctx["successful_chains"] populated for persistent_memory
+
+Phase 13: RESULT INGEST  [_phase_result_ingest]
+  ├─ Deduplicator.filter_new(findings) → SHA-256 (vuln_type, url, parameter)
+  └─ ResultIngestionEngine.ingest_finding()  → WAL SQLite + SSE broadcast
+
+Phase 14: SEVERITY FOLLOWUP  [_phase_severity_followup]
+  └─ Re-scan high/critical findings with deeper tool invocations
+
+Phase 15: GRAPH VULN UPDATE  [_phase_graph_vuln_update]
+  └─ AttackGraphBrain.integrate_vuln()  → vulnerability nodes + risk edge updates
+
+Phase 16: REPORT  [_phase_report]
+  ├─ Reporter(core/reporter.py).add_findings(classified.all_reportable())
+  ├─ Writes: report.md (Markdown), report.json (JSON)
+  └─ Each finding includes: CVSS, evidence, reproduction_cmd, poc_steps
+
+Phase 17: DONE  [_phase_done]
+  ├─ Quality metrics logged (URLs, findings, by_severity)
+  ├─ PersistentMemory.update_from_ctx() + save()
+  └─ Session persisted to SQLite (metadata.db)
 
 Output:
-  ✓ 3 validated findings
-  ✓ Attack graph: 47 nodes, 89 edges
-  ✓ Report: ~/.oneinfinity/pipelines/abc123/report.md
-  ✓ Critical: SQL Injection in /api/users?id= (CVSS 9.8)
+  ✓ Classified: confirmed=N, unverified=N, false_positive=N excluded
+  ✓ Attack graph updated with vulnerability nodes
+  ✓ Report: data/raw/<target>/findings/report.md + report.json
+  ✓ Persistent memory updated for next scan
 ```
 
 ---
