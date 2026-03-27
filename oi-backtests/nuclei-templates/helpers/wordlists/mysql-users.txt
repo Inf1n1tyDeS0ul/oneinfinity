@@ -1,9 +1,0 @@
-root
-admin
-cloudera
-moves
-mcUser
-dbuser
-asteriskuser
-mysql
-test
