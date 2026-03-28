@@ -3,6 +3,15 @@ import { Trophy, Play, Square, RefreshCw } from 'lucide-react'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
 import clsx from 'clsx'
+import { DataTable } from '../components/ui/DataTable'
+
+const FINDING_COLUMNS = [
+  { key: 'title',    label: 'Finding',  sortable: true },
+  { key: 'severity', label: 'Severity', sortable: true,
+    render: (v) => v ? <span className={`badge badge-${v}`}>{v}</span> : '—' },
+  { key: 'target',   label: 'Target',   sortable: true },
+  { key: 'bounty',   label: 'Bounty',   sortable: true },
+]
 
 function relativeTime(iso) {
   if (!iso) return '—'
@@ -211,57 +220,13 @@ function FindingsTab() {
         </button>
       </div>
 
-      <div className="card overflow-auto">
-        <div className="text-xs font-semibold text-slate-300 mb-3">Findings ({findings.length})</div>
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="text-slate-500 border-b border-bg-border">
-              <th className="text-left py-2 px-3 w-20">Severity</th>
-              <th className="text-left py-2 px-3">Type</th>
-              <th className="text-left py-2 px-3">Endpoint</th>
-              <th className="text-left py-2 px-3 w-24">Bounty Score</th>
-              <th className="text-left py-2 px-3 w-24">Payout Est.</th>
-              <th className="text-left py-2 px-3 w-20">Status</th>
-              <th className="text-left py-2 px-3 w-24">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-bg-border">
-            {findings.map((f, i) => (
-              <tr key={i} className="hover:bg-white/5">
-                <td className={clsx('py-1.5 px-3 font-semibold uppercase text-[10px]', SEV_COLORS[f.severity] || 'text-slate-400')}>{f.severity}</td>
-                <td className="py-1.5 px-3 text-slate-300 font-semibold">{f.type || f.vuln_type || '—'}</td>
-                <td className="py-1.5 px-3 font-mono text-slate-400 truncate max-w-xs">{f.endpoint || f.url || '—'}</td>
-                <td className="py-1.5 px-3">
-                  <div className="w-full bg-bg-secondary h-1.5 rounded-full overflow-hidden mt-1">
-                    <div className="h-full bg-accent-primary" style={{ width: `${f.bounty_score || 0}%` }} />
-                  </div>
-                  <div className="text-[9px] text-slate-500 mt-0.5 text-right">{f.bounty_score || 0}/100</div>
-                </td>
-                <td className="py-1.5 px-3 text-green-400 font-mono font-bold">{f.estimated_payout || f.bounty_estimate || '—'}</td>
-                <td className="py-1.5 px-3">
-                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-secondary text-slate-400 border border-bg-border uppercase">{f.status || 'new'}</span>
-                </td>
-                <td className="py-1.5 px-3">
-                  <button 
-                    className="text-[10px] px-2 py-1 rounded bg-blue-900/30 text-blue-400 border border-blue-500/30 hover:bg-blue-900/50"
-                    onClick={() => {
-                      endpoints.generateReport(f.id).then(() => addNotification('Report generated!', 'success')).catch(e => addNotification('Failed to generate report', 'error'))
-                    }}
-                  >
-                    Gen Report
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {findings.length === 0 && selectedSession && (
-              <tr><td colSpan={7} className="py-8 px-3 text-slate-500 text-center">{loading ? 'Loading findings...' : 'No findings for this session yet.'}</td></tr>
-            )}
-            {!selectedSession && (
-              <tr><td colSpan={7} className="py-8 px-3 text-slate-500 text-center">Select an active session above to view results.</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <DataTable
+        columns={FINDING_COLUMNS}
+        data={findings}
+        searchable
+        loading={loading}
+        emptyMessage={selectedSession ? 'No findings for this session yet.' : 'Select an active session above to view results.'}
+      />
     </div>
   )
 }

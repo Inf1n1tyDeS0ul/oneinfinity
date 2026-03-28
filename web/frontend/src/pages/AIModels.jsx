@@ -3,6 +3,17 @@ import { Bot, RefreshCw, DollarSign, Zap, BarChart2, CheckCircle2, Settings2, Pl
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
 import clsx from 'clsx'
+import { DataTable } from '../components/ui/DataTable'
+
+const HISTORY_COLUMNS = [
+  { key: 'model',     label: 'Model',  sortable: true },
+  { key: 'task_type', label: 'Task',   sortable: true },
+  { key: 'tokens',    label: 'Tokens', sortable: true },
+  { key: 'cost_usd',  label: 'Cost',   sortable: true,
+    render: (v) => v != null ? `$${Number(v).toFixed(4)}` : '—' },
+  { key: 'created_at', label: 'Time',  sortable: true,
+    render: (v) => v ? new Date(v).toLocaleTimeString() : '—' },
+]
 
 const TIER_COLORS = { FAST: 'badge-running', STANDARD: 'badge-medium', PREMIUM: 'badge-high' }
 
@@ -129,22 +140,13 @@ export default function AIModels() {
       {tab === 'history' && (
         <div className="card">
           <div className="card-header"><span className="card-title">Recent Executions</span></div>
-          <table className="data-table">
-            <thead><tr><th>Model</th><th>Task</th><th>Cost</th><th>Tokens</th><th>Duration</th><th>Time</th></tr></thead>
-            <tbody>
-              {history.map((h, i) => (
-                <tr key={i}>
-                  <td className="font-mono text-xs text-accent-primary">{h.model}</td>
-                  <td><span className="badge badge-info">{h.task_type}</span></td>
-                  <td className="text-xs text-yellow-400">{h.cost ? `$${h.cost.toFixed(5)}` : '—'}</td>
-                  <td className="text-xs text-slate-400">{h.total_tokens ?? '—'}</td>
-                  <td className="text-xs text-slate-400">{h.duration_ms ? `${h.duration_ms}ms` : '—'}</td>
-                  <td className="text-xs text-slate-500">{h.timestamp ? new Date(h.timestamp).toLocaleTimeString() : '—'}</td>
-                </tr>
-              ))}
-              {history.length === 0 && <tr><td colSpan={6} className="text-center text-slate-500 py-8">No history</td></tr>}
-            </tbody>
-          </table>
+          <DataTable
+            columns={HISTORY_COLUMNS}
+            data={history}
+            searchable
+            loading={loading}
+            emptyMessage="No history"
+          />
         </div>
       )}
 

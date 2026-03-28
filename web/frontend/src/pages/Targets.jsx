@@ -2,14 +2,24 @@ import React, { useState } from 'react'
 import { Plus, Trash2, Target, ExternalLink } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { endpoints } from '../utils/api'
+import { DataTable } from '../components/ui/DataTable'
 
 const PLATFORMS = ['hackerone', 'bugcrowd', 'intigriti', 'yeswehack']
+
+const COLUMNS = [
+  { key: 'name',   label: 'Name',   sortable: true },
+  { key: 'domain', label: 'Domain', sortable: true },
+  { key: 'type',   label: 'Type',   sortable: true },
+  { key: 'status', label: 'Status', sortable: true,
+    render: (v) => <span className={`badge ${v === 'active' ? 'badge-running' : 'badge-queued'}`}>{v || 'unknown'}</span> },
+]
 
 export default function Targets() {
   const { targets, setTargets, addNotification } = useStore()
   const [showAdd, setShowAdd] = useState(false)
   const [form, setForm] = useState({ name: '', domain: '', platform: 'hackerone', scope: '' })
   const [saving, setSaving] = useState(false)
+  const [loading, setLoading] = useState(false)
 
   const handleAdd = async () => {
     if (!form.name || !form.domain) return
@@ -93,58 +103,14 @@ export default function Targets() {
         </div>
       )}
 
-      {/* Targets grid */}
-      <div className="grid grid-cols-3 gap-3">
-        {targets.map(t => (
-          <div key={t.id} className="card p-4 flex flex-col gap-2 hover:border-accent-primary/30 transition-colors">
-            <div className="flex items-start justify-between">
-              <div>
-                <div className="text-sm font-medium text-slate-200">{t.name}</div>
-                <div className="text-xs text-accent-primary/80 mt-0.5">{t.domain}</div>
-              </div>
-              <div className="flex items-center gap-1">
-                <span className={`badge-${t.status || 'info'}`}>{t.status || 'active'}</span>
-                <button className="p-1 text-slate-600 hover:text-red-400 transition-colors"
-                  onClick={() => handleDelete(t.id, t.domain)}>
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            </div>
-
-            <div className="text-[11px] text-slate-500">{t.platform}</div>
-
-            {/* Severity bar */}
-            <div className="flex gap-1 text-[11px]">
-              {['critical', 'high', 'medium', 'low'].map(sev => (
-                t.severity_counts?.[sev] > 0 && (
-                  <span key={sev} className={`badge-${sev}`}>
-                    {t.severity_counts[sev]} {sev}
-                  </span>
-                )
-              ))}
-              {t.vuln_count === 0 && <span className="text-slate-600">No findings</span>}
-            </div>
-
-            {t.scope?.length > 0 && (
-              <div className="text-[11px] text-slate-500 truncate">
-                Scope: {t.scope.slice(0, 2).join(', ')}{t.scope.length > 2 ? ` +${t.scope.length - 2}` : ''}
-              </div>
-            )}
-
-            {t.last_scan && (
-              <div className="text-[11px] text-slate-600">
-                Last scan: {new Date(t.last_scan).toLocaleString()}
-              </div>
-            )}
-          </div>
-        ))}
-
-        {targets.length === 0 && (
-          <div className="col-span-3 card p-10 text-center text-slate-500 text-xs">
-            No targets added yet. Click "Add Target" to get started.
-          </div>
-        )}
-      </div>
+      <DataTable
+        columns={COLUMNS}
+        data={targets}
+        searchable
+        loading={loading}
+        emptyMessage="No targets yet"
+        emptyAction={<button className="btn-primary mt-2" onClick={() => setShowAdd(true)}>Add your first target</button>}
+      />
     </div>
   )
 }

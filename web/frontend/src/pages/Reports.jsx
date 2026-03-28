@@ -3,6 +3,14 @@ import { FileText, Play, Download, RefreshCw, Eye, Plus, RotateCcw } from 'lucid
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
 import clsx from 'clsx'
+import { DataTable } from '../components/ui/DataTable'
+
+const REPORT_COLUMNS = [
+  { key: 'title',      label: 'Report',  sortable: true },
+  { key: 'format',     label: 'Format',  sortable: true },
+  { key: 'created_at', label: 'Created', sortable: true,
+    render: (v) => v ? new Date(v).toLocaleDateString() : '—' },
+]
 
 export default function Reports() {
   const { addNotification } = useStore()
@@ -113,34 +121,14 @@ export default function Reports() {
       {tab === 'list' && (
         <div className="card">
           <div className="card-header"><span className="card-title">Saved Reports</span></div>
-          {reports.length === 0 ? (
-            <div className="empty-state">
-              <div className="empty-icon"><FileText size={20} /></div>
-              <div className="empty-title">No reports yet</div>
-              <div className="empty-sub">Generate reports from the Generate tab or run scans with --report flag</div>
-            </div>
-          ) : (
-            <table className="data-table">
-              <thead><tr><th>Report</th><th>Target</th><th>Platform</th><th>Format</th><th>Created</th><th>Actions</th></tr></thead>
-              <tbody>
-                {reports.map((r, i) => (
-                  <tr key={i}>
-                    <td className="text-sm text-slate-200 font-medium">{r.name || r.id}</td>
-                    <td className="text-xs text-slate-400">{r.target || '—'}</td>
-                    <td><span className="badge badge-info">{r.platform || '—'}</span></td>
-                    <td className="text-xs text-slate-400">{r.format || '—'}</td>
-                    <td className="text-xs text-slate-500">{r.created_at ? new Date(r.created_at).toLocaleDateString() : '—'}</td>
-                    <td>
-                      <div className="flex items-center gap-1.5">
-                        <button className="btn-ghost btn-sm"><Eye size={11} />View</button>
-                        <button className="btn-ghost btn-sm"><Download size={11} />Download</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+          <DataTable
+            columns={REPORT_COLUMNS}
+            data={reports}
+            searchable
+            loading={loading}
+            emptyMessage="No reports yet"
+            emptyAction={<div className="empty-sub mt-1">Generate reports from the Generate tab or run scans with --report flag</div>}
+          />
         </div>
       )}
 
