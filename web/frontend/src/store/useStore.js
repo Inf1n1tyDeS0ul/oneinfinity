@@ -13,6 +13,7 @@ export const useStore = create((set, get) => ({
   // UI state
   selectedTarget: null,
   notifications: [],
+  apiOffline: false,
 
   // Actions
   setStats: (stats) => set({ stats }),
@@ -22,6 +23,7 @@ export const useStore = create((set, get) => ({
   setCampaigns: (campaigns) => set({ campaigns }),
   setAttackGraph: (attackGraph) => set({ attackGraph }),
   setSelectedTarget: (selectedTarget) => set({ selectedTarget }),
+  setApiOffline: (v) => set({ apiOffline: v }),
 
   addLog: (entry) => set((state) => ({
     logs: [...state.logs.slice(-499), entry],
