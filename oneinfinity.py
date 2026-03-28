@@ -98,6 +98,21 @@ def cmd_doctor(args):
     
     report = asyncio.run(orchestrator.run(quick=quick_mode, deep=deep_mode))
     orchestrator.print_report(report, output_json=getattr(args, "json", False))
+    # ── Enforcement: ingestion audit ──────────────────────────────────────────
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _non_compliant = _get_ec().audit_ingestion_compliance()
+        if _non_compliant:
+            print()
+            print(f"  [!] Ingestion audit: {len(_non_compliant)} cmd(s) bypass get_ingestion_engine():")
+            for _cmd in sorted(_non_compliant):
+                print(f"      - {_cmd}")
+            print(f"      Deduction: -{min(len(_non_compliant) * 0.1, 1.0):.1f} (informational)")
+        else:
+            print()
+            print("  [+] Ingestion audit: all tracked commands publish via get_ingestion_engine()")
+    except Exception as _ea:
+        pass  # audit failure never affects doctor output
 
 def cmd_setup(args):
     from modules.utils import banner, ok, info, warn
