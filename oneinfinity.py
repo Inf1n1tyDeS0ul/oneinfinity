@@ -1333,6 +1333,13 @@ def cmd_agents(args):
             return
         print()
 
+        # ── Enforcement: register module ─────────────────────────────────────
+        try:
+            from enforcement_controller import get_enforcement_controller as _get_ec
+            _get_ec().register_module("agents")
+        except Exception:
+            pass
+
         # Initialize subsystems
         attack_graph = None
         if not args.no_graph:
@@ -4298,6 +4305,30 @@ def cmd_swarm_scan(args):
         concurrency=args.concurrency,
         agent_types=agent_types,
     ))
+
+    # ── Enforcement: register module + publish findings to ingestion bus ───────
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _get_ec().register_module("swarm-scan")
+    except Exception:
+        pass
+    try:
+        from result_ingestion_engine import get_ingestion_engine as _get_ie, RawResult as _RR
+        import uuid as _sw_uuid
+        _sw_sid = str(_sw_uuid.uuid4())[:8]
+        _sw_bus = _get_ie()
+        _sw_count = 0
+        for _sf in result.findings:
+            _sf_dict = _sf if isinstance(_sf, dict) else (
+                _sf.__dict__ if hasattr(_sf, "__dict__") else {}
+            )
+            if _sf_dict:
+                _sw_bus.ingest(_RR(scan_id=_sw_sid, source="swarm-scan", raw=_sf_dict))
+                _sw_count += 1
+        if _sw_count:
+            print(f"[+] Ingestion bus: published {_sw_count} finding(s) from swarm-scan")
+    except Exception as _swe:
+        print(f"[!] Ingestion bus publish skipped: {_swe}")
 
     print(f"\n{result.summary()}")
 
