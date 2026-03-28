@@ -128,7 +128,7 @@ class ConvergenceChecker:
 
     def __init__(self):
         self._last_finding_count: int = 0
-        self._empty_iters: int = 0
+        self.research_iters_with_no_new: int = 0
         self._lock = threading.Lock()
 
     def record_research_iteration(self, current_finding_count: int) -> None:
@@ -136,9 +136,9 @@ class ConvergenceChecker:
         with self._lock:
             delta = current_finding_count - self._last_finding_count
             if delta == 0:
-                self._empty_iters += 1
+                self.research_iters_with_no_new += 1
             else:
-                self._empty_iters = 0
+                self.research_iters_with_no_new = 0
             self._last_finding_count = current_finding_count
 
     def is_converged(self, finding_vuln_types: list[str]) -> bool:
@@ -148,7 +148,7 @@ class ConvergenceChecker:
         If CapabilityMap unavailable, skip the coverage check.
         """
         with self._lock:
-            if self._empty_iters < CONVERGENCE_EMPTY_ITERS_REQUIRED:
+            if self.research_iters_with_no_new < CONVERGENCE_EMPTY_ITERS_REQUIRED:
                 return False
         # If no vuln types specified, convergence is just based on empty iters
         if not finding_vuln_types:
