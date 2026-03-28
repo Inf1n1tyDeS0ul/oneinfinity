@@ -29,6 +29,15 @@ _DEFAULTS: dict[str, Any] = {
         "record_chain_feedback": True,
         "path_max_depth": 8,
         "max_path_query_ms": 5000,
+    },
+    "enforcement": {
+        "enabled": False,
+        "validation_pipeline": False,
+        "capmap_enforcement": False,
+        "max_recursion_depth": 2,
+        "max_recursive_items": 100,
+        "module_compliance": "warn",
+        "ingestion_audit": False,
     }
 }
 
@@ -46,6 +55,8 @@ def load_graph_config() -> dict[str, Any]:
                 user = yaml.safe_load(f) or {}
             if "neo4j" in user and isinstance(user["neo4j"], dict):
                 cfg["neo4j"].update(user["neo4j"])
+            if "enforcement" in user and isinstance(user["enforcement"], dict):
+                cfg["enforcement"].update(user["enforcement"])
         except Exception as exc:
             log.warning("graph.yaml read failed (%s); using defaults", exc)
 
