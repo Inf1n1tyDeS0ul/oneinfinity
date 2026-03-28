@@ -82,9 +82,39 @@ class EnforcementController:
     def _enabled(self) -> bool:
         return bool(self._get_cfg().get("enabled", True))
 
-    # Placeholders — implemented in subsequent tasks
-    def register_module(self, module_name: str) -> None: ...
-    def check_module_compliance(self) -> ComplianceReport: ...
+    # ── Req 4: Module compliance tracking ─────────────────────────────────────
+
+    def register_module(self, module_name: str) -> None:
+        """Call at the entry point of each required cmd_* function."""
+        with self._lock:
+            self._modules_run.add(module_name)
+        log.debug("Enforcement: registered module '%s'", module_name)
+
+    def check_module_compliance(self) -> ComplianceReport:
+        """
+        Compare _modules_run against REQUIRED_MODULES.
+        mode=warn  → log warning, return report
+        mode=block → raise EnforcementError
+        mode=disabled → return ok immediately
+        """
+        cfg = self._get_cfg()
+        mode = cfg.get("module_compliance", "warn")
+        if mode == "disabled" or not self._enabled():
+            return ComplianceReport(status="disabled", missing=set())
+        with self._lock:
+            missing = REQUIRED_MODULES - self._modules_run
+        if not missing:
+            return ComplianceReport(status="ok", missing=set())
+        if mode == "warn":
+            log.warning(
+                "Enforcement: required modules not run this session: %s",
+                ", ".join(sorted(missing)),
+            )
+        elif mode == "block":
+            raise EnforcementError(
+                f"Required modules skipped — run these before completing: {sorted(missing)}"
+            )
+        return ComplianceReport(status=mode, missing=missing)
     def validate_findings(self, raw_findings: list) -> list: ...
     def check_capmap_coverage(self, scan_id: str, findings: list) -> CoverageReport: ...
     def start_recursive_watch(self, scan_id: str, target: str = "") -> None: ...
