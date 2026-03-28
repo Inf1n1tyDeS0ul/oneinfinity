@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
+import { useLocalStorage } from '../hooks/useLocalStorage'
 import clsx from 'clsx'
 
 const MISSION_ICONS = {
@@ -33,6 +34,83 @@ const TERM_REASONS = {
   stop:        { label: 'Stopped',     color: 'text-slate-400',   icon: Square },
   error:       { label: 'Error',       color: 'text-red-400',     icon: AlertTriangle },
   all_done:    { label: 'All Done',    color: 'text-emerald-400', icon: CheckCircle2 },
+}
+
+const MISSIONS = [
+  { id: 'foundation', label: 'Foundation' },
+  { id: 'fullscan',   label: 'Full Scan' },
+  { id: 'research',   label: 'Research' },
+  { id: 'swarm',      label: 'Swarm' },
+  { id: 'chains',     label: 'Chains' },
+  { id: 'report',     label: 'Report' },
+]
+
+function MissionRow({ mission, mData, status, isRunning, isLast, logLevelColor }) {
+  const [expanded, setExpanded] = useLocalStorage(`gm-mission-${mission.id}`, false)
+
+  return (
+    <div className="flex gap-3">
+      {/* Timeline spine */}
+      <div className="flex flex-col items-center">
+        <div className={clsx(
+          'w-7 h-7 rounded-full border-2 flex items-center justify-center flex-shrink-0 text-xs font-bold transition-all',
+          status === 'complete' || status === 'completed'
+            ? 'border-emerald-500 bg-emerald-500/20 text-emerald-400'
+            : isRunning
+            ? 'border-cyan-400 bg-cyan-400/20 text-cyan-400 animate-pulse'
+            : status === 'failed'
+            ? 'border-red-500 bg-red-500/10 text-red-400'
+            : 'border-bg-border bg-bg-elevated text-slate-600'
+        )}>
+          {(status === 'complete' || status === 'completed') ? '✓' : mission.label[0]}
+        </div>
+        {!isLast && (
+          <div className={clsx(
+            'w-px flex-1 my-1 min-h-4',
+            (status === 'complete' || status === 'completed') ? 'bg-emerald-500/30' : 'bg-bg-border'
+          )} />
+        )}
+      </div>
+
+      {/* Mission content */}
+      <div className="flex-1 pb-4">
+        <button
+          className="w-full flex items-center justify-between gap-2 text-left"
+          onClick={() => setExpanded(!expanded)}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-slate-200">{mission.label}</span>
+            <span className={clsx(
+              'badge',
+              (status === 'complete' || status === 'completed') ? 'badge-completed'
+              : isRunning ? 'badge-running'
+              : status === 'failed' ? 'badge-failed'
+              : 'badge-queued'
+            )}>
+              {status}
+            </span>
+          </div>
+          <div className="flex items-center gap-3 text-xs text-slate-500">
+            {mData.findings_count != null && (
+              <span>{mData.findings_count} findings</span>
+            )}
+            {mData.duration_s != null && (
+              <span>{Number(mData.duration_s).toFixed(0)}s</span>
+            )}
+            <ChevronRight size={12} className={clsx('transition-transform flex-shrink-0', expanded && 'rotate-90')} />
+          </div>
+        </button>
+
+        {expanded && mData.logs && mData.logs.length > 0 && (
+          <div className="mt-2 terminal text-xs max-h-40 overflow-y-auto">
+            {mData.logs.map((line, li) => (
+              <div key={li} className={logLevelColor ? logLevelColor(line) : 'text-slate-400'}>{line}</div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function formatDuration(secs) {
@@ -411,51 +489,30 @@ export default function GodMode() {
                   </div>
 
                   {/* Mission pipeline */}
-                  {missions.length > 0 && (
-                    <div>
-                      <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Mission Pipeline</div>
-                      <div className="flex flex-col gap-2">
-                        {missions.map(([name, status], i) => {
-                          const Icon = MISSION_ICONS[name] || Zap
-                          const statusStyle = MISSION_STATUS_STYLE[status] || 'text-slate-500 badge-info'
-                          const isActive = status === 'running'
-                          return (
-                            <div
-                              key={name}
-                              className={clsx(
-                                'flex items-center gap-3 p-3 rounded-xl border transition-all',
-                                isActive
-                                  ? 'border-cyan-500/30 bg-cyan-500/5'
-                                  : status === 'complete'
-                                  ? 'border-emerald-500/20 bg-emerald-500/5'
-                                  : status === 'failed'
-                                  ? 'border-red-500/20 bg-red-500/5'
-                                  : 'border-bg-border bg-bg-secondary'
-                              )}
-                            >
-                              {/* Step number */}
-                              <div className={clsx(
-                                'w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0',
-                                isActive ? 'bg-cyan-500/20 text-cyan-400' :
-                                status === 'complete' ? 'bg-emerald-500/20 text-emerald-400' :
-                                'bg-bg-elevated text-slate-600'
-                              )}>{i + 1}</div>
-                              <Icon size={13} className={isActive ? 'text-cyan-400' : status === 'complete' ? 'text-emerald-400' : 'text-slate-600'} />
-                              <div className="flex-1">
-                                <span className={clsx('text-sm font-medium capitalize', isActive ? 'text-slate-100' : 'text-slate-400')}>
-                                  {name}Mission
-                                </span>
-                              </div>
-                              <span className={clsx('badge', statusStyle)}>
-                                {isActive && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse mr-1" />}
-                                {status}
-                              </span>
-                            </div>
-                          )
-                        })}
-                      </div>
+                  <div className="card">
+                    <div className="card-header">
+                      <span className="card-title">Mission Pipeline</span>
                     </div>
-                  )}
+                    <div className="p-4">
+                      {MISSIONS.map((m, i) => {
+                        const mData = session?.missions?.[m.id] || {}
+                        const rawStatus = typeof mData === 'string' ? mData : (mData.status || 'pending')
+                        const mDataObj = typeof mData === 'string' ? { status: mData } : mData
+                        const isRowRunning = rawStatus === 'running'
+                        return (
+                          <MissionRow
+                            key={m.id}
+                            mission={m}
+                            mData={mDataObj}
+                            status={rawStatus}
+                            isRunning={isRowRunning}
+                            isLast={i === MISSIONS.length - 1}
+                            logLevelColor={logLevelColor}
+                          />
+                        )
+                      })}
+                    </div>
+                  </div>
                 </div>
               ) : (
                 <div className="empty-state">
