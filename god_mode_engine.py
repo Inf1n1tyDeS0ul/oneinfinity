@@ -70,7 +70,7 @@ class GodModeSession:
     max_time_sec: int = 7200
     max_findings: int = 100
     phases_complete: list = field(default_factory=list)
-    finding_count: int = 0
+    finding_count: int = 0  # Mutations from multiple threads; relies on CPython GIL atomicity for single += ops
     missions: dict = field(default_factory=dict)   # name → status str
     terminated_by: Optional[str] = None            # "convergence"|"time"|"cap"|"stop"|"error"
     log_path: str = ""
@@ -541,7 +541,6 @@ class GodModeConductor:
         self._foundation: Optional[FoundationMission] = None
         self._missions: list[Mission] = []
         self._lock = threading.Lock()
-        self._stop_event = threading.Event()
         self._log_handler: Optional[logging.FileHandler] = None
 
         # Event bus counters (guarded by _lock)
@@ -717,7 +716,7 @@ class GodModeConductor:
                 return "convergence"
 
             # All missions done naturally
-            active = [m for m in self._missions if not m.is_done()]
+            active = [m for m in self._missions if m.status == "running"]
             if not active:
                 log.info("[GOD MODE] All missions complete — finalizing")
                 return "all_done"
