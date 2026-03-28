@@ -273,12 +273,13 @@ class EnforcementController:
                     s.item_count += 1
                     current_depth = s.depth + 1
                     s.depth = current_depth
-                url = event.data.get("url", "")
+                    captured_count = s.item_count
+                url = (event.data or {}).get("url", "")
                 if not url:
                     return
                 log.info(
                     "Recursive: NEW_ENDPOINT %s — fuzz+vuln-scan (depth=%d, items=%d/%d)",
-                    url, current_depth, state.item_count, state.max_items,
+                    url, current_depth, captured_count, state.max_items,
                 )
                 def _run_fuzz():
                     try:
@@ -297,7 +298,7 @@ class EnforcementController:
                     if not s or s.item_count >= s.max_items:
                         return
                     s.item_count += 1
-                url = event.data.get("url", "")
+                url = (event.data or {}).get("url", "")
                 if not url:
                     return
                 log.info(
