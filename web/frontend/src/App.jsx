@@ -22,6 +22,15 @@ import BountyHunter from './pages/BountyHunter'
 import SecretDashboard from './pages/SecretDashboard'
 import { ThemeProvider } from './context/ThemeContext'
 import { ErrorBoundary } from './components/ui/ErrorBoundary'
+import GodMode from './pages/GodMode'
+import Research from './pages/Research'
+import Tools from './pages/Tools'
+import AIModels from './pages/AIModels'
+import Learning from './pages/Learning'
+import Simulation from './pages/Simulation'
+import Utilities from './pages/Utilities'
+import Reports from './pages/Reports'
+import Infrastructure from './pages/Infrastructure'
 
 export default function App() {
   const { addLog, setStats, setTargets, setScans, setVulnerabilities } = useStore()
@@ -80,6 +89,15 @@ export default function App() {
           <Route path="/mobile"         element={<ErrorBoundary><MobileSecurity /></ErrorBoundary>} />
           <Route path="/hunter"         element={<ErrorBoundary><BountyHunter /></ErrorBoundary>} />
           <Route path="/secrets"        element={<ErrorBoundary><SecretDashboard /></ErrorBoundary>} />
+          <Route path="/god-mode"       element={<ErrorBoundary><GodMode /></ErrorBoundary>} />
+          <Route path="/research"       element={<ErrorBoundary><Research /></ErrorBoundary>} />
+          <Route path="/tools"          element={<ErrorBoundary><Tools /></ErrorBoundary>} />
+          <Route path="/ai-ops"         element={<ErrorBoundary><AIModels /></ErrorBoundary>} />
+          <Route path="/learning"       element={<ErrorBoundary><Learning /></ErrorBoundary>} />
+          <Route path="/simulation"     element={<ErrorBoundary><Simulation /></ErrorBoundary>} />
+          <Route path="/utilities"      element={<ErrorBoundary><Utilities /></ErrorBoundary>} />
+          <Route path="/reports"        element={<ErrorBoundary><Reports /></ErrorBoundary>} />
+          <Route path="/infrastructure" element={<ErrorBoundary><Infrastructure /></ErrorBoundary>} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </Layout>
