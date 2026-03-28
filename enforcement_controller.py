@@ -241,8 +241,126 @@ class EnforcementController:
         except Exception as exc:
             log.warning("Capmap coverage check skipped: %s", exc)
             return CoverageReport(covered=set(), uncovered=set(), triggered=[])
-    def start_recursive_watch(self, scan_id: str, target: str = "") -> None: ...
-    def stop_recursive_watch(self, scan_id: str) -> None: ...
+    # ── Req 3: Recursive scanning ──────────────────────────────────────────────
+
+    def start_recursive_watch(self, scan_id: str, target: str = "") -> None:
+        """
+        Subscribe to event_bus NEW_ENDPOINT, NEW_API, NEW_VULNERABILITY events.
+        Handlers dispatch tool runs in background threads (never blocks the bus loop).
+        Respects max_recursion_depth and max_recursive_items caps from config.
+        """
+        cfg = self._get_cfg()
+        if not self._enabled():
+            return
+        max_depth = int(cfg.get("max_recursion_depth", 2))
+        max_items = int(cfg.get("max_recursive_items", 100))
+
+        state = RecursionState(
+            scan_id=scan_id, max_depth=max_depth, max_items=max_items
+        )
+        with self._lock:
+            self._recursion_states[scan_id] = state
+
+        try:
+            from event_bus import get_bus, EventType
+            bus = get_bus()
+
+            def _on_new_endpoint(event):
+                with self._lock:
+                    s = self._recursion_states.get(scan_id)
+                    if not s or s.depth >= s.max_depth or s.item_count >= s.max_items:
+                        return
+                    s.item_count += 1
+                    current_depth = s.depth + 1
+                    s.depth = current_depth
+                url = event.data.get("url", "")
+                if not url:
+                    return
+                log.info(
+                    "Recursive: NEW_ENDPOINT %s — fuzz+vuln-scan (depth=%d, items=%d/%d)",
+                    url, current_depth, state.item_count, state.max_items,
+                )
+                def _run_fuzz():
+                    try:
+                        from modules.tool_wrappers import run_ffuf, run_nuclei, is_available
+                        if is_available("ffuf"):
+                            run_ffuf(url, timeout=60)
+                        if is_available("nuclei"):
+                            run_nuclei(url, timeout=60)
+                    except Exception as exc:
+                        log.warning("Recursive fuzz+scan failed for %s: %s", url, exc)
+                threading.Thread(target=_run_fuzz, daemon=True).start()
+
+            def _on_new_api(event):
+                with self._lock:
+                    s = self._recursion_states.get(scan_id)
+                    if not s or s.item_count >= s.max_items:
+                        return
+                    s.item_count += 1
+                url = event.data.get("url", "")
+                if not url:
+                    return
+                log.info(
+                    "Recursive: NEW_API %s — IDOR+privilege tests (items=%d/%d)",
+                    url, state.item_count, state.max_items,
+                )
+                def _run_idor():
+                    try:
+                        from modules.tool_wrappers import run_nuclei, is_available
+                        if is_available("nuclei"):
+                            run_nuclei(url, templates="idor,auth-bypass", timeout=60)
+                    except Exception as exc:
+                        log.warning("Recursive IDOR test failed for %s: %s", url, exc)
+                threading.Thread(target=_run_idor, daemon=True).start()
+
+            def _on_new_vulnerability(event):
+                finding = event.data or {}
+                log.info(
+                    "Recursive: NEW_VULNERABILITY vuln_type=%s — attack-graph + chains",
+                    finding.get("vuln_type", "?"),
+                )
+                def _run_graph():
+                    try:
+                        from attack_graph_brain import get_brain
+                        get_brain().integrate_vuln(finding)
+                    except Exception as exc:
+                        log.warning("Recursive graph update failed: %s", exc)
+                threading.Thread(target=_run_graph, daemon=True).start()
+
+            bus.on(EventType.NEW_ENDPOINT, _on_new_endpoint)
+            bus.on(EventType.NEW_API, _on_new_api)
+            bus.on(EventType.NEW_VULNERABILITY, _on_new_vulnerability)
+
+            state._handlers = [
+                (EventType.NEW_ENDPOINT, _on_new_endpoint),
+                (EventType.NEW_API, _on_new_api),
+                (EventType.NEW_VULNERABILITY, _on_new_vulnerability),
+            ]
+            log.info(
+                "Recursive watch started: scan_id=%s max_depth=%d max_items=%d",
+                scan_id, max_depth, max_items,
+            )
+        except Exception as exc:
+            log.warning("Recursive watch setup failed (non-fatal): %s", exc)
+
+    def stop_recursive_watch(self, scan_id: str) -> None:
+        """Unregister event handlers and clean up state for this scan_id."""
+        with self._lock:
+            state = self._recursion_states.pop(scan_id, None)
+        if not state:
+            return
+        try:
+            from event_bus import get_bus
+            bus = get_bus()
+            for event_type, handler in state._handlers:
+                bus.off(event_type, handler)
+            log.info(
+                "Recursive watch stopped: scan_id=%s (processed %d item(s))",
+                scan_id, state.item_count,
+            )
+        except Exception as exc:
+            log.warning("Recursive watch teardown failed: %s", exc)
+
     def audit_ingestion_compliance(self) -> list: ...
 
 
