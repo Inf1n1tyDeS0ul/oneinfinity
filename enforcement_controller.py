@@ -174,7 +174,73 @@ class EnforcementController:
         except Exception as exc:
             log.warning("Enforcement validation skipped: %s", exc)
             return raw_findings
-    def check_capmap_coverage(self, scan_id: str, findings: list) -> CoverageReport: ...
+    # ── Req 1: Capmap coverage enforcement ────────────────────────────────────
+
+    def check_capmap_coverage(self, scan_id: str, findings: list) -> CoverageReport:
+        """
+        Compare vuln types found in findings against all canonical Vuln classes.
+        If capmap_enforcement=true, trigger one available tool per uncovered class.
+        """
+        cfg = self._get_cfg()
+        if not self._enabled():
+            return CoverageReport(covered=set(), uncovered=set(), triggered=[])
+        try:
+            from modules.capability_map import CapabilityMap, Vuln
+            from modules.tool_wrappers import is_available
+
+            # All canonical vuln class strings from the Vuln constants
+            all_vuln_classes = {
+                v for k, v in vars(Vuln).items()
+                if not k.startswith("_") and isinstance(v, str)
+            }
+
+            # Normalize vuln types found in findings to lowercase
+            found_types = set()
+            for f in findings:
+                if isinstance(f, dict):
+                    vt = f.get("vuln_type", f.get("type", "")).lower().strip()
+                else:
+                    vt = getattr(f, "vuln_type", "").lower().strip()
+                if vt:
+                    found_types.add(vt)
+
+            # Match: a canonical class is "covered" if any found_type is a substring
+            # of the canonical name (case-insensitive) or vice versa
+            covered: set = set()
+            uncovered: set = set()
+            for vuln_class in all_vuln_classes:
+                vc_lower = vuln_class.lower()
+                if any(ft in vc_lower or vc_lower in ft for ft in found_types):
+                    covered.add(vuln_class)
+                else:
+                    uncovered.add(vuln_class)
+
+            triggered = []
+            if cfg.get("capmap_enforcement", True) and uncovered:
+                for vuln_class in sorted(uncovered):
+                    tools = CapabilityMap.tools_for_vuln(vuln_class)  # [(name, confidence)]
+                    for tool_name, _conf in tools:
+                        if is_available(tool_name):
+                            triggered.append(tool_name)
+                            log.info(
+                                "Capmap: triggering '%s' for uncovered class '%s'",
+                                tool_name, vuln_class,
+                            )
+                            break  # one tool per uncovered class is enough
+
+            if uncovered:
+                log.warning(
+                    "Capmap: %d vuln class(es) not covered in scan %s: %s%s",
+                    len(uncovered), scan_id,
+                    ", ".join(sorted(uncovered)[:5]),
+                    " ..." if len(uncovered) > 5 else "",
+                )
+
+            return CoverageReport(covered=covered, uncovered=uncovered, triggered=triggered)
+
+        except Exception as exc:
+            log.warning("Capmap coverage check skipped: %s", exc)
+            return CoverageReport(covered=set(), uncovered=set(), triggered=[])
     def start_recursive_watch(self, scan_id: str, target: str = "") -> None: ...
     def stop_recursive_watch(self, scan_id: str) -> None: ...
     def audit_ingestion_compliance(self) -> list: ...
