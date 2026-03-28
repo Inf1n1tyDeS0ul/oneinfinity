@@ -1579,6 +1579,11 @@ def cmd_ai_redteam(args):
       oneinfinity ai-redteam https://rag.acme.com --campaign rag_attack --parallel 20
       oneinfinity ai-redteam https://agent.acme.com --campaign tool_abuse --evolve
     """
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _get_ec().register_module("ai-redteam")
+    except Exception:
+        pass
     _inject_proxy(args)
     from ai_redteam_engine import main_cli
     main_cli(args)
@@ -1610,6 +1615,11 @@ def cmd_ai_agent_test(args):
       oneinfinity ai-agent-test https://agent.acme.com --data-exfiltration --oob-domain your.burp.collaborator.net
       oneinfinity ai-agent-test https://agent.acme.com --all --auth "Bearer sk-..." --parallel 10
     """
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _get_ec().register_module("ai-redteam")
+    except Exception:
+        pass
     _inject_proxy(args)
     from ai_agent_pentest_engine import main_cli
     main_cli(args)
@@ -1624,6 +1634,11 @@ def cmd_research(args):
       oneinfinity research target.com --yes          — run research loop
       oneinfinity research --stats                   — show research KB statistics
     """
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _get_ec().register_module("research")
+    except Exception:
+        pass
     if getattr(args, "stats", False):
         # Route to stats display instead of running the loop
         from research_mode_controller import show_research_stats
@@ -4356,6 +4371,12 @@ def cmd_simulate_attacks(args):
     import asyncio
     import json as _json
     from pathlib import Path
+
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _get_ec().register_module("simulate-attacks")
+    except Exception:
+        pass
 
     try:
         from attack_simulation_engine import AttackSimulationEngine
