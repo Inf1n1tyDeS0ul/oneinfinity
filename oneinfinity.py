@@ -1375,6 +1375,23 @@ def cmd_agents(args):
 
         coord.shutdown()
 
+        # ── Publish agent findings to shared endpoint bus ─────────────────────
+        try:
+            from result_ingestion_engine import get_ingestion_engine, RawResult
+            import uuid as _uuid
+            _bus = get_ingestion_engine()
+            _sid = str(_uuid.uuid4())[:8]
+            _all_findings = coord.get_all_findings()
+            for _f in _all_findings:
+                _bus.ingest(RawResult(
+                    scan_id=_sid,
+                    source="agents-run",
+                    raw=_f,
+                ))
+            info(f"Endpoint bus: published {len(_all_findings)} findings from agents run")
+        except Exception as _be:
+            warn(f"Endpoint bus publish skipped: {_be}")
+
         section("Pentest Complete")
         summary = coord.findings_summary()
         ok(f"Tasks completed: {summary['tasks_completed']}")
