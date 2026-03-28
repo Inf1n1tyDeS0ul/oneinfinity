@@ -2911,6 +2911,45 @@ def build_parser():
     bench.add_argument("--output", "-o", default="benchmark_report.json",
                        help="Output path for benchmark JSON report (default: benchmark_report.json)")
 
+    # ── GOD MODE ──────────────────────────────────────────────────────────────
+    gm = sub.add_parser("god-mode",
+        help="GOD MODE: full adaptive cascade — every capability, zero skip")
+    gm_sub = gm.add_subparsers(dest="subcommand")
+
+    # god-mode run (default action — triggered when no subcommand)
+    gm.add_argument("target", nargs="?", default="",
+                    help="Target URL or domain")
+    gm.add_argument("--max-time", default="2h", metavar="DURATION",
+                    help="Time cap: '30m', '2h', '4h' (default: 2h)")
+    gm.add_argument("--max-findings", type=int, default=100, metavar="N",
+                    help="Finding cap (default: 100)")
+    gm.add_argument("--background", action="store_true",
+                    help="Detach to background after Stage 1 (foundation)")
+    gm.add_argument("--no-swarm", action="store_true",
+                    help="Skip SwarmMission (lighter mode)")
+    gm.add_argument("--no-research", action="store_true",
+                    help="Skip ResearchMission (faster mode)")
+    gm.add_argument("--report-fmt", default="markdown",
+                    choices=["markdown", "json", "html"],
+                    help="Report format (default: markdown)")
+
+    # god-mode status [scan-id]
+    gm_status = gm_sub.add_parser("status", help="Show GOD MODE session state")
+    gm_status.add_argument("scan_id", nargs="?", default="",
+                            help="Session ID (default: most recent)")
+
+    # god-mode logs [--follow]
+    gm_logs = gm_sub.add_parser("logs", help="Tail GOD MODE log output")
+    gm_logs.add_argument("scan_id", nargs="?", default="",
+                          help="Session ID (default: most recent)")
+    gm_logs.add_argument("--follow", "-f", action="store_true",
+                          help="Follow log output (like tail -f)")
+
+    # god-mode stop [scan-id]
+    gm_stop = gm_sub.add_parser("stop", help="Stop a running GOD MODE session")
+    gm_stop.add_argument("scan_id", nargs="?", default="",
+                          help="Session ID (default: most recent)")
+
     return p
 
 
@@ -4140,6 +4179,7 @@ def main():
         "brain-status":       cmd_brain_status,
         "brain-decide":       cmd_brain_decide,
         "brain-triggers":     cmd_brain_triggers,
+        "god-mode":           cmd_god_mode,
     }
 
     handler = handlers.get(args.command)
@@ -4950,6 +4990,83 @@ def cmd_brain_triggers(args):
         print()
     except Exception as e:
         print(f"  [!] Error: {e}")
+
+
+def cmd_god_mode(args):
+    """oneinfinity god-mode <target> — GOD MODE: full adaptive cascade, zero feature skip."""
+    from god_mode_engine import get_god_mode_conductor, GOD_MODE_LOG_DIR
+
+    sub = getattr(args, "subcommand", None) or getattr(args, "god_mode_action", None)
+
+    # ── status ────────────────────────────────────────────────────────────────
+    if sub == "status":
+        scan_id = getattr(args, "scan_id", None) or None
+        conductor = get_god_mode_conductor()
+        data = conductor.status(scan_id)
+        if data is None:
+            print("  [!] No GOD MODE session found." + (f" (id: {scan_id})" if scan_id else ""))
+            return
+        print(f"\n  GOD MODE Session: {data.get('scan_id')}")
+        print(f"  Target:     {data.get('target')}")
+        print(f"  Elapsed:    {data.get('elapsed_seconds', 0):.0f}s / {data.get('max_time_sec', 0)}s")
+        print(f"  Findings:   {data.get('finding_count', 0)} / {data.get('max_findings', 0)}")
+        print(f"  Terminated: {data.get('terminated_by') or 'running'}")
+        print(f"  Missions:")
+        for name, status in (data.get("missions") or {}).items():
+            print(f"    {name:<12} {status}")
+        print()
+        return
+
+    # ── logs ──────────────────────────────────────────────────────────────────
+    if sub == "logs":
+        import subprocess as _sp
+        scan_id = getattr(args, "scan_id", None) or None
+        if scan_id:
+            log_path = str(GOD_MODE_LOG_DIR / f"god-mode-{scan_id}.log")
+        else:
+            files = sorted(GOD_MODE_LOG_DIR.glob("god-mode-*.log"),
+                           key=lambda p: p.stat().st_mtime, reverse=True) if GOD_MODE_LOG_DIR.exists() else []
+            if not files:
+                print("  [!] No GOD MODE log files found.")
+                return
+            log_path = str(files[0])
+        follow = getattr(args, "follow", False)
+        if follow:
+            _sp.run(["tail", "-f", log_path])
+        else:
+            _sp.run(["tail", "-n", "100", log_path])
+        return
+
+    # ── stop ──────────────────────────────────────────────────────────────────
+    if sub == "stop":
+        scan_id = getattr(args, "scan_id", None) or None
+        conductor = get_god_mode_conductor()
+        ok = conductor.stop(scan_id)
+        if ok:
+            print(f"  [+] Stop sentinel written. GOD MODE will finalize within 30s.")
+        else:
+            print("  [!] No active GOD MODE session found to stop.")
+        return
+
+    # ── run (default) ─────────────────────────────────────────────────────────
+    target = getattr(args, "target", None)
+    if not target:
+        print("Usage: oneinfinity god-mode <target> [options]")
+        print("       oneinfinity god-mode status [scan-id]")
+        print("       oneinfinity god-mode logs [--follow]")
+        print("       oneinfinity god-mode stop [scan-id]")
+        return
+
+    conductor = get_god_mode_conductor()
+    conductor.run(
+        target=target,
+        max_time=getattr(args, "max_time", "2h") or "2h",
+        max_findings=getattr(args, "max_findings", 100) or 100,
+        background=getattr(args, "background", False),
+        no_swarm=getattr(args, "no_swarm", False),
+        no_research=getattr(args, "no_research", False),
+        report_fmt=getattr(args, "report_fmt", "markdown") or "markdown",
+    )
 
 
 if __name__ == "__main__":
