@@ -524,3 +524,125 @@ class ReportMission(Mission):
 
         session.phases_complete.append("report")
         self._result = {"validated_findings": len(validated)}
+
+
+# ── GodModeConductor ───────────────────────────────────────────────────────────
+
+class GodModeConductor:
+    """
+    Master orchestrator for GOD MODE.
+    Manages mission lifecycle and convergence loop.
+    """
+
+    def __init__(self):
+        self._session: Optional[GodModeSession] = None
+        self._state_file: Optional[GodModeStateFile] = None
+        self._convergence = ConvergenceChecker()
+        self._foundation: Optional[FoundationMission] = None
+        self._missions: list[Mission] = []
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._log_handler: Optional[logging.FileHandler] = None
+
+        # Event bus counters (guarded by _lock)
+        self._vuln_count: int = 0
+        self._endpoint_count: int = 0
+        self._research_iters_done: int = 0
+
+        # Event bus unsubscribe handles
+        self._bus_handlers: list = []
+
+    # ── Event bus ─────────────────────────────────────────────────────────────
+
+    def _subscribe_to_event_bus(self) -> None:
+        try:
+            from event_bus import get_bus, EventType
+
+            def _on_vuln(event) -> None:
+                with self._lock:
+                    self._vuln_count += 1
+                    count = self._vuln_count
+                if count == EVENT_UNLOCK_VULN_THRESHOLD:
+                    log.info("[GOD MODE] %d vulns → unlocking ResearchMission", count)
+                    self._unlock_mission("research")
+
+            def _on_endpoint(event) -> None:
+                with self._lock:
+                    self._endpoint_count += 1
+                    count = self._endpoint_count
+                if count == EVENT_UNLOCK_ENDPOINT_THRESHOLD:
+                    log.info("[GOD MODE] %d endpoints → unlocking SwarmMission", count)
+                    self._unlock_mission("swarm")
+
+            bus = get_bus()
+            bus.on(EventType.NEW_VULNERABILITY, _on_vuln)
+            bus.on(EventType.NEW_ENDPOINT, _on_endpoint)
+            self._bus_handlers = [
+                (EventType.NEW_VULNERABILITY, _on_vuln),
+                (EventType.NEW_ENDPOINT, _on_endpoint),
+            ]
+            log.info("[GOD MODE] Event bus subscriptions active")
+        except Exception as exc:
+            log.warning("[GOD MODE] Event bus subscription failed (non-fatal): %s", exc)
+
+    def _unsubscribe_from_event_bus(self) -> None:
+        try:
+            from event_bus import get_bus
+            bus = get_bus()
+            for event_type, handler in self._bus_handlers:
+                try:
+                    bus.off(handler)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self._bus_handlers = []
+
+    def _unlock_mission(self, name: str) -> None:
+        """Start a mission by name if it's still pending."""
+        if self._session is None:
+            return
+        for m in self._missions:
+            if m.name == name and m.status == "pending":
+                log.info("[GOD MODE] Starting mission: %s", name)
+                m.start(self._session)
+                self._update_session_missions()
+                break
+
+    def _update_session_missions(self) -> None:
+        """Sync mission statuses into session and persist."""
+        if self._session and self._state_file:
+            self._session.missions = {m.name: m.status for m in self._missions}
+            self._state_file.write(self._session)
+
+    # ── Status + Stop ─────────────────────────────────────────────────────────
+
+    def status(self, scan_id: Optional[str] = None) -> Optional[dict]:
+        """Read state from disk. Returns None if session not found."""
+        if scan_id:
+            sf = GodModeStateFile(scan_id)
+            return sf.read()
+        # Find most recent
+        latest = GodModeStateFile.find_latest()
+        if latest:
+            try:
+                return json.loads(latest.read_text())
+            except Exception:
+                return None
+        return None
+
+    def stop(self, scan_id: Optional[str] = None) -> bool:
+        """Write stop sentinel. Returns True if sentinel written."""
+        if scan_id is None and self._session:
+            scan_id = self._session.scan_id
+        if not scan_id:
+            # Find latest
+            latest = GodModeStateFile.find_latest()
+            if latest:
+                scan_id = latest.stem.replace("god-mode-", "")
+        if not scan_id:
+            return False
+        sentinel = GodModeStateFile.stop_sentinel_path(scan_id)
+        sentinel.touch()
+        log.info("[GOD MODE] Stop sentinel written for %s", scan_id)
+        return True
