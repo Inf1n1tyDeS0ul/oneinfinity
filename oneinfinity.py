@@ -3396,6 +3396,39 @@ def cmd_full_scan(args):
         import traceback; traceback.print_exc()
         sys.exit(1)
 
+    # ── Post-pipeline: graph ingestion ────────────────────────────────────
+    try:
+        from attack_graph_brain import get_brain
+        _brain = get_brain()
+        _ingested = 0
+        for _f in result.findings:
+            _brain.integrate_vuln(_f)
+            _ingested += 1
+        if _ingested:
+            info(f"Graph: ingested {_ingested} finding(s) from full-scan")
+    except Exception as _ge:
+        warn(f"Graph ingestion skipped: {_ge}")
+
+    # ── Post-pipeline: learning system update ─────────────────────────────
+    try:
+        import types as _types
+        from learning import LearningSystem as _LS
+        # phase names serve as tool proxies
+        _tools_used = list(result.phases.keys()) if result.phases else []
+        _task_result = _types.SimpleNamespace(
+            findings=result.findings,
+            tools_used=_tools_used,
+            target=target,
+            success=(result.status == "completed"),
+            duration=result.elapsed_s,
+        )
+        _ls = _LS()
+        _ls.record_result(_task_result)
+        _ls.close()
+        info("Learning system updated from full-scan results")
+    except Exception as _le:
+        warn(f"Learning update skipped: {_le}")
+
     print()
 
     # Summary table
