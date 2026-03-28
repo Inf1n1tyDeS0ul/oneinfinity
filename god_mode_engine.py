@@ -406,8 +406,7 @@ class SwarmMission(Mission):
         # Publish to ingestion bus
         try:
             from result_ingestion_engine import get_ingestion_engine, RawResult
-            import uuid as _uuid
-            sid = str(_uuid.uuid4())[:8]
+            sid = session.scan_id
             bus = get_ingestion_engine()
             for f in (result.findings if result and hasattr(result, "findings") else []):
                 fd = f if isinstance(f, dict) else (f.__dict__ if hasattr(f, "__dict__") else {})
@@ -444,10 +443,15 @@ class ChainsMission(Mission):
             log.warning("[GOD MODE] ChainsMission: could not load findings: %s", exc)
 
         engine = ExploitChainEngine()
-        chains = engine.detect_chains(findings, session.target)
+        try:
+            chains = engine.detect_chains(findings, session.target)
+        except Exception as exc:
+            log.warning("[GOD MODE] ChainsMission: chain detection failed: %s", exc)
+            chains = None
+        finally:
+            session.phases_complete.append("chains")
 
         chain_count = len(chains) if chains else 0
-        session.phases_complete.append("chains")
         log.info("[GOD MODE] ChainsMission complete — %d chains detected", chain_count)
         self._result = {"chains": chain_count}
 
@@ -499,7 +503,7 @@ class ReportMission(Mission):
         # Step 3: capmap coverage
         try:
             found_types = [f.get("vuln_type", "") for f in validated if isinstance(f, dict)]
-            from modules.capability_map import CapabilityMap, Vuln
+            from modules.capability_map import Vuln
             all_classes = {v for k, v in vars(Vuln).items() if not k.startswith("_") and isinstance(v, str)}
             covered = {vt for vt in found_types if vt}
             uncovered = all_classes - covered
