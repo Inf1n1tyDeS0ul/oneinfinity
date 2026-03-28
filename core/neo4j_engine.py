@@ -74,6 +74,7 @@ class Neo4jEngine:
             "CREATE INDEX IF NOT EXISTS FOR (n:OI_Node) ON (n.type)",
             "CREATE INDEX IF NOT EXISTS FOR ()-[r:OI_REL]-() ON (r.type)",
             "CREATE INDEX IF NOT EXISTS FOR (f:OI_ChainFeedback) ON (f.chain_type)",
+            "CREATE INDEX IF NOT EXISTS FOR (f:OI_ChainFeedback) ON (f.success)",
         ]
         try:
             with self._driver.session(database=self._database) as sess:
