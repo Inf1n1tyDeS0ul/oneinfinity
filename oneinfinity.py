@@ -3394,6 +3394,16 @@ def cmd_full_scan(args):
         print(f"  [{tag}] [{pct:3d}%] [{phase:25s}] {msg}")
         phase_status_line[phase] = (pct, msg)
 
+    # ── Enforcement: register + start recursive watch ─────────────────────────
+    import uuid as _ec_uuid
+    _ec_scan_id = str(_ec_uuid.uuid4())[:8]
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _get_ec().register_module("full-scan")
+        _get_ec().start_recursive_watch(_ec_scan_id, target)
+    except Exception as _ecw:
+        warn(f"Enforcement watch setup skipped: {_ecw}")
+
     # Run canonical pipeline
     try:
         from pipeline.executor import run_canonical_pipeline
@@ -3413,12 +3423,21 @@ def cmd_full_scan(args):
         import traceback; traceback.print_exc()
         sys.exit(1)
 
+    # ── Enforcement: validate findings before graph ingestion ─────────────────
+    _validated = result.findings
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _validated = _get_ec().validate_findings(result.findings)
+        info(f"Enforcement: {len(_validated)}/{len(result.findings)} finding(s) passed validation")
+    except Exception as _ecv:
+        warn(f"Enforcement validation skipped: {_ecv}")
+
     # ── Post-pipeline: graph ingestion ────────────────────────────────────
     try:
         from attack_graph_brain import get_brain
         _brain = get_brain()
         _ingested = 0
-        for _f in result.findings:
+        for _f in _validated:
             _brain.integrate_vuln(_f)
             _ingested += 1
         if _ingested:
@@ -3433,7 +3452,7 @@ def cmd_full_scan(args):
         # phase names serve as tool proxies
         _tools_used = list(result.phases.keys()) if result.phases else []
         _task_result = _types.SimpleNamespace(
-            findings=result.findings,
+            findings=_validated,
             tools_used=_tools_used,
             target=target,
             success=(result.status == "completed"),
@@ -3445,6 +3464,22 @@ def cmd_full_scan(args):
         info("Learning system updated from full-scan results")
     except Exception as _le:
         warn(f"Learning update skipped: {_le}")
+
+    # ── Enforcement: capmap coverage + module compliance + cleanup ────────────
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _ctrl = _get_ec()
+        _cov = _ctrl.check_capmap_coverage(_ec_scan_id, _validated)
+        if _cov.uncovered:
+            warn(f"Capmap: {len(_cov.uncovered)} vuln class(es) not covered this scan")
+        if _cov.triggered:
+            info(f"Capmap: triggered {len(_cov.triggered)} additional tool(s) for coverage")
+        _comp = _ctrl.check_module_compliance()
+        if _comp.missing:
+            warn(f"Module compliance: not run this session — {', '.join(sorted(_comp.missing))}")
+        _ctrl.stop_recursive_watch(_ec_scan_id)
+    except Exception as _ecc:
+        warn(f"Enforcement compliance check skipped: {_ecc}")
 
     print()
 
@@ -3464,10 +3499,10 @@ def cmd_full_scan(args):
 
     # Severity breakdown
     sev_counts = {}
-    for f in result.findings:
+    for f in _validated:
         s = f.get("severity", "info").lower()
         sev_counts[s] = sev_counts.get(s, 0) + 1
-    print(f"  Total unique findings: {len(result.findings)}")
+    print(f"  Total unique findings: {len(_validated)}")
     for sev in ["critical", "high", "medium", "low", "info"]:
         cnt = sev_counts.get(sev, 0)
         if cnt:
@@ -3486,7 +3521,7 @@ def cmd_full_scan(args):
         try:
             from confidence_engine import ConfidenceEngine
             from core.reporter import Reporter
-            scored = ConfidenceEngine().score_findings(result.findings)
+            scored = ConfidenceEngine().score_findings(_validated)
             reporter = Reporter(output, target=target, platform="HackerOne")
             reporter.add_findings(scored)
             fmts = ["html", "pdf"] if report_fmt == "all" else [report_fmt]
