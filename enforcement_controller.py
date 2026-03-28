@@ -115,7 +115,65 @@ class EnforcementController:
                 f"Required modules skipped — run these before completing: {sorted(missing)}"
             )
         return ComplianceReport(status=mode, missing=missing)
-    def validate_findings(self, raw_findings: list) -> list: ...
+    # ── Req 2: Validation pipeline ─────────────────────────────────────────────
+
+    def validate_findings(self, raw_findings: list) -> list:
+        """
+        HTTP-probe each finding via FindingValidationEngine, then dedup.
+        Returns validated + deduped list. Non-fatal: on any error, returns raw_findings.
+
+        If all findings time out (target unreachable), passes all through with dedup only.
+        """
+        cfg = self._get_cfg()
+        if not self._enabled() or not cfg.get("validation_pipeline", True):
+            return raw_findings
+        if not raw_findings:
+            return []
+        try:
+            from finding_validation_engine import FindingValidationEngine
+            from core.deduplicator import Deduplicator
+
+            engine = FindingValidationEngine(timeout=15, max_retries=2)
+            dedup = Deduplicator()
+            kept = []
+            timeout_count = 0
+
+            for f in raw_findings:
+                if not isinstance(f, dict):
+                    # Convert dataclass / object to dict
+                    f = f.__dict__ if hasattr(f, "__dict__") else {}
+                result = engine.validate(f)
+                if result.error and ("timed out" in result.error.lower() or
+                                     "urlopen error" in result.error.lower()):
+                    timeout_count += 1
+                    kept.append(f)   # pass through on network error
+                    continue
+                if result.validated and result.confidence >= 0.5:
+                    kept.append(f)
+                else:
+                    log.info(
+                        "Enforcement: dropped finding url=%s vuln_type=%s "
+                        "(validated=%s confidence=%.2f reason=%s)",
+                        f.get("url", "?"), f.get("vuln_type", "?"),
+                        result.validated, result.confidence, result.error or "low_confidence",
+                    )
+
+            if timeout_count == len(raw_findings) and raw_findings:
+                log.warning(
+                    "Enforcement: target unreachable — all %d finding(s) timed out, "
+                    "passing through with dedup only", len(raw_findings)
+                )
+
+            validated = dedup.filter_new(kept)
+            log.info(
+                "Enforcement: %d/%d finding(s) passed validation (dedup removed %d)",
+                len(validated), len(raw_findings), len(kept) - len(validated),
+            )
+            return validated
+
+        except Exception as exc:
+            log.warning("Enforcement validation skipped: %s", exc)
+            return raw_findings
     def check_capmap_coverage(self, scan_id: str, findings: list) -> CoverageReport: ...
     def start_recursive_watch(self, scan_id: str, target: str = "") -> None: ...
     def stop_recursive_watch(self, scan_id: str) -> None: ...
