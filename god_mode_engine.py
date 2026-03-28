@@ -657,7 +657,6 @@ class GodModeConductor:
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         logging.getLogger("oneinfinity").addHandler(fh)
-        logging.getLogger("oneinfinity.god_mode").addHandler(fh)
         self._log_handler = fh
         return log_path
 
@@ -665,10 +664,10 @@ class GodModeConductor:
         if self._log_handler:
             try:
                 logging.getLogger("oneinfinity").removeHandler(self._log_handler)
-                logging.getLogger("oneinfinity.god_mode").removeHandler(self._log_handler)
                 self._log_handler.close()
             except Exception:
                 pass
+            self._log_handler = None
 
     # ── Convergence loop ──────────────────────────────────────────────────────
 
@@ -677,7 +676,8 @@ class GodModeConductor:
         Polls every 30s for termination conditions.
         Returns the reason: 'convergence'|'time'|'cap'|'stop'|'all_done'.
         """
-        assert self._session is not None
+        if self._session is None:
+            raise RuntimeError("_convergence_loop() called before session is initialized")
         session = self._session
 
         while True:
@@ -840,7 +840,8 @@ class GodModeConductor:
         if research and research.status == "done" and chains.status == "pending":
             log.info("[GOD MODE] Triggering ChainsMission post-convergence")
             chains.start(session)
-            chains._thread.join(timeout=120)  # wait up to 2 min for chains
+            if chains._thread is not None:
+                chains._thread.join(timeout=120)  # wait up to 2 min for chains
 
         self._unsubscribe_from_event_bus()
 
