@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import ForceGraph2D from 'react-force-graph-2d'
-import { Share2, RefreshCw, Info } from 'lucide-react'
+import { Share2, RefreshCw, Info, X } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { endpoints } from '../utils/api'
 
@@ -22,6 +22,7 @@ function nodeColor(node) {
 export default function AttackGraphPage() {
   const { attackGraph, setAttackGraph, targets, selectedTarget, addNotification } = useStore()
   const [selectedNode, setSelectedNode] = useState(null)
+  const [criticalOnly, setCriticalOnly] = useState(false)
   const [attackPaths, setAttackPaths] = useState([])
   const [dimensions, setDimensions] = useState({ width: 800, height: 500 })
   const containerRef = useRef(null)
@@ -62,13 +63,18 @@ export default function AttackGraphPage() {
   }, [])
 
   // Transform to force-graph format
+  const displayEdges = criticalOnly
+    ? (attackGraph.edges || []).filter(e => e.critical)
+    : (attackGraph.edges || [])
+
   const graphData = {
     nodes: (attackGraph.nodes || []).map(n => ({ ...n })),
-    links: (attackGraph.edges || []).map(e => ({
+    links: displayEdges.map(e => ({
       source: e.source,
       target: e.target,
       label: e.label,
       type: e.type,
+      critical: e.critical,
     })),
   }
 
@@ -86,6 +92,15 @@ export default function AttackGraphPage() {
             <option value="">All Targets</option>
             {targets.map(t => <option key={t.id} value={t.domain}>{t.domain}</option>)}
           </select>
+          <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={criticalOnly}
+              onChange={e => setCriticalOnly(e.target.checked)}
+              className="rounded"
+            />
+            Critical paths only
+          </label>
           <button className="btn-secondary flex items-center gap-1.5"
             onClick={() => loadGraph(selectedTarget)}>
             <RefreshCw size={12} />
@@ -129,9 +144,9 @@ export default function AttackGraphPage() {
               nodeLabel={node => `${node.type}: ${node.label}`}
               nodeColor={nodeColor}
               nodeRelSize={5}
-              nodeVal={node => node.type === 'vulnerability' ? 3 : node.type === 'domain' ? 6 : 4}
-              linkColor={() => '#1e2d4a'}
-              linkWidth={1}
+              nodeVal={node => Math.max(2, Math.min(8, (node.risk_score || 1) * 2))}
+              linkColor={link => link.critical ? '#ef4444' : '#1e2d4a'}
+              linkWidth={link => link.critical ? 2 : 1}
               linkLabel={link => link.label}
               onNodeClick={node => setSelectedNode(node)}
               nodeCanvasObject={(node, ctx, globalScale) => {
@@ -152,57 +167,37 @@ export default function AttackGraphPage() {
               }}
             />
           )}
+          {selectedNode && (
+            <div className="absolute top-4 right-4 w-72 card p-4 flex flex-col gap-3 shadow-modal animate-fade-in z-10">
+              <div className="flex items-center justify-between">
+                <h3 className="card-title">{selectedNode.label || selectedNode.id}</h3>
+                <button className="btn-icon" onClick={() => setSelectedNode(null)} aria-label="Close">
+                  <X size={12} />
+                </button>
+              </div>
+              <div className="flex flex-col gap-2 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Type</span>
+                  <span className="badge badge-info">{selectedNode.type || 'unknown'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Risk Score</span>
+                  <span className="text-slate-200 font-medium">{selectedNode.risk_score ?? '—'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Vulnerabilities</span>
+                  <span className="text-red-400 font-medium">{selectedNode.vuln_count ?? 0}</span>
+                </div>
+                {selectedNode.last_seen && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Last Seen</span>
+                    <span className="text-slate-400">{new Date(selectedNode.last_seen).toLocaleDateString()}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
-
-        {/* Node detail panel */}
-        {selectedNode && (
-          <div className="card w-72 flex-shrink-0 overflow-y-auto">
-            <div className="card-header">
-              <div className="flex items-center gap-2 text-xs text-slate-300">
-                <Info size={13} className="text-accent-primary" />
-                Node Details
-              </div>
-              <button className="text-slate-500 hover:text-slate-300 text-xs"
-                onClick={() => setSelectedNode(null)}>✕</button>
-            </div>
-            <div className="p-4 flex flex-col gap-3 text-xs">
-              <div>
-                <span className="label">Type</span>
-                <span style={{ color: nodeColor(selectedNode) }} className="font-medium capitalize">
-                  {selectedNode.type}
-                </span>
-              </div>
-              <div>
-                <span className="label">Label</span>
-                <span className="text-slate-200 break-all">{selectedNode.label}</span>
-              </div>
-              {selectedNode.severity && (
-                <div>
-                  <span className="label">Severity</span>
-                  <span className={`badge-${selectedNode.severity}`}>{selectedNode.severity}</span>
-                </div>
-              )}
-              {selectedNode.data && Object.entries(selectedNode.data).length > 0 && (
-                <div>
-                  <span className="label mb-2">Details</span>
-                  {Object.entries(selectedNode.data)
-                    .filter(([k]) => !['id', 'log_lines'].includes(k))
-                    .slice(0, 8)
-                    .map(([k, v]) => (
-                      <div key={k} className="flex gap-2 mb-1">
-                        <span className="text-slate-500 capitalize w-24 flex-shrink-0">{k}:</span>
-                        <span className="text-slate-300 break-all">{JSON.stringify(v)?.substring(0, 80)}</span>
-                      </div>
-                    ))
-                  }
-                </div>
-              )}
-              {selectedNode.type === 'vulnerability' && selectedNode.data?.evidence && (
-                <button className="btn-danger w-full mt-2">Launch Exploit</button>
-              )}
-            </div>
-          </div>
-        )}
 
         {/* Attack Paths Panel */}
         {!selectedNode && attackPaths.length > 0 && (
