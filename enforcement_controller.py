@@ -361,7 +361,65 @@ class EnforcementController:
         except Exception as exc:
             log.warning("Recursive watch teardown failed: %s", exc)
 
-    def audit_ingestion_compliance(self) -> list: ...
+    # ── Req 5: Ingestion audit for doctor ─────────────────────────────────────
+
+    def audit_ingestion_compliance(self) -> list:
+        """
+        Return list of cmd_* function names in oneinfinity.py that produce findings
+        but do not call get_ingestion_engine().
+
+        Uses regex-based per-function body inspection (no AST needed).
+        Returns [] on any parse error (non-fatal).
+        """
+        cfg = self._get_cfg()
+        if not self._enabled() or not cfg.get("ingestion_audit", True):
+            return []
+
+        # Commands known to produce findings — manually maintained.
+        # Add new commands here when they start producing scan output.
+        MUST_COMPLY = {
+            "cmd_full_scan",
+            "cmd_agents",
+            "cmd_swarm_scan",
+            "cmd_swarm",
+            "cmd_simulate_attacks",
+            "cmd_research",
+            "cmd_ai_redteam",
+            "cmd_ai_agent_test",
+        }
+
+        try:
+            import os
+            import re
+            # enforcement_controller.py lives next to oneinfinity.py
+            base = os.path.dirname(os.path.abspath(__file__))
+            main_path = os.path.join(base, "oneinfinity.py")
+            if not os.path.exists(main_path):
+                log.warning("Ingestion audit: oneinfinity.py not found at %s", main_path)
+                return []
+
+            src = open(main_path, encoding="utf-8").read()
+
+            # Split source into per-function blocks by top-level `def` statements
+            func_pattern = re.compile(r"^def (\w+)\(", re.MULTILINE)
+            matches = list(func_pattern.finditer(src))
+
+            non_compliant = []
+            for i, m in enumerate(matches):
+                fname = m.group(1)
+                if fname not in MUST_COMPLY:
+                    continue
+                start = m.start()
+                end = matches[i + 1].start() if i + 1 < len(matches) else len(src)
+                body = src[start:end]
+                if "get_ingestion_engine" not in body:
+                    non_compliant.append(fname)
+
+            return non_compliant
+
+        except Exception as exc:
+            log.warning("Ingestion audit failed (non-fatal): %s", exc)
+            return []
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────────
