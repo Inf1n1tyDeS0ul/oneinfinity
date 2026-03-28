@@ -646,3 +646,230 @@ class GodModeConductor:
         sentinel.touch()
         log.info("[GOD MODE] Stop sentinel written for %s", scan_id)
         return True
+
+    # ── Logging setup ─────────────────────────────────────────────────────────
+
+    def _setup_logging(self, scan_id: str) -> str:
+        """Set up file logging for GOD MODE session. Returns log path."""
+        GOD_MODE_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_path = str(GOD_MODE_LOG_DIR / f"god-mode-{scan_id}.log")
+        fh = logging.FileHandler(log_path, encoding="utf-8")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logging.getLogger("oneinfinity").addHandler(fh)
+        logging.getLogger("oneinfinity.god_mode").addHandler(fh)
+        self._log_handler = fh
+        return log_path
+
+    def _teardown_logging(self) -> None:
+        if self._log_handler:
+            try:
+                logging.getLogger("oneinfinity").removeHandler(self._log_handler)
+                logging.getLogger("oneinfinity.god_mode").removeHandler(self._log_handler)
+                self._log_handler.close()
+            except Exception:
+                pass
+
+    # ── Convergence loop ──────────────────────────────────────────────────────
+
+    def _convergence_loop(self) -> str:
+        """
+        Polls every 30s for termination conditions.
+        Returns the reason: 'convergence'|'time'|'cap'|'stop'|'all_done'.
+        """
+        assert self._session is not None
+        session = self._session
+
+        while True:
+            time.sleep(30)
+
+            # Stop sentinel
+            sentinel = GodModeStateFile.stop_sentinel_path(session.scan_id)
+            if sentinel.exists():
+                log.info("[GOD MODE] Stop sentinel detected — finalizing")
+                return "stop"
+
+            # Time cap
+            if session.elapsed() >= session.max_time_sec:
+                log.info("[GOD MODE] Time cap reached (%.0fs) — finalizing", session.elapsed())
+                return "time"
+
+            # Finding cap
+            if session.finding_count >= session.max_findings:
+                log.info("[GOD MODE] Finding cap reached (%d) — finalizing", session.finding_count)
+                return "cap"
+
+            # Convergence
+            found_types: list[str] = []
+            try:
+                from result_ingestion_engine import get_ingestion_engine
+                findings = get_ingestion_engine().get_findings() or []
+                found_types = [f.get("vuln_type", "") for f in findings if isinstance(f, dict)]
+            except Exception:
+                pass
+            if self._convergence.is_converged(found_types):
+                log.info("[GOD MODE] Convergence detected — finalizing")
+                return "convergence"
+
+            # All missions done naturally
+            active = [m for m in self._missions if not m.is_done()]
+            if not active:
+                log.info("[GOD MODE] All missions complete — finalizing")
+                return "all_done"
+
+            # Update state
+            self._update_session_missions()
+            log.debug("[GOD MODE] Convergence loop tick — elapsed=%.0fs findings=%d",
+                      session.elapsed(), session.finding_count)
+
+    # ── Main entry point ──────────────────────────────────────────────────────
+
+    def run(
+        self,
+        target: str,
+        max_time: str = "2h",
+        max_findings: int = 100,
+        background: bool = False,
+        no_swarm: bool = False,
+        no_research: bool = False,
+        report_fmt: str = "markdown",
+    ) -> GodModeSession:
+        """
+        Run GOD MODE against target.
+        Blocks until convergence (foreground) or returns after Stage 1 (background).
+        """
+        # ── Session setup ──────────────────────────────────────────────────
+        scan_id = "gm-" + str(uuid.uuid4())[:6]
+        log_path = self._setup_logging(scan_id)
+        session = GodModeSession(
+            scan_id=scan_id,
+            target=target,
+            start_time=time.time(),
+            max_time_sec=_parse_max_time(max_time),
+            max_findings=max_findings,
+            log_path=log_path,
+            background=background,
+        )
+        self._session = session
+        self._state_file = GodModeStateFile(scan_id)
+        self._state_file.write(session)
+
+        log.info("[GOD MODE] Session %s started — target=%s max_time=%s max_findings=%d",
+                 scan_id, target, max_time, max_findings)
+        print(f"\n[*] GOD MODE — Session: {scan_id}")
+        print(f"    Target:    {target}")
+        print(f"    Max time:  {max_time}  |  Max findings: {max_findings}")
+        print(f"    Log:       {log_path}")
+
+        # ── Stage 1: Foundation (blocking) ─────────────────────────────────
+        print(f"\n[*] Stage 1: Foundation...")
+        foundation = FoundationMission()
+        self._foundation = foundation
+        try:
+            foundation.run_sync(session)
+        except FoundationError as exc:
+            print(f"\n[!] GOD MODE aborted — Foundation failed: {exc}")
+            session.terminated_by = "error"
+            self._state_file.write(session)
+            self._teardown_logging()
+            return session
+
+        print(f"    [+] Foundation complete — recon={'ok' if foundation.recon else 'skipped'} "
+              f"app_model={'ok' if foundation.app_model else 'skipped'}")
+
+        # ── Background detach ──────────────────────────────────────────────
+        if background:
+            print(f"\n[+] GOD MODE running in background. Session: {scan_id}")
+            print(f"    Status:  oneinfinity god-mode status {scan_id}")
+            print(f"    Logs:    oneinfinity god-mode logs --follow")
+            print(f"    Stop:    oneinfinity god-mode stop {scan_id}")
+            # Start background thread (non-daemon keeps process alive after main thread exits)
+            bg_thread = threading.Thread(
+                target=self._run_stages_2_to_5,
+                args=(session, foundation, no_swarm, no_research, report_fmt),
+                name="god-mode-bg",
+                daemon=False,   # non-daemon: process stays alive until this thread finishes
+            )
+            bg_thread.start()
+            return session
+
+        # ── Foreground: run stages 2–5 directly ───────────────────────────
+        self._run_stages_2_to_5(session, foundation, no_swarm, no_research, report_fmt)
+        return session
+
+    def _run_stages_2_to_5(
+        self,
+        session: GodModeSession,
+        foundation: FoundationMission,
+        no_swarm: bool,
+        no_research: bool,
+        report_fmt: str,
+    ) -> None:
+        """Stages 2-5: pipeline + event missions + convergence + report."""
+
+        # ── Build mission list ─────────────────────────────────────────────
+        full_scan = FullScanMission(foundation)
+        research = ResearchMission(self._convergence) if not no_research else None
+        swarm = SwarmMission() if not no_swarm else None
+        chains = ChainsMission()
+        report = ReportMission(report_fmt)
+
+        self._missions = [m for m in [full_scan, research, swarm, chains, report] if m is not None]
+        self._update_session_missions()
+
+        # ── Stage 2: subscribe to event bus + launch FullScanMission ──────
+        print(f"\n[*] Stage 2: Full scan + event bus active")
+        self._subscribe_to_event_bus()
+        full_scan.start(session)
+        self._update_session_missions()
+
+        # ── Stage 3 is automatic (event-driven unlocking from _on_vuln/_on_endpoint)
+
+        # ── Stage 4: Convergence loop ──────────────────────────────────────
+        print(f"[*] Stage 4: Convergence loop (checks every 30s)")
+        reason = self._convergence_loop()
+        session.terminated_by = reason
+        self._update_session_missions()
+
+        # Stop all running missions
+        for m in self._missions:
+            if not m.is_done():
+                m.stop()
+
+        # ── Also start ChainsMission if research ran ───────────────────────
+        if research and research.status == "done" and chains.status == "pending":
+            log.info("[GOD MODE] Triggering ChainsMission post-convergence")
+            chains.start(session)
+            chains._thread.join(timeout=120)  # wait up to 2 min for chains
+
+        self._unsubscribe_from_event_bus()
+
+        # ── Stage 5: ReportMission (always) ────────────────────────────────
+        print(f"\n[*] Stage 5: Finalization...")
+        report.run_sync(session)
+        self._update_session_missions()
+
+        # Final summary
+        print(f"\n[+] GOD MODE complete — Session: {session.scan_id}")
+        print(f"    Terminated by: {session.terminated_by}")
+        print(f"    Elapsed:       {session.elapsed():.0f}s")
+        print(f"    Findings:      {session.finding_count}")
+        print(f"    Phases:        {', '.join(session.phases_complete)}")
+        print(f"    Report:        {GOD_MODE_DIR / session.scan_id}")
+
+        self._teardown_logging()
+
+
+# ── Singleton ──────────────────────────────────────────────────────────────────
+
+_conductor_singleton: Optional[GodModeConductor] = None
+_conductor_lock = threading.Lock()
+
+
+def get_god_mode_conductor() -> GodModeConductor:
+    global _conductor_singleton
+    if _conductor_singleton is None:
+        with _conductor_lock:
+            if _conductor_singleton is None:
+                _conductor_singleton = GodModeConductor()
+    return _conductor_singleton
