@@ -373,3 +373,150 @@ class ResearchMission(Mission):
         log.info("[GOD MODE] ResearchMission complete — %d discoveries, iter=%d",
                  new_count, self._iterations_done)
         self._result = {"discoveries": new_count, "iterations": self._iterations_done}
+
+
+# ── SwarmMission ───────────────────────────────────────────────────────────────
+
+class SwarmMission(Mission):
+    """
+    Runs all 8 specialized swarm agents in parallel via run_swarm().
+    Unlocked by: NEW_ENDPOINT count >= 10.
+    """
+
+    def __init__(self):
+        super().__init__("swarm")
+
+    def _run(self, session: GodModeSession) -> None:
+        import asyncio as _asyncio
+        from agent_swarm_coordinator import run_swarm
+
+        log.info("[GOD MODE] SwarmMission: deploying 8 agents against %s", session.target)
+
+        result = _asyncio.run(run_swarm(
+            target=session.target,
+            context={},
+            concurrency=4,
+            agent_types=None,   # all 8 agent types
+        ))
+
+        new_count = len(result.findings) if result and hasattr(result, "findings") else 0
+        session.finding_count += new_count
+        session.phases_complete.append("swarm")
+
+        # Publish to ingestion bus
+        try:
+            from result_ingestion_engine import get_ingestion_engine, RawResult
+            import uuid as _uuid
+            sid = str(_uuid.uuid4())[:8]
+            bus = get_ingestion_engine()
+            for f in (result.findings if result and hasattr(result, "findings") else []):
+                fd = f if isinstance(f, dict) else (f.__dict__ if hasattr(f, "__dict__") else {})
+                if fd:
+                    bus.ingest(RawResult(scan_id=sid, source="god-mode-swarm", raw=fd))
+        except Exception as exc:
+            log.warning("[GOD MODE] SwarmMission ingestion bus publish failed: %s", exc)
+
+        log.info("[GOD MODE] SwarmMission complete — %d findings", new_count)
+        self._result = {"findings": new_count}
+
+
+# ── ChainsMission ──────────────────────────────────────────────────────────────
+
+class ChainsMission(Mission):
+    """
+    Runs exploit chain detection on all accumulated findings.
+    Unlocked by: ResearchMission iteration 2+ complete.
+    """
+
+    def __init__(self):
+        super().__init__("chains")
+
+    def _run(self, session: GodModeSession) -> None:
+        from exploit_chains import ExploitChainEngine
+        from result_ingestion_engine import get_ingestion_engine
+
+        log.info("[GOD MODE] ChainsMission: running chain analysis for %s", session.target)
+
+        findings = []
+        try:
+            findings = get_ingestion_engine().get_findings() or []
+        except Exception as exc:
+            log.warning("[GOD MODE] ChainsMission: could not load findings: %s", exc)
+
+        engine = ExploitChainEngine()
+        chains = engine.detect_chains(findings, session.target)
+
+        chain_count = len(chains) if chains else 0
+        session.phases_complete.append("chains")
+        log.info("[GOD MODE] ChainsMission complete — %d chains detected", chain_count)
+        self._result = {"chains": chain_count}
+
+
+# ── ReportMission ──────────────────────────────────────────────────────────────
+
+class ReportMission(Mission):
+    """
+    Finalization — always runs regardless of termination condition.
+    Steps: validate → dedup → capmap → learn.
+    Each step is independently try/except wrapped.
+    """
+
+    def __init__(self, report_fmt: str = "markdown"):
+        super().__init__("report")
+        self._report_fmt = report_fmt
+
+    def run_sync(self, session: GodModeSession) -> None:
+        """Run finalization synchronously so conductor waits for it."""
+        log.info("[GOD MODE] Stage 5: Finalization starting")
+        self.status = "running"
+        try:
+            self._run(session)
+            self.status = "done"
+        except Exception as exc:
+            log.warning("[GOD MODE] ReportMission failed: %s", exc)
+            self.status = "failed"
+
+    def _run(self, session: GodModeSession) -> None:
+        # Step 1: validate findings
+        try:
+            from result_ingestion_engine import get_ingestion_engine
+            from enforcement_controller import get_enforcement_controller
+            raw_findings = get_ingestion_engine().get_findings() or []
+            validated = get_enforcement_controller().validate_findings(raw_findings)
+            log.info("[GOD MODE] Report: validated %d/%d findings", len(validated), len(raw_findings))
+        except Exception as exc:
+            log.warning("[GOD MODE] Report: validation failed (non-fatal): %s", exc)
+            validated = []
+
+        # Step 2: dedup
+        try:
+            from core.deduplicator import Deduplicator
+            validated = Deduplicator().filter_new(validated)
+            log.info("[GOD MODE] Report: %d unique findings after dedup", len(validated))
+        except Exception as exc:
+            log.warning("[GOD MODE] Report: dedup failed (non-fatal): %s", exc)
+
+        # Step 3: capmap coverage
+        try:
+            found_types = [f.get("vuln_type", "") for f in validated if isinstance(f, dict)]
+            from modules.capability_map import CapabilityMap, Vuln
+            all_classes = {v for k, v in vars(Vuln).items() if not k.startswith("_") and isinstance(v, str)}
+            covered = {vt for vt in found_types if vt}
+            uncovered = all_classes - covered
+            log.info("[GOD MODE] Capmap: %d/%d vuln classes covered. Uncovered: %s",
+                     len(covered), len(all_classes), sorted(uncovered)[:5] if uncovered else "none")
+        except Exception as exc:
+            log.warning("[GOD MODE] Report: capmap check failed (non-fatal): %s", exc)
+
+        # Step 4: learn
+        try:
+            from learning import LearningSystem
+            ls = LearningSystem()
+            ls.record_scan_result(session.target, validated, tools_used=[])
+            ls.close()
+            log.info("[GOD MODE] Report: learning system updated")
+        except Exception as exc:
+            log.warning("[GOD MODE] Report: learning update failed (non-fatal): %s", exc)
+
+        session.phases_complete.append("report")
+        self._result = {"validated_findings": len(validated)}
