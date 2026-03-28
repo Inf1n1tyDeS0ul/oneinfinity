@@ -299,7 +299,7 @@ class FoundationMission(Mission):
 class FullScanMission(Mission):
     """
     Runs the canonical 10-phase pipeline via run_canonical_pipeline().
-    Seeds phase 1-2 with recon intel from FoundationMission if available.
+    # TODO: pass recon intel to pipeline when run_canonical_pipeline supports seed_recon param
     """
 
     def __init__(self, foundation: FoundationMission):
@@ -308,7 +308,6 @@ class FullScanMission(Mission):
 
     def _run(self, session: GodModeSession) -> None:
         from pipeline.executor import run_canonical_pipeline
-        import tempfile as _tmp
 
         log.info("[GOD MODE] FullScanMission: starting canonical pipeline for %s", session.target)
 
