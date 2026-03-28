@@ -3510,14 +3510,14 @@ def cmd_full_scan(args):
     print()
 
     if result.status == "completed":
-        ok(f"Pipeline complete — {len(result.findings)} unique findings")
+        ok(f"Pipeline complete — {len(_validated)} unique findings")
     else:
         warn(f"Pipeline status: {result.status}")
         if result.phases_failed:
             warn(f"Failed phases: {', '.join(result.phases_failed)}")
 
     # Generate reports
-    if report_fmt != "none" and result.findings:
+    if report_fmt != "none" and _validated:
         try:
             from confidence_engine import ConfidenceEngine
             from core.reporter import Reporter
