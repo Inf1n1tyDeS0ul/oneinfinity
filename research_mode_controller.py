@@ -840,7 +840,36 @@ class ResearchModeController:
         self._app_engine = ApplicationIntelligenceEngine(
             self.target, str(self.output_dir)
         )
-        app_model = self._app_engine.analyze_application_structure()
+
+        # On the first iteration seed the AppModel with real recon data
+        _seed_urls: list[str] | None = None
+        _seed_hosts: list[dict] | None = None
+        _seed_tech: dict | None = None
+        if self._session.iteration == 1:
+            try:
+                self._log("Phase 0: Adaptive recon (first iteration only)...")
+                from adaptive_recon_engine import AdaptiveReconEngine
+                _recon = AdaptiveReconEngine(
+                    self.target,
+                    depth="quick",
+                    output_dir=str(self.output_dir),
+                ).run()
+                _seed_urls  = _recon.all_urls or None
+                _seed_hosts = _recon.alive_hosts or None
+                _seed_tech  = {"tech_stack": _recon.tech_profile.raw_tech} if _recon.tech_profile.raw_tech else None
+                self._log(
+                    f"  Recon: {len(_recon.subdomains)} subdomains, "
+                    f"{len(_recon.all_urls)} URLs, "
+                    f"tech: {_recon.tech_profile.raw_tech[:3]}"
+                )
+            except Exception as _re:
+                self._log(f"  Adaptive recon skipped: {_re}")
+
+        app_model = self._app_engine.analyze_application_structure(
+            urls=_seed_urls,
+            alive_hosts=_seed_hosts,
+            tech_profile=_seed_tech,
+        )
         self._log(
             f"  Auth: {app_model.auth_system} | "
             f"Paths: {len(app_model.api_structure)} | "
