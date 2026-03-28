@@ -250,11 +250,12 @@ class FoundationMission(Mission):
             from core.doctor import DoctorOrchestrator
             _ws = os.getcwd()
             _report = _asyncio.run(DoctorOrchestrator(_ws).run(quick=True))
-            if _report.score < 10.0:
+            _score = _report.get("score", 10.0) if isinstance(_report, dict) else _report.score
+            if _score < 10.0:
                 raise FoundationError(
-                    f"Doctor score {_report.score:.1f}/10.0 — fix environment before GOD MODE"
+                    f"Doctor score {_score:.1f}/10.0 — fix environment before GOD MODE"
                 )
-            log.info("[GOD MODE] Doctor: %.1f/10.0 — OK", _report.score)
+            log.info("[GOD MODE] Doctor: %.1f/10.0 — OK", _score)
         except FoundationError:
             raise
         except Exception as exc:
