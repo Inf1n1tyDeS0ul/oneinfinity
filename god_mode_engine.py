@@ -39,20 +39,23 @@ class FoundationError(RuntimeError):
 
 
 def _parse_max_time(s: str) -> int:
-    """Parse '30m', '2h', '4h' → seconds. Returns 7200 on error."""
+    """Parse '30m', '2h', '4h' → seconds. Returns 7200 on error. Rejects negative values."""
     s = str(s).strip().lower()
     if s.endswith("h"):
         try:
-            return int(s[:-1]) * 3600
+            result = int(s[:-1]) * 3600
+            return result if result > 0 else 7200
         except ValueError:
             return 7200
     if s.endswith("m"):
         try:
-            return int(s[:-1]) * 60
+            result = int(s[:-1]) * 60
+            return result if result > 0 else 7200
         except ValueError:
             return 7200
     try:
-        return int(s)
+        result = int(s)
+        return result if result > 0 else 7200
     except ValueError:
         return 7200
 
@@ -90,7 +93,9 @@ class GodModeStateFile:
         try:
             data = asdict(session)
             data["elapsed_seconds"] = round(session.elapsed(), 1)
-            self.path.write_text(json.dumps(data, indent=2, default=str))
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2, default=str))
+            tmp.replace(self.path)   # atomic on POSIX
         except Exception as exc:
             log.warning("State file write failed (non-fatal): %s", exc)
 
@@ -108,8 +113,6 @@ class GodModeStateFile:
         """Return the most recently modified god-mode state file, or None."""
         GOD_MODE_DIR.mkdir(parents=True, exist_ok=True)
         files = sorted(GOD_MODE_DIR.glob("god-mode-*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-        # Exclude .stop files
-        files = [f for f in files if not f.name.endswith(".stop")]
         return files[0] if files else None
 
     @staticmethod
