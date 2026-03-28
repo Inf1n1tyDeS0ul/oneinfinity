@@ -642,6 +642,11 @@ class GodModeConductor:
                 scan_id = latest.stem.replace("god-mode-", "")
         if not scan_id:
             return False
+        # Verify the session exists on disk OR is the active in-memory session
+        state_file_exists = GodModeStateFile(scan_id).path.exists()
+        in_memory_match = self._session is not None and self._session.scan_id == scan_id
+        if not state_file_exists and not in_memory_match:
+            return False
         sentinel = GodModeStateFile.stop_sentinel_path(scan_id)
         sentinel.touch()
         log.info("[GOD MODE] Stop sentinel written for %s", scan_id)

@@ -2914,11 +2914,11 @@ def build_parser():
     # ── GOD MODE ──────────────────────────────────────────────────────────────
     gm = sub.add_parser("god-mode",
         help="GOD MODE: full adaptive cascade — every capability, zero skip")
-    gm_sub = gm.add_subparsers(dest="subcommand")
-
     # god-mode run (default action — triggered when no subcommand)
     gm.add_argument("target", nargs="?", default="",
                     help="Target URL or domain")
+
+    gm_sub = gm.add_subparsers(dest="subcommand")
     gm.add_argument("--max-time", default="2h", metavar="DURATION",
                     help="Time cap: '30m', '2h', '4h' (default: 2h)")
     gm.add_argument("--max-findings", type=int, default=100, metavar="N",
@@ -4068,6 +4068,17 @@ def cmd_benchmark(args):
 
 
 def main():
+    # Workaround: argparse optional positional before subparsers causes ambiguity.
+    # For `god-mode <subcommand> [scan_id]`, shift argv so the subcommand is
+    # not consumed as the optional `target` positional.
+    _GOD_MODE_SUBS = {"status", "logs", "stop"}
+    _argv = sys.argv[1:]
+    if (len(_argv) >= 2 and _argv[0] == "god-mode"
+            and _argv[1] in _GOD_MODE_SUBS):
+        # Insert empty string for target so subcommand token is not consumed
+        _argv = [_argv[0], ""] + _argv[1:]
+        sys.argv = [sys.argv[0]] + _argv
+
     parser = build_parser()
     args = parser.parse_args()
 
@@ -4996,7 +5007,15 @@ def cmd_god_mode(args):
     """oneinfinity god-mode <target> — GOD MODE: full adaptive cascade, zero feature skip."""
     from god_mode_engine import get_god_mode_conductor, GOD_MODE_LOG_DIR
 
-    sub = getattr(args, "subcommand", None) or getattr(args, "god_mode_action", None)
+    sub = getattr(args, "subcommand", None)
+
+    # Argparse ambiguity: when [target] is optional and comes before subparsers,
+    # a bare subcommand keyword (e.g. "stop") may be consumed as target.
+    # Detect and re-route: if target holds a subcommand keyword, shift it.
+    target_val = getattr(args, "target", None) or ""
+    if not sub and target_val in ("status", "logs", "stop"):
+        sub = target_val
+        args.target = ""
 
     # ── status ────────────────────────────────────────────────────────────────
     if sub == "status":
