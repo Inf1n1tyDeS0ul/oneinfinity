@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { useStore } from '../store/useStore'
 
 const api = axios.create({ baseURL: '/api', timeout: 15000 })
 
@@ -18,8 +19,19 @@ const _fetchKey = axios.get('/api/auth-token').then(r => {
 })
 
 api.interceptors.response.use(
-  r => r,
+  r => {
+    useStore.getState().setApiOffline(false)
+    return r
+  },
   err => {
+    const store = useStore.getState()
+    if (!err.response) {
+      store.setApiOffline(true)
+    } else {
+      store.setApiOffline(false)
+      const msg = err.response.data?.detail || err.response.statusText || 'Request failed'
+      store.addNotification(msg, 'error')
+    }
     console.error('API error:', err.response?.data || err.message)
     return Promise.reject(err)
   }
