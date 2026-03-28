@@ -106,6 +106,9 @@ oneinfinity god-mode <target>                    # foreground (blocks until done
 oneinfinity god-mode <target> --background       # foreground through Stage 1, then detach
 oneinfinity god-mode <target> --max-time 4h      # time cap (default: 2h)
 oneinfinity god-mode <target> --max-findings 50  # finding cap (default: 100)
+oneinfinity god-mode <target> --no-swarm         # skip SwarmMission
+oneinfinity god-mode <target> --no-research      # skip ResearchMission
+oneinfinity god-mode <target> --report-fmt json  # report format: markdown|json|html
 oneinfinity god-mode status [scan-id]            # read state file
 oneinfinity god-mode logs [--follow]             # tail log file
 oneinfinity god-mode stop [scan-id]              # write sentinel → finalize
