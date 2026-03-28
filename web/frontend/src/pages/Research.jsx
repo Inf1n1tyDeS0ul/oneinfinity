@@ -1,7 +1,8 @@
-import React, { useState } from 'react'
-import { FlaskConical, Play, Zap, Eye, BarChart2, AlertTriangle, Telescope, Settings2, ChevronDown, ChevronRight } from 'lucide-react'
+import React, { useState, useEffect } from 'react'
+import { FlaskConical, Play, Zap, Eye, BarChart2, AlertTriangle, Telescope, Settings2, ChevronDown, ChevronRight, ChevronUp, Brain } from 'lucide-react'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
+import { useLocalStorage } from '../hooks/useLocalStorage'
 import clsx from 'clsx'
 
 const RESEARCH_MODES = [
@@ -55,6 +56,57 @@ const RESEARCH_MODES = [
   },
 ]
 
+function WhyPanel({ target }) {
+  const [open, setOpen] = useLocalStorage('why-panel-open', false)
+  const [priorities, setPriorities] = useState([])
+
+  useEffect(() => {
+    if (!target) return
+    endpoints.brainPriorities(5)
+      .then(r => setPriorities(r.data || []))
+      .catch(() => {})
+  }, [target])
+
+  if (!target || priorities.length === 0) return null
+
+  return (
+    <div className="card mb-5">
+      <button
+        className="card-header w-full cursor-pointer hover:bg-white/[0.02] transition-colors"
+        onClick={() => setOpen(!open)}
+      >
+        <span className="card-title">
+          <Brain size={14} className="text-accent-secondary" />
+          Adaptive Recon Intelligence
+        </span>
+        {open ? <ChevronUp size={14} className="text-slate-500" /> : <ChevronDown size={14} className="text-slate-500" />}
+      </button>
+      {open && (
+        <div className="card-body flex flex-col gap-2">
+          {priorities.map((p, i) => (
+            <div key={i} className="flex items-start gap-3 text-xs py-2 border-b border-bg-border last:border-0">
+              <span className="text-accent-primary font-bold font-mono w-4 flex-shrink-0">#{i + 1}</span>
+              <div className="flex-1">
+                <p className="text-slate-200 font-medium">{p.target || p.label || p.name || String(p)}</p>
+                {p.reasons && Array.isArray(p.reasons) && (
+                  <ul className="mt-1 flex flex-col gap-0.5">
+                    {p.reasons.map((r, j) => (
+                      <li key={j} className="text-slate-500">· {r}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              {p.score != null && (
+                <span className="text-slate-400 font-mono">{Number(p.score).toFixed(2)}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Research() {
   const { addNotification } = useStore()
   const [mode, setMode] = useState('research')
@@ -92,6 +144,8 @@ export default function Research() {
           <div className="section-sub">Autonomous vulnerability discovery — theorize, test, and report</div>
         </div>
       </div>
+
+      <WhyPanel target={target} />
 
       <div className="grid grid-cols-3 gap-4">
         {/* Mode selector */}

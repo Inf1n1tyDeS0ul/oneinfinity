@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import {
   Zap, Play, Square, RefreshCw, Terminal, Clock,
   ShieldAlert, Target, CheckCircle2, AlertTriangle,
-  ChevronDown, ChevronRight, Settings2, Activity,
+  ChevronDown, ChevronUp, ChevronRight, Settings2, Activity,
   Flame, Brain, Users, Search, FileText
 } from 'lucide-react'
 import { endpoints } from '../utils/api'
@@ -44,6 +44,57 @@ const MISSIONS = [
   { id: 'chains',     label: 'Chains' },
   { id: 'report',     label: 'Report' },
 ]
+
+function WhyPanel({ target }) {
+  const [open, setOpen] = useLocalStorage('why-panel-open', false)
+  const [priorities, setPriorities] = useState([])
+
+  useEffect(() => {
+    if (!target) return
+    endpoints.brainPriorities(5)
+      .then(r => setPriorities(r.data || []))
+      .catch(() => {})
+  }, [target])
+
+  if (!target || priorities.length === 0) return null
+
+  return (
+    <div className="card mb-5">
+      <button
+        className="card-header w-full cursor-pointer hover:bg-white/[0.02] transition-colors"
+        onClick={() => setOpen(!open)}
+      >
+        <span className="card-title">
+          <Brain size={14} className="text-accent-secondary" />
+          Adaptive Recon Intelligence
+        </span>
+        {open ? <ChevronUp size={14} className="text-slate-500" /> : <ChevronDown size={14} className="text-slate-500" />}
+      </button>
+      {open && (
+        <div className="card-body flex flex-col gap-2">
+          {priorities.map((p, i) => (
+            <div key={i} className="flex items-start gap-3 text-xs py-2 border-b border-bg-border last:border-0">
+              <span className="text-accent-primary font-bold font-mono w-4 flex-shrink-0">#{i + 1}</span>
+              <div className="flex-1">
+                <p className="text-slate-200 font-medium">{p.target || p.label || p.name || String(p)}</p>
+                {p.reasons && Array.isArray(p.reasons) && (
+                  <ul className="mt-1 flex flex-col gap-0.5">
+                    {p.reasons.map((r, j) => (
+                      <li key={j} className="text-slate-500">· {r}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              {p.score != null && (
+                <span className="text-slate-400 font-mono">{Number(p.score).toFixed(2)}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function MissionRow({ mission, mData, status, isRunning, isLast, logLevelColor }) {
   const [expanded, setExpanded] = useLocalStorage(`gm-mission-${mission.id}`, false)
@@ -282,6 +333,8 @@ export default function GodMode() {
           <RefreshCw size={13} />Refresh
         </button>
       </div>
+
+      <WhyPanel target={target} />
 
       {/* Active session banner */}
       {isRunning && (
