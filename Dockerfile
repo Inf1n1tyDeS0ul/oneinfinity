@@ -79,6 +79,19 @@ RUN go install github.com/zricethezav/gitleaks/v8@latest
 # ── DNS & misc ─────────────────────────────────────────────────
 RUN go install github.com/tomnomnom/gf@latest
 
+# ── Util tools for CLI parity ──────────────────────────────────
+RUN go install github.com/tomnomnom/anew@latest
+RUN go install github.com/tomnomnom/qsreplace@latest
+RUN go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest
+RUN go install github.com/OJ/gobuster/v3@latest 2>/dev/null || true
+RUN go install github.com/bp0lr/gauplus@latest 2>/dev/null || true
+# amass v4 (large build — non-fatal)
+RUN go install github.com/owasp-amass/amass/v4/...@master 2>/dev/null || true
+# kiterunner
+RUN go install github.com/assetnote/kiterunner/cmd/kiterunner@latest 2>/dev/null || true
+# cloudbrute
+RUN go install github.com/0xsha/cloudbrute@latest 2>/dev/null || true
+
 
 # ==============================================================
 # STAGE 2 — Python Wheels Builder
@@ -204,6 +217,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libasound2 \
         fonts-liberation \
         xdg-utils \
+        unzip \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -220,18 +234,49 @@ RUN git clone --depth=1 https://github.com/urbanadventurer/WhatWeb /opt/whatweb 
     && bundle install --without development 2>/dev/null || true
 
 # ── Python tools installed as packages ───────────────────────
-RUN pip install --no-cache-dir \
-        sqlmap \
-        dirsearch \
-        sublist3r \
-        paramspider \
-        xssstrike \
-        commix \
-        arjun \
-        s3scanner \
-        gobuster 2>/dev/null || true
-# NOTE: Some of the above may fail on newer Python; failures are
-# non-fatal because they are optional scan-time tools.
+# Each tool installed separately so one failure doesn't block others.
+# Python 3.11 is used (unlike host 3.13) so wfuzz/paramspider install natively.
+RUN pip install --no-cache-dir sqlmap 2>/dev/null || true
+RUN pip install --no-cache-dir dirsearch 2>/dev/null || true
+RUN pip install --no-cache-dir sublist3r 2>/dev/null || true
+RUN pip install --no-cache-dir commix 2>/dev/null || true
+RUN pip install --no-cache-dir arjun 2>/dev/null || true
+RUN pip install --no-cache-dir s3scanner 2>/dev/null || true
+RUN pip install --no-cache-dir wfuzz 2>/dev/null || true
+RUN pip install --no-cache-dir garak 2>/dev/null || true
+# paramspider: not on PyPI; minimal Wayback Machine shim
+RUN printf '#!/usr/bin/env python3\nimport sys,urllib.request,json\ndom=sys.argv[sys.argv.index("-d")+1] if "-d" in sys.argv else (sys.argv[1] if len(sys.argv)>1 else "")\nif not dom: sys.exit(1)\nurl=f"https://web.archive.org/cdx/search/cdx?url=*.{dom}/*&output=json&fl=original&collapse=urlkey&limit=5000"\ntry:\n    data=json.loads(urllib.request.urlopen(url,timeout=30).read())[1:]\n    [print(r[0]) for r in data if "?" in r[0]]\nexcept Exception as e:\n    print(f"paramspider error: {e}",file=sys.stderr)\n' > /usr/local/bin/paramspider && chmod +x /usr/local/bin/paramspider
+# xssstrike: PyPI name is XSStrike but it's not on PyPI; install from GitHub
+RUN git clone --depth=1 https://github.com/s0md3v/XSStrike /opt/xssstrike 2>/dev/null \
+    && pip install --no-cache-dir -r /opt/xssstrike/requirements.txt 2>/dev/null \
+    && ln -sf /opt/xssstrike/xsstrike.py /usr/local/bin/xssstrike \
+    && chmod +x /opt/xssstrike/xsstrike.py \
+    || true
+# jwt_tool: not on PyPI either; install from GitHub
+RUN git clone --depth=1 https://github.com/ticarpi/jwt_tool /opt/jwt_tool 2>/dev/null \
+    && pip install --no-cache-dir -r /opt/jwt_tool/requirements.txt 2>/dev/null \
+    && ln -sf /opt/jwt_tool/jwt_tool.py /usr/local/bin/jwt_tool \
+    && chmod +x /opt/jwt_tool/jwt_tool.py \
+    || true
+
+# ── findomain (pre-built binary release) ─────────────────────
+RUN curl -sL "https://github.com/Findomain/Findomain/releases/latest/download/findomain-linux.zip" \
+        -o /tmp/findomain.zip 2>/dev/null \
+    && unzip -o /tmp/findomain.zip -d /go-bins/ 2>/dev/null \
+    && chmod +x /go-bins/findomain \
+    && rm -f /tmp/findomain.zip \
+    || true
+
+# ── rustscan (deb package release) ───────────────────────────
+RUN RVER=$(curl -sL https://api.github.com/repos/RustScan/RustScan/releases/latest 2>/dev/null \
+        | grep '"tag_name"' | grep -oP '[\d.]+' | head -1) \
+    && echo "RustScan version: $RVER" \
+    && [ -n "$RVER" ] \
+    && curl -sL "https://github.com/RustScan/RustScan/releases/download/${RVER}/rustscan_${RVER}_amd64.deb" \
+        -o /tmp/rustscan.deb 2>/dev/null \
+    && dpkg -i /tmp/rustscan.deb 2>/dev/null \
+    && rm -f /tmp/rustscan.deb \
+    || true
 
 # ── Go binary tools ───────────────────────────────────────────
 COPY --from=go-tools /go-bins/ /go-bins/
@@ -281,7 +326,15 @@ RUN groupadd -r oi && useradd -r -g oi -d /data -s /bin/bash oi \
     # Verify critical security binaries are present and executable
     && test -x /go-bins/nuclei   || (echo "FATAL: nuclei missing"   && exit 1) \
     && test -x /go-bins/httpx    || (echo "FATAL: httpx missing"    && exit 1) \
-    && test -x /go-bins/subfinder || (echo "FATAL: subfinder missing" && exit 1)
+    && test -x /go-bins/subfinder || (echo "FATAL: subfinder missing" && exit 1) \
+    # nuclei_list: registry alias for `nuclei -l <file>` (expected by tool registry)
+    && ln -sf /go-bins/nuclei /go-bins/nuclei_list \
+    # interactsh: registry uses `interactsh` but binary is `interactsh-client`
+    && (test -f /go-bins/interactsh-client && ln -sf /go-bins/interactsh-client /go-bins/interactsh || true) \
+    # gauplus fallback: if gauplus failed to build, symlink gau as gauplus
+    && (test -f /go-bins/gauplus || (test -f /go-bins/gau && ln -sf /go-bins/gau /go-bins/gauplus) || true) \
+    # kiterunner: binary may be named `kiterunner` or `kr`
+    && (test -f /go-bins/kiterunner || (test -f /go-bins/kr && ln -sf /go-bins/kr /go-bins/kiterunner) || true)
 
 # ── Nuclei GF patterns directory ─────────────────────────────
 RUN mkdir -p /home/oi/.gf \

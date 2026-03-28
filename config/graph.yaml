@@ -2,10 +2,10 @@
 # Override secrets via env: NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
 
 neo4j:
-  enabled: false
+  enabled: true
   uri: bolt://localhost:7687
   username: neo4j
-  password: password
+  password: neo4j123
   database: neo4j
   # Batched write-through (reduces round-trips)
   batch_size: 100
@@ -18,3 +18,12 @@ neo4j:
   record_chain_feedback: true
   path_max_depth: 8
   max_path_query_ms: 5000
+
+enforcement:
+  enabled: true
+  validation_pipeline: true        # req 2: HTTP-probe all findings before storage
+  capmap_enforcement: true         # req 1: trigger tools for uncovered vuln classes
+  max_recursion_depth: 2           # req 3: recursive scan depth cap
+  max_recursive_items: 100         # req 3: total new items across all recursive passes
+  module_compliance: warn          # req 4: warn | block | disabled
+  ingestion_audit: true            # req 5: flag non-compliant cmds in doctor

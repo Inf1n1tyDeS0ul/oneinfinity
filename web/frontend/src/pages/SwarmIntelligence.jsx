@@ -459,6 +459,21 @@ const TABS = ['Swarm Scan', 'Attack Simulation', 'Workflow Attacks', 'History']
 export default function SwarmIntelligence() {
   const [tab, setTab] = useState(0)
   const [historyRefresh, setHistoryRefresh] = useState(0)
+  const [agentGrid, setAgentGrid] = useState({})
+
+  useEffect(() => {
+    const refresh = async () => {
+      try {
+        const r = await endpoints.swarmIntelAgents()
+        const map = {}
+        ;(r.data || []).forEach(a => { map[a.type || a.name] = a })
+        setAgentGrid(map)
+      } catch {}
+    }
+    refresh()
+    const t = setInterval(refresh, 4000)
+    return () => clearInterval(t)
+  }, [])
 
   return (
     <div className="flex flex-col gap-4">
@@ -466,6 +481,53 @@ export default function SwarmIntelligence() {
         <Users size={14} className="text-accent-primary" />
         Swarm Intelligence
       </h1>
+
+      {/* Real-Time Agent Grid */}
+      <div className="mb-6">
+        <div className="section-header">
+          <div>
+            <h2 className="section-title">Agent Status</h2>
+            <p className="section-sub">Live activity across all specialized agents</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {['xss', 'sqli', 'ssrf', 'idor', 'auth', 'biz_logic', 'mobile', 'api'].map(type => {
+            const agent = agentGrid[type] || {}
+            const status = agent.status || 'idle'
+            const confidence = agent.confidence ?? null
+            return (
+              <div key={type} className="card p-4 flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-mono font-semibold text-slate-300 uppercase tracking-wide">{type}</span>
+                  <span className={clsx(
+                    'status-dot',
+                    status === 'running' ? 'status-dot-pulse' :
+                    status === 'done'    ? 'status-dot-online' :
+                    status === 'error'   ? 'status-dot-error'  : 'status-dot-idle'
+                  )} />
+                </div>
+                <div className="text-[10px] text-slate-500 truncate">
+                  {agent.last_target || 'No target'}
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-slate-400">
+                    {agent.findings_count ?? 0} findings
+                  </span>
+                  {confidence != null && (
+                    <span className={clsx(
+                      'badge',
+                      confidence >= 80 ? 'badge-completed' :
+                      confidence >= 50 ? 'badge-medium' : 'badge-failed'
+                    )}>
+                      {confidence}%
+                    </span>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
 
       <div className="flex gap-1 border-b border-bg-border pb-1">
         {TABS.map((t, i) => (

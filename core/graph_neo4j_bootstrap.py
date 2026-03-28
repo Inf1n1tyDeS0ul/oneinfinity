@@ -24,6 +24,24 @@ def get_neo4j_sync_backend():
     return _neo4j_backend_singleton
 
 
+def _backfill_nodes_to_neo4j(store, backend) -> None:
+    """Push any nodes already in the local store into Neo4j (one-time catch-up on startup)."""
+    try:
+        # Ensure SQLite store is initialized before backfill
+        if store._sqlite._conn is None:
+            store._sqlite.initialize()
+        # Load from SQLite directly (memory not yet initialized at this point)
+        all_nodes = store._sqlite.load_all_nodes()
+        if not all_nodes:
+            return
+        for node_dict in all_nodes:
+            backend.on_node_saved(node_dict)
+        backend.flush()
+        log.info("Neo4j backfill: pushed %d existing nodes to Neo4j.", len(all_nodes))
+    except Exception as exc:
+        log.warning("Neo4j backfill failed (non-fatal): %s", exc)
+
+
 def create_default_graph_store() -> Tuple[Any, dict]:
     """
     Build GraphStore with optional Neo4j write-through.
@@ -77,6 +95,8 @@ def create_default_graph_store() -> Tuple[Any, dict]:
             eng.close()
 
     store = GraphStore(db_path=db, use_memory=True, sync_backend=backend)
+    if backend is not None:
+        _backfill_nodes_to_neo4j(store, backend)
     return store, cfg
 
 

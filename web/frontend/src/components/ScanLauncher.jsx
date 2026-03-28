@@ -21,9 +21,18 @@ export default function ScanLauncher({ onClose }) {
   const [profile, setProfile] = useState('quick')
   const [auth, setAuth] = useState('')
   const [launching, setLaunching] = useState(false)
+  const [errors, setErrors] = useState({})
+
+  const validate = () => {
+    const e = {}
+    if (!target.trim()) e.target = 'Target domain is required'
+    return e
+  }
 
   const handleLaunch = async () => {
-    if (!target) return
+    const e = validate()
+    if (Object.keys(e).length) { setErrors(e); return }
+    setErrors({})
     setLaunching(true)
     try {
       const r = await endpoints.launchScan({ target, scan_type: scanType, profile, auth })
@@ -55,12 +64,13 @@ export default function ScanLauncher({ onClose }) {
           <div>
             <label className="label">Target</label>
             <input
-              className="input"
+              className={`input ${errors.target ? 'input-error' : ''}`}
               placeholder="e.g. target.com or https://agent.target.com"
               value={target}
-              onChange={e => setTarget(e.target.value)}
+              onChange={e => { setTarget(e.target.value); if (errors.target) setErrors(p => ({...p, target: null})) }}
               list="target-list"
             />
+            {errors.target && <p className="field-error">{errors.target}</p>}
             <datalist id="target-list">
               {targets.map(t => <option key={t.id} value={t.domain} />)}
             </datalist>

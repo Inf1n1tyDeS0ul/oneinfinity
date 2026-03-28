@@ -891,6 +891,38 @@ class Pipeline:
         phase.duration = time.time() - t0
         return phase
 
+    # ── Step-level checkpoints ────────────────────────────────────────────────
+
+    def _check_phase_precondition(self, phase_name: str) -> str:
+        """Return a non-empty string if precondition is NOT met (caller should skip phase)."""
+        # crawl and vuln phases need at least one alive host or URL
+        if phase_name in ("crawl", "content", "vuln"):
+            if not self.result.alive_hosts and not self.result.urls and not self.result.subdomains:
+                return "no alive hosts or URLs discovered yet — recon may have found nothing"
+        # secrets phase needs URLs or endpoints
+        if phase_name == "secrets":
+            if not self.result.urls and not self.result.endpoints:
+                return "no URLs or endpoints to scan for secrets"
+        return ""
+
+    def _validate_phase_output(self, phase_name: str, phase_output: PhaseOutput) -> None:
+        """Log a checkpoint warning if a phase produced no output."""
+        data_counts = {
+            "recon":   len(self.result.subdomains) + len(self.result.alive_hosts),
+            "ports":   len(self.result.open_ports),
+            "crawl":   len(self.result.urls),
+            "content": len(self.result.endpoints),
+            "vuln":    len(self.result.findings),
+            "secrets": len(self.result.secrets),
+        }
+        count = data_counts.get(phase_name, -1)
+        if count == 0:
+            warn(f"[CHECKPOINT] Phase '{phase_name}' produced 0 results. "
+                 f"Tools run: {phase_output.tools_run or 'none'}. "
+                 f"Tools failed: {phase_output.tools_failed or 'none'}.")
+        elif count > 0:
+            ok(f"[CHECKPOINT] Phase '{phase_name}' validated — {count} item(s) accumulated.")
+
     # ── Master run ────────────────────────────────────────────────────────────
 
     def run(self, phases: list[str] = None) -> PipelineResult:
@@ -917,12 +949,26 @@ class Pipeline:
             if phase_name not in phase_map:
                 warn(f"Unknown phase: {phase_name} — skipping")
                 continue
+
+            # ── Step-level checkpoint: validate preconditions ─────────────────
+            checkpoint_fail = self._check_phase_precondition(phase_name)
+            if checkpoint_fail:
+                warn(f"[CHECKPOINT] Phase '{phase_name}' skipped — precondition not met: {checkpoint_fail}")
+                self.result.phases_run.append(
+                    PhaseOutput(phase=phase_name, error=f"precondition-skip: {checkpoint_fail}")
+                )
+                continue
+
             try:
                 phase_output = phase_map[phase_name]()
                 self.result.phases_run.append(phase_output)
                 status = "✓" if not phase_output.error else "✗"
                 ok(f"Phase '{phase_name}' {status} in {phase_output.duration:.1f}s "
                    f"(tools: {', '.join(phase_output.tools_run) or 'none'})")
+
+                # ── Step-level checkpoint: validate phase output ───────────────
+                self._validate_phase_output(phase_name, phase_output)
+
             except Exception as exc:
                 err(f"Phase '{phase_name}' crashed: {exc}")
                 self.result.phases_run.append(

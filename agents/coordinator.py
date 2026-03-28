@@ -417,6 +417,11 @@ class AgentCoordinator:
             summary["dedup_stats"] = self._deduplicator.stats()
         return summary
 
+    def get_all_findings(self) -> list:
+        """Return all findings from all completed agent tasks."""
+        with self._lock:
+            return [f for r in self._results for f in r.findings]
+
     def write_reports(self, target: str, output_dir: str,
                       platform: str = "hackerone",
                       formats: Optional[List[str]] = None) -> List[str]:

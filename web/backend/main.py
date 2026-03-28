@@ -19,8 +19,26 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import os as _os_auth
+import re as _re
 import secrets as _secrets
 import psutil
+
+# ── Target / domain validation ────────────────────────────────────────────────
+# Allow: hostname, IP, host:port, scheme://host/path — reject shell metacharacters
+_SAFE_TARGET_RE = _re.compile(
+    r'^(https?://)?[a-zA-Z0-9._:\-/~%?=&#@\[\]]+$'
+)
+_SHELL_META_RE = _re.compile(r'[;&|`$<>()\\\n\r]')
+
+def _validate_target(domain: str) -> str:
+    """Raise HTTPException(400) if the target contains shell metacharacters."""
+    if not domain:
+        raise HTTPException(status_code=400, detail="Target/domain must not be empty")
+    if _SHELL_META_RE.search(domain):
+        raise HTTPException(status_code=400, detail=f"Invalid target — shell metacharacters not allowed: {domain!r}")
+    if len(domain) > 512:
+        raise HTTPException(status_code=400, detail="Target too long (max 512 chars)")
+    return domain.strip()
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,6 +67,22 @@ from path_manager import raw_dir, db_path as _db_path
 log = logging.getLogger("oneinfinity.api")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+from contextlib import asynccontextmanager as _asynccontextmanager
+
+@_asynccontextmanager
+async def _lifespan(application):
+    # Startup
+    try:
+        from result_ingestion_engine import get_ingestion_engine
+        for f in get_ingestion_engine().get_findings():
+            fid = f.get("finding_id") or f.get("id") or str(uuid.uuid4())[:8]
+            VULNERABILITIES[fid] = _finding_to_api(f)
+        log.info("Loaded %d persisted findings into memory", len(VULNERABILITIES))
+    except Exception as exc:
+        log.warning("Could not load persisted findings: %s", exc)
+    yield
+    # Shutdown (nothing to do)
+
 app = FastAPI(
     title="AI-Powered Offensive Security Research Framework : One&Infinity",
     description=(
@@ -56,6 +90,7 @@ app = FastAPI(
         "mobile security testing, AI security testing, and attack graph–driven vulnerability discovery."
     ),
     version="1.0.0",
+    lifespan=_lifespan,
 )
 
 app.add_middleware(
@@ -334,18 +369,6 @@ def _finding_to_api(f) -> dict:
 
 # ── Startup: load persisted findings ─────────────────────────────────────────
 
-@app.on_event("startup")
-async def _load_persisted_findings():
-    try:
-        from result_ingestion_engine import get_ingestion_engine
-        for f in get_ingestion_engine().get_findings():
-            fid = f.get("finding_id") or f.get("id") or str(uuid.uuid4())[:8]
-            VULNERABILITIES[fid] = _finding_to_api(f)
-        log.info("Loaded %d persisted findings into memory", len(VULNERABILITIES))
-    except Exception as exc:
-        log.warning("Could not load persisted findings: %s", exc)
-
-
 # ── REST API Routes ───────────────────────────────────────────────────────────
 
 # Health check (used by Docker HEALTHCHECK and load-balancers)
@@ -357,6 +380,15 @@ async def health():
 @app.get("/api/health")
 async def api_health():
     return {"status": "ok", "service": "oneinfinity-orchestrator"}
+
+
+@app.get("/api/auth-token", include_in_schema=False)
+async def get_auth_token(request: Request):
+    """Return the session API key for localhost clients only."""
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "::1", "localhost"):
+        raise HTTPException(status_code=403, detail="Only accessible from localhost")
+    return {"token": _API_KEY}
 
 # Prometheus metrics endpoint
 @app.get("/metrics", include_in_schema=False)
@@ -445,7 +477,7 @@ async def get_target(target_id: str):
 @app.post("/api/targets", dependencies=[Depends(_require_auth)])
 async def create_target(body: Dict[str, Any], background_tasks: BackgroundTasks):
     target_id = str(uuid.uuid4())[:8]
-    domain = body.get("domain", "")
+    domain = _validate_target(body.get("domain", ""))
     name = body.get("name", domain)
     platform = body.get("platform", "hackerone")
     # Auto-detect type
@@ -514,7 +546,7 @@ async def launch_scan(req: ScanRequest, background_tasks: BackgroundTasks):
     background_tasks.add_task(_run_scan_via_engine, scan_id, req.target, req.scan_type)
     return scan
 
-@app.post("/api/scans/{scan_id}/stop")
+@app.post("/api/scans/{scan_id}/stop", dependencies=[Depends(_require_auth)])
 async def stop_scan(scan_id: str):
     if scan_id not in SCANS:
         raise HTTPException(404, "Scan not found")
@@ -567,14 +599,14 @@ async def get_vulnerability(vuln_id: str):
         raise HTTPException(404, "Vulnerability not found")
     return VULNERABILITIES[vuln_id]
 
-@app.patch("/api/vulnerabilities/{vuln_id}")
+@app.patch("/api/vulnerabilities/{vuln_id}", dependencies=[Depends(_require_auth)])
 async def update_vulnerability(vuln_id: str, updates: Dict[str, Any]):
     if vuln_id not in VULNERABILITIES:
         raise HTTPException(404, "Vulnerability not found")
     VULNERABILITIES[vuln_id].update(updates)
     return VULNERABILITIES[vuln_id]
 
-@app.post("/api/vulnerabilities/{vuln_id}/replay")
+@app.post("/api/vulnerabilities/{vuln_id}/replay", dependencies=[Depends(_require_auth)])
 async def replay_vulnerability(vuln_id: str):
     """Simulate replaying an attack payload."""
     if vuln_id not in VULNERABILITIES:
@@ -589,7 +621,7 @@ async def replay_vulnerability(vuln_id: str):
         "payload": v.get("payload", ""),
     }
 
-@app.post("/api/vulnerabilities/{vuln_id}/mutate")
+@app.post("/api/vulnerabilities/{vuln_id}/mutate", dependencies=[Depends(_require_auth)])
 async def mutate_payload(vuln_id: str, body: Dict[str, Any]):
     """Mutate a payload using the PayloadMutator."""
     if vuln_id not in VULNERABILITIES:
@@ -607,7 +639,7 @@ async def mutate_payload(vuln_id: str, body: Dict[str, Any]):
     except Exception:
         return {"original": original, "mutated": f"[{strategy}] {original}", "strategy": strategy}
 
-@app.post("/api/vulnerabilities/{vuln_id}/report")
+@app.post("/api/vulnerabilities/{vuln_id}/report", dependencies=[Depends(_require_auth)])
 async def generate_vulnerability_report(vuln_id: str):
     """Generate an automated bug bounty report (Markdown) for a specific vulnerability."""
     if vuln_id not in VULNERABILITIES:
@@ -669,7 +701,7 @@ async def generate_vulnerability_report(vuln_id: str):
 async def list_campaigns():
     return sorted(AI_CAMPAIGNS.values(), key=lambda c: c.get("started_at") or "", reverse=True)
 
-@app.post("/api/ai-campaigns")
+@app.post("/api/ai-campaigns", dependencies=[Depends(_require_auth)])
 async def launch_campaign(body: Dict[str, Any], background_tasks: BackgroundTasks):
     cid = str(uuid.uuid4())[:8]
     campaign = {
@@ -689,7 +721,7 @@ async def launch_campaign(body: Dict[str, Any], background_tasks: BackgroundTask
     background_tasks.add_task(_run_ai_campaign, cid)
     return campaign
 
-@app.post("/api/ai-prompt-test")
+@app.post("/api/ai-prompt-test", dependencies=[Depends(_require_auth)])
 async def test_ai_prompt(body: Dict[str, Any]):
     """Send a single adversarial prompt to an AI target and return the response."""
     target = body.get("target", "")
@@ -835,8 +867,16 @@ async def get_logs(limit: int = 100, scan_id: Optional[str] = None):
 # ── WebSocket ─────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/logs")
-async def ws_logs(websocket: WebSocket):
+async def ws_logs(websocket: WebSocket, token: Optional[str] = None):
+    # Accept the connection first (required before sending close code)
     await websocket.accept()
+    # Validate API key if one is required (passed as ?token= query param for browser compat)
+    if _API_KEY and token != _API_KEY:
+        # Also allow the key from the Sec-WebSocket-Protocol header fallback
+        proto_key = websocket.headers.get("sec-websocket-protocol", "")
+        if proto_key != _API_KEY:
+            await websocket.close(code=4401, reason="Unauthorized")
+            return
     _ws_clients.append(websocket)
     # Send last 50 log lines on connect
     try:
@@ -863,13 +903,18 @@ async def ws_logs(websocket: WebSocket):
 class SimpleScanRequest(BaseModel):
     target: str
 
-@app.post("/api/scan")
-@app.post("/api/scan/start")  # Makefile / distributed-compose alias
+    @property
+    def validated_target(self) -> str:
+        return _validate_target(self.target)
+
+@app.post("/api/scan", dependencies=[Depends(_require_auth)])
+@app.post("/api/scan/start", dependencies=[Depends(_require_auth)])  # Makefile / distributed-compose alias
 async def simple_scan(req: SimpleScanRequest, background_tasks: BackgroundTasks):
     """Simplified scan endpoint - just provide a target, everything is auto."""
+    target = req.validated_target  # raises 400 if target contains shell metacharacters
     scan_id = str(uuid.uuid4())[:8]
     scan = {
-        "id": scan_id, "target": req.target, "scan_type": "full",
+        "id": scan_id, "target": target, "scan_type": "full",
         "profile": "auto", "status": "queued",
         "started_at": datetime.utcnow().isoformat(),
         "completed_at": None, "progress": 0, "findings_count": 0,
@@ -1115,7 +1160,7 @@ async def get_traffic_request(request_id: str):
         raise HTTPException(404, "Request not found")
     return req.to_json()
 
-@app.post("/api/traffic/{request_id}/flag")
+@app.post("/api/traffic/{request_id}/flag", dependencies=[Depends(_require_auth)])
 async def flag_traffic_request(request_id: str, body: Dict[str, Any]):
     tce = _get_traffic_engine()
     if not tce:
@@ -1124,7 +1169,7 @@ async def flag_traffic_request(request_id: str, body: Dict[str, Any]):
     _add_log(f"Request flagged: {request_id}", "warn", "traffic", "")
     return {"ok": True}
 
-@app.delete("/api/traffic/{request_id}")
+@app.delete("/api/traffic/{request_id}", dependencies=[Depends(_require_auth)])
 async def delete_traffic_request(request_id: str):
     tce = _get_traffic_engine()
     if not tce:
@@ -1151,7 +1196,7 @@ async def export_traffic(fmt: str, target: Optional[str] = None):
 
 # ── Replay API ────────────────────────────────────────────────────────────────
 
-@app.post("/api/traffic/{request_id}/replay")
+@app.post("/api/traffic/{request_id}/replay", dependencies=[Depends(_require_auth)])
 async def replay_request(request_id: str, body: Dict[str, Any], background_tasks: BackgroundTasks):
     """Replay a captured request with optional overrides."""
     tre = _get_replay_engine()
@@ -1205,7 +1250,7 @@ async def replay_request(request_id: str, body: Dict[str, Any], background_tasks
     except Exception as exc:
         raise HTTPException(400, str(exc))
 
-@app.post("/api/traffic/{request_id}/fuzz")
+@app.post("/api/traffic/{request_id}/fuzz", dependencies=[Depends(_require_auth)])
 async def fuzz_request(request_id: str, body: Dict[str, Any]):
     """Fuzz a parameter in a captured request."""
     tre = _get_replay_engine()
@@ -1246,7 +1291,7 @@ async def list_attacks():
         return _demo_attacks()
     return are.registry.list_attacks()
 
-@app.post("/api/attacks/register")
+@app.post("/api/attacks/register", dependencies=[Depends(_require_auth)])
 async def register_attack(body: Dict[str, Any]):
     are = _get_attack_engine()
     if not are:
@@ -1268,7 +1313,7 @@ async def register_attack(body: Dict[str, Any]):
     )
     return {"attack_id": attack_id, "ok": True}
 
-@app.post("/api/attacks/{attack_id}/replay")
+@app.post("/api/attacks/{attack_id}/replay", dependencies=[Depends(_require_auth)])
 async def replay_attack(attack_id: str, body: Dict[str, Any]):
     are = _get_attack_engine()
     if not are:
@@ -1282,7 +1327,7 @@ async def replay_attack(attack_id: str, body: Dict[str, Any]):
     except Exception as exc:
         raise HTTPException(400, str(exc))
 
-@app.post("/api/attacks/{attack_id}/spray")
+@app.post("/api/attacks/{attack_id}/spray", dependencies=[Depends(_require_auth)])
 async def spray_attack(attack_id: str, body: Dict[str, Any]):
     are = _get_attack_engine()
     if not are:
@@ -1319,7 +1364,7 @@ async def proxy_status():
         return {"enabled": False, "address": "", "scopes": [], "active": False}
     return pm.status()
 
-@app.post("/api/proxy/configure")
+@app.post("/api/proxy/configure", dependencies=[Depends(_require_auth)])
 async def proxy_configure(body: Dict[str, Any]):
     pm = _get_proxy_manager()
     if not pm:
@@ -1335,7 +1380,7 @@ async def proxy_configure(body: Dict[str, Any]):
     _add_log(f"Proxy {'enabled' if enabled else 'disabled'}: {address}", "info", "proxy", "")
     return pm.status()
 
-@app.post("/api/proxy/disable")
+@app.post("/api/proxy/disable", dependencies=[Depends(_require_auth)])
 async def proxy_disable():
     pm = _get_proxy_manager()
     if pm:
@@ -1522,7 +1567,7 @@ async def mobile_get_app(app_id: str):
     return {"app": MOBILE_APPS.get(app_id, {}), "result": MOBILE_RESULTS.get(app_id, {})}
 
 
-@app.post("/api/mobile/apps/{app_id}/analyze")
+@app.post("/api/mobile/apps/{app_id}/analyze", dependencies=[Depends(_require_auth)])
 async def mobile_analyze_endpoint(app_id: str, background_tasks: BackgroundTasks,
                                    run_dynamic: bool = False, run_fuzzing: bool = False,
                                    run_ai: bool = True, run_components: bool = True,
@@ -1796,7 +1841,7 @@ async def hunter_start(request: Request, background_tasks: BackgroundTasks):
     return {"session_id": session_id, "session": session_data}
 
 
-@app.post("/api/hunter/scan")
+@app.post("/api/hunter/scan", dependencies=[Depends(_require_auth)])
 async def hunter_scan_target(request: Request, background_tasks: BackgroundTasks):
     body = await request.json()
     target = body.get("target")
@@ -1862,7 +1907,7 @@ async def hunter_get_findings(session_id: str):
     return {"findings": session.get("findings", []), "count": len(session.get("findings", []))}
 
 
-@app.post("/api/hunter/report/{session_id}")
+@app.post("/api/hunter/report/{session_id}", dependencies=[Depends(_require_auth)])
 async def hunter_generate_report(session_id: str, request: Request):
     body = await request.json()
     session = HUNTER_SESSIONS.get(session_id)
@@ -1930,7 +1975,7 @@ async def hunter_get_programs():
     ]}
 
 
-@app.post("/api/hunter/stop/{session_id}")
+@app.post("/api/hunter/stop/{session_id}", dependencies=[Depends(_require_auth)])
 async def hunter_stop(session_id: str):
     session = HUNTER_SESSIONS.get(session_id)
     if session:
@@ -1943,7 +1988,7 @@ async def hunter_stop(session_id: str):
 
 try:
     import sys as _sys, os as _os
-    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
     from graph_api import register_routers as _register_graph_routers
     _register_graph_routers(app)
 except Exception as _e:

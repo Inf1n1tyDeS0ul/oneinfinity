@@ -98,6 +98,21 @@ def cmd_doctor(args):
     
     report = asyncio.run(orchestrator.run(quick=quick_mode, deep=deep_mode))
     orchestrator.print_report(report, output_json=getattr(args, "json", False))
+    # ── Enforcement: ingestion audit ──────────────────────────────────────────
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _non_compliant = _get_ec().audit_ingestion_compliance()
+        if _non_compliant:
+            print()
+            print(f"  [!] Ingestion audit: {len(_non_compliant)} cmd(s) bypass get_ingestion_engine():")
+            for _cmd in sorted(_non_compliant):
+                print(f"      - {_cmd}")
+            print(f"      Deduction: -{min(len(_non_compliant) * 0.1, 1.0):.1f} (informational)")
+        else:
+            print()
+            print("  [+] Ingestion audit: all tracked commands publish via get_ingestion_engine()")
+    except Exception as _ea:
+        pass  # audit failure never affects doctor output
 
 def cmd_setup(args):
     from modules.utils import banner, ok, info, warn
@@ -1176,7 +1191,7 @@ def cmd_graph(args):
             from attack_graph_core.graph_engine import get_engine
             from core.graph_neo4j_bootstrap import compare_inmemory_vs_neo4j
             engine = get_engine()
-            result = compare_inmemory_vs_neo4j(engine.store)
+            result = compare_inmemory_vs_neo4j(engine._store)
             print(f"  In-memory  nodes : {result['inmem_nodes']}")
             print(f"  In-memory  edges : {result['inmem_edges']}")
             if result["neo4j_connected"]:
@@ -1199,7 +1214,7 @@ def cmd_graph(args):
             from attack_graph_core.graph_engine import get_engine
             from attack_graph_core.exploit_chain_engine import ExploitChainEngine
             engine = get_engine()
-            stats = engine.store.get_graph_stats()
+            stats = engine._store.get_graph_stats()
             chains = ExploitChainEngine(engine=engine).detect_chains()
             print(f"  nodes      : {stats['total_nodes']}")
             print(f"  edges      : {stats['total_edges']}")
@@ -1212,6 +1227,8 @@ def cmd_graph(args):
     elif sub == "neo4j-status":
         banner("Neo4j Status")
         try:
+            from attack_graph_core.graph_engine import get_engine as _init_graph
+            _init_graph()   # side-effect: populates _neo4j_engine_singleton
             from core.graph_neo4j_bootstrap import get_neo4j_engine
             eng = get_neo4j_engine()
             if eng is None:
@@ -1331,6 +1348,13 @@ def cmd_agents(args):
             return
         print()
 
+        # ── Enforcement: register module ─────────────────────────────────────
+        try:
+            from enforcement_controller import get_enforcement_controller as _get_ec
+            _get_ec().register_module("agents")
+        except Exception:
+            pass
+
         # Initialize subsystems
         attack_graph = None
         if not args.no_graph:
@@ -1372,6 +1396,23 @@ def cmd_agents(args):
         )
 
         coord.shutdown()
+
+        # ── Publish agent findings to shared endpoint bus ─────────────────────
+        try:
+            from result_ingestion_engine import get_ingestion_engine, RawResult
+            import uuid as _uuid
+            _bus = get_ingestion_engine()
+            _sid = str(_uuid.uuid4())[:8]
+            _all_findings = coord.get_all_findings()
+            for _f in _all_findings:
+                _bus.ingest(RawResult(
+                    scan_id=_sid,
+                    source="agents-run",
+                    raw=_f,
+                ))
+            info(f"Endpoint bus: published {len(_all_findings)} findings from agents run")
+        except Exception as _be:
+            warn(f"Endpoint bus publish skipped: {_be}")
 
         section("Pentest Complete")
         summary = coord.findings_summary()
@@ -1553,6 +1594,11 @@ def cmd_ai_redteam(args):
       oneinfinity ai-redteam https://rag.acme.com --campaign rag_attack --parallel 20
       oneinfinity ai-redteam https://agent.acme.com --campaign tool_abuse --evolve
     """
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _get_ec().register_module("ai-redteam")
+    except Exception:
+        pass
     _inject_proxy(args)
     from ai_redteam_engine import main_cli
     main_cli(args)
@@ -1584,6 +1630,11 @@ def cmd_ai_agent_test(args):
       oneinfinity ai-agent-test https://agent.acme.com --data-exfiltration --oob-domain your.burp.collaborator.net
       oneinfinity ai-agent-test https://agent.acme.com --all --auth "Bearer sk-..." --parallel 10
     """
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _get_ec().register_module("ai-redteam")
+    except Exception:
+        pass
     _inject_proxy(args)
     from ai_agent_pentest_engine import main_cli
     main_cli(args)
@@ -1598,6 +1649,11 @@ def cmd_research(args):
       oneinfinity research target.com --yes          — run research loop
       oneinfinity research --stats                   — show research KB statistics
     """
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _get_ec().register_module("research")
+    except Exception:
+        pass
     if getattr(args, "stats", False):
         # Route to stats display instead of running the loop
         from research_mode_controller import show_research_stats
@@ -2855,6 +2911,45 @@ def build_parser():
     bench.add_argument("--output", "-o", default="benchmark_report.json",
                        help="Output path for benchmark JSON report (default: benchmark_report.json)")
 
+    # ── GOD MODE ──────────────────────────────────────────────────────────────
+    gm = sub.add_parser("god-mode",
+        help="GOD MODE: full adaptive cascade — every capability, zero skip")
+    # god-mode run (default action — triggered when no subcommand)
+    gm.add_argument("target", nargs="?", default="",
+                    help="Target URL or domain")
+
+    gm_sub = gm.add_subparsers(dest="subcommand")
+    gm.add_argument("--max-time", default="2h", metavar="DURATION",
+                    help="Time cap: '30m', '2h', '4h' (default: 2h)")
+    gm.add_argument("--max-findings", type=int, default=100, metavar="N",
+                    help="Finding cap (default: 100)")
+    gm.add_argument("--background", action="store_true",
+                    help="Detach to background after Stage 1 (foundation)")
+    gm.add_argument("--no-swarm", action="store_true",
+                    help="Skip SwarmMission (lighter mode)")
+    gm.add_argument("--no-research", action="store_true",
+                    help="Skip ResearchMission (faster mode)")
+    gm.add_argument("--report-fmt", default="markdown",
+                    choices=["markdown", "json", "html"],
+                    help="Report format (default: markdown)")
+
+    # god-mode status [scan-id]
+    gm_status = gm_sub.add_parser("status", help="Show GOD MODE session state")
+    gm_status.add_argument("scan_id", nargs="?", default="",
+                            help="Session ID (default: most recent)")
+
+    # god-mode logs [--follow]
+    gm_logs = gm_sub.add_parser("logs", help="Tail GOD MODE log output")
+    gm_logs.add_argument("scan_id", nargs="?", default="",
+                          help="Session ID (default: most recent)")
+    gm_logs.add_argument("--follow", "-f", action="store_true",
+                          help="Follow log output (like tail -f)")
+
+    # god-mode stop [scan-id]
+    gm_stop = gm_sub.add_parser("stop", help="Stop a running GOD MODE session")
+    gm_stop.add_argument("scan_id", nargs="?", default="",
+                          help="Session ID (default: most recent)")
+
     return p
 
 
@@ -3375,6 +3470,16 @@ def cmd_full_scan(args):
         print(f"  [{tag}] [{pct:3d}%] [{phase:25s}] {msg}")
         phase_status_line[phase] = (pct, msg)
 
+    # ── Enforcement: register + start recursive watch ─────────────────────────
+    import uuid as _ec_uuid
+    _ec_scan_id = str(_ec_uuid.uuid4())[:8]
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _get_ec().register_module("full-scan")
+        _get_ec().start_recursive_watch(_ec_scan_id, target)
+    except Exception as _ecw:
+        warn(f"Enforcement watch setup skipped: {_ecw}")
+
     # Run canonical pipeline
     try:
         from pipeline.executor import run_canonical_pipeline
@@ -3394,6 +3499,64 @@ def cmd_full_scan(args):
         import traceback; traceback.print_exc()
         sys.exit(1)
 
+    # ── Enforcement: validate findings before graph ingestion ─────────────────
+    _validated = result.findings
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _validated = _get_ec().validate_findings(result.findings)
+        info(f"Enforcement: {len(_validated)}/{len(result.findings)} finding(s) passed validation")
+    except Exception as _ecv:
+        warn(f"Enforcement validation skipped: {_ecv}")
+
+    # ── Post-pipeline: graph ingestion ────────────────────────────────────
+    try:
+        from attack_graph_brain import get_brain
+        _brain = get_brain()
+        _ingested = 0
+        for _f in _validated:
+            _brain.integrate_vuln(_f)
+            _ingested += 1
+        if _ingested:
+            info(f"Graph: ingested {_ingested} finding(s) from full-scan")
+    except Exception as _ge:
+        warn(f"Graph ingestion skipped: {_ge}")
+
+    # ── Post-pipeline: learning system update ─────────────────────────────
+    try:
+        import types as _types
+        from learning import LearningSystem as _LS
+        # phase names serve as tool proxies
+        _tools_used = list(result.phases.keys()) if result.phases else []
+        _task_result = _types.SimpleNamespace(
+            findings=_validated,
+            tools_used=_tools_used,
+            target=target,
+            success=(result.status == "completed"),
+            duration=result.elapsed_s,
+        )
+        _ls = _LS()
+        _ls.record_result(_task_result)
+        _ls.close()
+        info("Learning system updated from full-scan results")
+    except Exception as _le:
+        warn(f"Learning update skipped: {_le}")
+
+    # ── Enforcement: capmap coverage + module compliance + cleanup ────────────
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _ctrl = _get_ec()
+        _cov = _ctrl.check_capmap_coverage(_ec_scan_id, _validated)
+        if _cov.uncovered:
+            warn(f"Capmap: {len(_cov.uncovered)} vuln class(es) not covered this scan")
+        if _cov.triggered:
+            info(f"Capmap: triggered {len(_cov.triggered)} additional tool(s) for coverage")
+        _comp = _ctrl.check_module_compliance()
+        if _comp.missing:
+            warn(f"Module compliance: not run this session — {', '.join(sorted(_comp.missing))}")
+        _ctrl.stop_recursive_watch(_ec_scan_id)
+    except Exception as _ecc:
+        warn(f"Enforcement compliance check skipped: {_ecc}")
+
     print()
 
     # Summary table
@@ -3412,10 +3575,10 @@ def cmd_full_scan(args):
 
     # Severity breakdown
     sev_counts = {}
-    for f in result.findings:
+    for f in _validated:
         s = f.get("severity", "info").lower()
         sev_counts[s] = sev_counts.get(s, 0) + 1
-    print(f"  Total unique findings: {len(result.findings)}")
+    print(f"  Total unique findings: {len(_validated)}")
     for sev in ["critical", "high", "medium", "low", "info"]:
         cnt = sev_counts.get(sev, 0)
         if cnt:
@@ -3423,18 +3586,18 @@ def cmd_full_scan(args):
     print()
 
     if result.status == "completed":
-        ok(f"Pipeline complete — {len(result.findings)} unique findings")
+        ok(f"Pipeline complete — {len(_validated)} unique findings")
     else:
         warn(f"Pipeline status: {result.status}")
         if result.phases_failed:
             warn(f"Failed phases: {', '.join(result.phases_failed)}")
 
     # Generate reports
-    if report_fmt != "none" and result.findings:
+    if report_fmt != "none" and _validated:
         try:
             from confidence_engine import ConfidenceEngine
             from core.reporter import Reporter
-            scored = ConfidenceEngine().score_findings(result.findings)
+            scored = ConfidenceEngine().score_findings(_validated)
             reporter = Reporter(output, target=target, platform="HackerOne")
             reporter.add_findings(scored)
             fmts = ["html", "pdf"] if report_fmt == "all" else [report_fmt]
@@ -3905,6 +4068,17 @@ def cmd_benchmark(args):
 
 
 def main():
+    # Workaround: argparse optional positional before subparsers causes ambiguity.
+    # For `god-mode <subcommand> [scan_id]`, shift argv so the subcommand is
+    # not consumed as the optional `target` positional.
+    _GOD_MODE_SUBS = {"status", "logs", "stop"}
+    _argv = sys.argv[1:]
+    if (len(_argv) >= 2 and _argv[0] == "god-mode"
+            and _argv[1] in _GOD_MODE_SUBS):
+        # Insert empty string for target so subcommand token is not consumed
+        _argv = [_argv[0], ""] + _argv[1:]
+        sys.argv = [sys.argv[0]] + _argv
+
     parser = build_parser()
     args = parser.parse_args()
 
@@ -4016,6 +4190,7 @@ def main():
         "brain-status":       cmd_brain_status,
         "brain-decide":       cmd_brain_decide,
         "brain-triggers":     cmd_brain_triggers,
+        "god-mode":           cmd_god_mode,
     }
 
     handler = handlers.get(args.command)
@@ -4212,6 +4387,30 @@ def cmd_swarm_scan(args):
         agent_types=agent_types,
     ))
 
+    # ── Enforcement: register module + publish findings to ingestion bus ───────
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _get_ec().register_module("swarm-scan")
+    except Exception:
+        pass
+    try:
+        from result_ingestion_engine import get_ingestion_engine as _get_ie, RawResult as _RR
+        import uuid as _sw_uuid
+        _sw_sid = str(_sw_uuid.uuid4())[:8]
+        _sw_bus = _get_ie()
+        _sw_count = 0
+        for _sf in result.findings:
+            _sf_dict = _sf if isinstance(_sf, dict) else (
+                _sf.__dict__ if hasattr(_sf, "__dict__") else {}
+            )
+            if _sf_dict:
+                _sw_bus.ingest(_RR(scan_id=_sw_sid, source="swarm-scan", raw=_sf_dict))
+                _sw_count += 1
+        if _sw_count:
+            print(f"[+] Ingestion bus: published {_sw_count} finding(s) from swarm-scan")
+    except Exception as _swe:
+        print(f"[!] Ingestion bus publish skipped: {_swe}")
+
     print(f"\n{result.summary()}")
 
     if result.simulation_priorities:
@@ -4238,6 +4437,12 @@ def cmd_simulate_attacks(args):
     import asyncio
     import json as _json
     from pathlib import Path
+
+    try:
+        from enforcement_controller import get_enforcement_controller as _get_ec
+        _get_ec().register_module("simulate-attacks")
+    except Exception:
+        pass
 
     try:
         from attack_simulation_engine import AttackSimulationEngine
@@ -4796,6 +5001,91 @@ def cmd_brain_triggers(args):
         print()
     except Exception as e:
         print(f"  [!] Error: {e}")
+
+
+def cmd_god_mode(args):
+    """oneinfinity god-mode <target> — GOD MODE: full adaptive cascade, zero feature skip."""
+    from god_mode_engine import get_god_mode_conductor, GOD_MODE_LOG_DIR
+
+    sub = getattr(args, "subcommand", None)
+
+    # Argparse ambiguity: when [target] is optional and comes before subparsers,
+    # a bare subcommand keyword (e.g. "stop") may be consumed as target.
+    # Detect and re-route: if target holds a subcommand keyword, shift it.
+    target_val = getattr(args, "target", None) or ""
+    if not sub and target_val in ("status", "logs", "stop"):
+        sub = target_val
+        args.target = ""
+
+    # ── status ────────────────────────────────────────────────────────────────
+    if sub == "status":
+        scan_id = getattr(args, "scan_id", None) or None
+        conductor = get_god_mode_conductor()
+        data = conductor.status(scan_id)
+        if data is None:
+            print("  [!] No GOD MODE session found." + (f" (id: {scan_id})" if scan_id else ""))
+            return
+        print(f"\n  GOD MODE Session: {data.get('scan_id')}")
+        print(f"  Target:     {data.get('target')}")
+        print(f"  Elapsed:    {data.get('elapsed_seconds', 0):.0f}s / {data.get('max_time_sec', 0)}s")
+        print(f"  Findings:   {data.get('finding_count', 0)} / {data.get('max_findings', 0)}")
+        print(f"  Terminated: {data.get('terminated_by') or 'running'}")
+        print(f"  Missions:")
+        for name, status in (data.get("missions") or {}).items():
+            print(f"    {name:<12} {status}")
+        print()
+        return
+
+    # ── logs ──────────────────────────────────────────────────────────────────
+    if sub == "logs":
+        import subprocess as _sp
+        scan_id = getattr(args, "scan_id", None) or None
+        if scan_id:
+            log_path = str(GOD_MODE_LOG_DIR / f"god-mode-{scan_id}.log")
+        else:
+            files = sorted(GOD_MODE_LOG_DIR.glob("god-mode-*.log"),
+                           key=lambda p: p.stat().st_mtime, reverse=True) if GOD_MODE_LOG_DIR.exists() else []
+            if not files:
+                print("  [!] No GOD MODE log files found.")
+                return
+            log_path = str(files[0])
+        follow = getattr(args, "follow", False)
+        if follow:
+            _sp.run(["tail", "-f", log_path])
+        else:
+            _sp.run(["tail", "-n", "100", log_path])
+        return
+
+    # ── stop ──────────────────────────────────────────────────────────────────
+    if sub == "stop":
+        scan_id = getattr(args, "scan_id", None) or None
+        conductor = get_god_mode_conductor()
+        ok = conductor.stop(scan_id)
+        if ok:
+            print(f"  [+] Stop sentinel written. GOD MODE will finalize within 30s.")
+        else:
+            print("  [!] No active GOD MODE session found to stop.")
+        return
+
+    # ── run (default) ─────────────────────────────────────────────────────────
+    target = getattr(args, "target", None)
+    if not target:
+        print("Usage: oneinfinity god-mode <target> [options]")
+        print("       oneinfinity god-mode status [scan-id]")
+        print("       oneinfinity god-mode logs [--follow]")
+        print("       oneinfinity god-mode stop [scan-id]")
+        return
+
+    conductor = get_god_mode_conductor()
+    conductor.run(
+        target=target,
+        max_time=getattr(args, "max_time", "2h") or "2h",
+        max_findings=getattr(args, "max_findings", 100) or 100,
+        background=getattr(args, "background", False),
+        no_swarm=getattr(args, "no_swarm", False),
+        no_research=getattr(args, "no_research", False),
+        report_fmt=getattr(args, "report_fmt", "markdown") or "markdown",
+    )
 
 
 if __name__ == "__main__":

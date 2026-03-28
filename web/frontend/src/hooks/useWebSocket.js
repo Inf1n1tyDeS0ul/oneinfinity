@@ -6,8 +6,20 @@ export function useWebSocket(onMessage) {
   const onMessageRef = useRef(onMessage)
   onMessageRef.current = onMessage
 
-  const connect = useCallback(() => {
-    const url = `ws://${window.location.hostname}:8000/ws/logs`
+  const connect = useCallback(async () => {
+    // Use same host:port as the current page (works whether served via Vite proxy or directly)
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+    const host = window.location.host  // includes port if non-standard
+    // Fetch token for WebSocket auth (query param — browsers can't set WS headers)
+    let tokenParam = ''
+    try {
+      const r = await fetch('/api/auth-token')
+      if (r.ok) {
+        const { token } = await r.json()
+        tokenParam = `?token=${encodeURIComponent(token)}`
+      }
+    } catch {}
+    const url = `${proto}://${host}/ws/logs${tokenParam}`
     const socket = new WebSocket(url)
     ws.current = socket
 
