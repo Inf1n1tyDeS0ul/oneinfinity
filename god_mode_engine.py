@@ -164,3 +164,131 @@ class ConvergenceChecker:
         except Exception:
             # If capmap unavailable, convergence is just based on empty iters
             return True
+
+# ── Mission base class ─────────────────────────────────────────────────────────
+
+class Mission(ABC):
+    """
+    Base class for all GOD MODE missions.
+    Each mission wraps one engine and runs in a daemon thread.
+    """
+
+    def __init__(self, name: str):
+        self.name = name
+        self.status: str = "pending"    # pending|running|done|failed
+        self._thread: Optional[threading.Thread] = None
+        self._result: dict = {}
+        self._stop_event = threading.Event()
+
+    def start(self, session: GodModeSession) -> None:
+        """Start the mission in a daemon thread."""
+        self.status = "running"
+        self._thread = threading.Thread(
+            target=self._safe_run,
+            args=(session,),
+            name=f"god-mode-{self.name}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def is_done(self) -> bool:
+        return self.status in ("done", "failed")
+
+    def result(self) -> dict:
+        return dict(self._result)
+
+    def _safe_run(self, session: GodModeSession) -> None:
+        try:
+            self._run(session)
+            self.status = "done"
+        except FoundationError:
+            self.status = "failed"
+            raise   # FoundationError propagates — it's the one hard abort
+        except Exception as exc:
+            log.warning("Mission '%s' failed (non-fatal): %s", self.name, exc)
+            self.status = "failed"
+
+    @abstractmethod
+    def _run(self, session: GodModeSession) -> None:
+        """Override in each concrete mission."""
+
+
+# ── FoundationMission ──────────────────────────────────────────────────────────
+
+class FoundationMission(Mission):
+    """
+    Stage 1 — runs synchronously before any threads start.
+    Steps: doctor --quick → adaptive-recon → analyze-app.
+    doctor failure → hard abort (FoundationError).
+    recon/analyze failures → warn + continue.
+    """
+
+    def __init__(self):
+        super().__init__("foundation")
+        self.recon = None       # ReconIntelligence from AdaptiveReconEngine
+        self.app_model = None   # AppModel from ApplicationIntelligenceEngine
+
+    def run_sync(self, session: GodModeSession) -> None:
+        """Run foundation synchronously (called from conductor, not in thread)."""
+        log.info("[GOD MODE] Stage 1: Foundation starting for %s", session.target)
+        self.status = "running"
+        try:
+            self._run(session)
+            self.status = "done"
+        except FoundationError:
+            self.status = "failed"
+            raise
+
+    def _run(self, session: GodModeSession) -> None:
+        # ── Step 1: doctor --quick ─────────────────────────────────────────
+        log.info("[GOD MODE] Foundation Step 1: doctor --quick")
+        try:
+            import asyncio as _asyncio
+            from core.doctor import DoctorOrchestrator
+            _ws = os.getcwd()
+            _report = _asyncio.run(DoctorOrchestrator(_ws).run(quick=True))
+            if _report.score < 10.0:
+                raise FoundationError(
+                    f"Doctor score {_report.score:.1f}/10.0 — fix environment before GOD MODE"
+                )
+            log.info("[GOD MODE] Doctor: %.1f/10.0 — OK", _report.score)
+        except FoundationError:
+            raise
+        except Exception as exc:
+            raise FoundationError(f"Doctor check failed: {exc}") from exc
+
+        # ── Step 2: adaptive-recon --depth deep ───────────────────────────
+        log.info("[GOD MODE] Foundation Step 2: adaptive-recon --depth deep")
+        try:
+            from adaptive_recon_engine import AdaptiveReconEngine
+            self.recon = AdaptiveReconEngine(session.target, depth="deep").run()
+            log.info("[GOD MODE] Recon complete — subdomains=%s apis=%s",
+                     len(getattr(self.recon, "subdomains", []) or []),
+                     len(getattr(getattr(self.recon, "api_map", None), "endpoints", []) or []))
+        except Exception as exc:
+            log.warning("[GOD MODE] Recon failed (non-fatal): %s — continuing with less intel", exc)
+            self.recon = None
+
+        # ── Step 3: analyze-app ───────────────────────────────────────────
+        log.info("[GOD MODE] Foundation Step 3: analyze-app")
+        try:
+            from application_intelligence import ApplicationIntelligenceEngine
+            tech_profile = None
+            if self.recon and hasattr(self.recon, "tech_profile"):
+                tech_profile = vars(self.recon.tech_profile) if self.recon.tech_profile else None
+            _aie = ApplicationIntelligenceEngine(session.target)
+            self.app_model = _aie.analyze_application_structure(tech_profile=tech_profile)
+            log.info("[GOD MODE] App model built — endpoints=%s auth_flows=%s",
+                     len(getattr(self.app_model, "api_endpoints", []) or []),
+                     len(getattr(self.app_model, "auth_flows", []) or []))
+        except Exception as exc:
+            log.warning("[GOD MODE] App analysis failed (non-fatal): %s — continuing", exc)
+            self.app_model = None
+
+        self._result = {
+            "recon_ok": self.recon is not None,
+            "app_model_ok": self.app_model is not None,
+        }
