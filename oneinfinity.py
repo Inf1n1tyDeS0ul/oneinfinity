@@ -1176,7 +1176,7 @@ def cmd_graph(args):
             from attack_graph_core.graph_engine import get_engine
             from core.graph_neo4j_bootstrap import compare_inmemory_vs_neo4j
             engine = get_engine()
-            result = compare_inmemory_vs_neo4j(engine.store)
+            result = compare_inmemory_vs_neo4j(engine._store)
             print(f"  In-memory  nodes : {result['inmem_nodes']}")
             print(f"  In-memory  edges : {result['inmem_edges']}")
             if result["neo4j_connected"]:
@@ -1199,7 +1199,7 @@ def cmd_graph(args):
             from attack_graph_core.graph_engine import get_engine
             from attack_graph_core.exploit_chain_engine import ExploitChainEngine
             engine = get_engine()
-            stats = engine.store.get_graph_stats()
+            stats = engine._store.get_graph_stats()
             chains = ExploitChainEngine(engine=engine).detect_chains()
             print(f"  nodes      : {stats['total_nodes']}")
             print(f"  edges      : {stats['total_edges']}")

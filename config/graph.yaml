@@ -2,10 +2,10 @@
 # Override secrets via env: NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
 
 neo4j:
-  enabled: false
+  enabled: true
   uri: bolt://localhost:7687
   username: neo4j
-  password: password
+  password: neo4j123
   database: neo4j
   # Batched write-through (reduces round-trips)
   batch_size: 100

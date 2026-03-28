@@ -16,7 +16,9 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -26,6 +28,12 @@ import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Optional
+
+log = logging.getLogger(__name__)
+
+# ── Retry constants ───────────────────────────────────────────────────────────
+_MAX_RETRIES = 2          # number of extra attempts after the first
+_RETRY_BASE_DELAY = 1.0   # seconds; doubles each attempt (1s → 2s)
 
 
 # ── Scope validator hook ──────────────────────────────────────────────────────
@@ -75,31 +83,52 @@ def _run_cmd(
     timeout: int = 300,
     input_data: Optional[str] = None,
     env: Optional[dict] = None,
+    retries: int = _MAX_RETRIES,
 ) -> tuple[int, str, str]:
-    """Run a subprocess command; return (returncode, stdout, stderr)."""
+    """Run a subprocess command with exponential-backoff retry; return (returncode, stdout, stderr).
+
+    Retries are skipped for:
+      - FileNotFoundError (tool missing, rc=127) — not a transient failure
+      - TimeoutExpired   — retrying would only add more wait time
+    """
     merged_env = {**os.environ, **(env or {})}
     merged_env["PATH"] = (
         merged_env.get("PATH", "") +
         ":/usr/local/go/bin:/root/go/bin:" +
         str(Path.home() / "go" / "bin") + ":" +
-        str(Path.home() / ".cargo" / "bin")
+        str(Path.home() / ".cargo" / "bin") + ":" +
+        str(Path.home() / ".local" / "bin")
     )
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=merged_env,
-            input=input_data,
-        )
-        return proc.returncode, proc.stdout, proc.stderr
-    except subprocess.TimeoutExpired:
-        return 1, "", f"Command timed out after {timeout}s: {' '.join(cmd)}"
-    except FileNotFoundError:
-        return 127, "", f"Tool not found: {cmd[0]}"
-    except Exception as exc:
-        return 1, "", str(exc)
+    last_rc, last_out, last_err = 1, "", "No attempts made"
+    delay = _RETRY_BASE_DELAY
+    for attempt in range(retries + 1):
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=merged_env,
+                input=input_data,
+            )
+            if proc.returncode == 0:
+                return proc.returncode, proc.stdout, proc.stderr
+            # Non-zero exit — may be transient; retry
+            last_rc, last_out, last_err = proc.returncode, proc.stdout, proc.stderr
+        except subprocess.TimeoutExpired:
+            return 1, "", f"Command timed out after {timeout}s: {' '.join(cmd)}"
+        except FileNotFoundError:
+            return 127, "", f"Tool not found: {cmd[0]}"
+        except Exception as exc:
+            last_rc, last_out, last_err = 1, "", str(exc)
+
+        if attempt < retries:
+            log.debug("_run_cmd: attempt %d/%d failed (rc=%d), retrying in %.1fs — %s",
+                      attempt + 1, retries + 1, last_rc, delay, cmd[0])
+            time.sleep(delay)
+            delay *= 2
+
+    return last_rc, last_out, last_err
 
 
 def _wrap(tool: str, cmd: list[str], timeout: int = 300,
@@ -201,6 +230,136 @@ def _parse_lines(text: str) -> list[str]:
 
 def _parse_json(text: str) -> Any:
     return json.loads(text)
+
+
+# ── Output normalization ──────────────────────────────────────────────────────
+# Unified finding schema — every tool result can be normalised to this shape.
+
+_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4, "unknown": 5}
+
+def _canonical_severity(raw: str) -> str:
+    s = (raw or "unknown").lower().strip()
+    for k in _SEVERITY_ORDER:
+        if k in s:
+            return k
+    return "unknown"
+
+
+def normalize_finding(raw: Any, source_tool: str) -> dict:
+    """Map any tool-specific dict/string to the canonical finding schema.
+
+    Canonical fields:
+        url          — target URL (may be empty string)
+        parameter    — affected parameter name (may be empty)
+        vulnerability — human-readable description
+        severity     — one of critical/high/medium/low/info/unknown
+        source_tool  — originating tool name
+        extra        — any remaining key/value pairs
+    """
+    if isinstance(raw, str):
+        return {
+            "url": raw if raw.startswith(("http://", "https://")) else "",
+            "parameter": "",
+            "vulnerability": raw,
+            "severity": "info",
+            "source_tool": source_tool,
+            "extra": {},
+        }
+
+    if not isinstance(raw, dict):
+        return {
+            "url": "", "parameter": "", "vulnerability": str(raw),
+            "severity": "unknown", "source_tool": source_tool, "extra": {},
+        }
+
+    # Extract URL — try common key names across different tools
+    url = (
+        raw.get("url") or raw.get("URL") or raw.get("matched-at") or
+        raw.get("host") or raw.get("target") or raw.get("endpoint") or ""
+    )
+
+    # Parameter
+    parameter = (
+        raw.get("parameter") or raw.get("param") or raw.get("name") or ""
+    )
+
+    # Vulnerability description — explicit priority, no ternary ambiguity
+    _info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
+    vulnerability = (
+        raw.get("vulnerability")
+        or raw.get("name")
+        or raw.get("type")
+        or raw.get("title")
+        or _info.get("name")
+        or raw.get("template-id")
+        or raw.get("description")
+        or raw.get("check")
+        or ""
+    )
+
+    # Severity
+    sev_raw = (
+        raw.get("severity") or raw.get("risk") or raw.get("cvss") or
+        (raw.get("info", {}) or {}).get("severity") or "unknown"
+    )
+    severity = _canonical_severity(str(sev_raw))
+
+    # Remaining keys go into extra
+    known = {"url", "URL", "matched-at", "host", "target", "endpoint",
+             "parameter", "param", "name", "vulnerability", "type", "title",
+             "info", "template-id", "description", "severity", "risk", "cvss",
+             "check"}
+    extra = {k: v for k, v in raw.items() if k not in known}
+
+    return {
+        "url": str(url),
+        "parameter": str(parameter),
+        "vulnerability": str(vulnerability),
+        "severity": severity,
+        "source_tool": source_tool,
+        "extra": extra,
+    }
+
+
+def _finding_key(f: dict) -> str:
+    """Deterministic dedup key based on url + parameter + vulnerability."""
+    parts = f"{f.get('url', '')}|{f.get('parameter', '')}|{f.get('vulnerability', '')}"
+    return hashlib.md5(parts.encode()).hexdigest()
+
+
+def normalize_results(results: list[Any], source_tool: str) -> list[dict]:
+    """Normalise a list of raw findings and deduplicate them deterministically."""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for r in results:
+        finding = normalize_finding(r, source_tool)
+        key = _finding_key(finding)
+        if key not in seen:
+            seen.add(key)
+            out.append(finding)
+    return out
+
+
+def merge_normalized(*finding_lists: list[dict]) -> list[dict]:
+    """Merge multiple normalised finding lists, deduplicating across all of them.
+
+    Severity ordering: if the same finding appears with different severities,
+    the most severe is kept.
+    """
+    combined: dict[str, dict] = {}
+    for lst in finding_lists:
+        for f in lst:
+            key = _finding_key(f)
+            if key not in combined:
+                combined[key] = f
+            else:
+                existing_sev = _SEVERITY_ORDER.get(combined[key]["severity"], 5)
+                new_sev = _SEVERITY_ORDER.get(f["severity"], 5)
+                if new_sev < existing_sev:
+                    combined[key] = f
+    # Sort by severity then url
+    return sorted(combined.values(),
+                  key=lambda x: (_SEVERITY_ORDER.get(x["severity"], 5), x.get("url", "")))
 
 
 # ============================================================================
@@ -344,10 +503,14 @@ def run_naabu(target: str, ports: str = "80,443,8080,8443,8888",
     return result
 
 
+_NMAP_SAFE_FLAGS = re.compile(r'^-[a-zA-Z0-9]+$|^--[a-zA-Z][a-zA-Z0-9_-]*$|^[0-9T]+$')
+
 def run_nmap(target: str, flags: str = "-sV -T4 --open",
              timeout: int = 300) -> ToolResult:
     """Port scan with nmap; returns raw output."""
-    cmd = ["nmap"] + flags.split() + [target]
+    # Filter flags to allowlist — prevents flag injection via user-supplied flags string
+    safe_flags = [f for f in flags.split() if _NMAP_SAFE_FLAGS.match(f)]
+    cmd = ["nmap"] + safe_flags + [target]
     result = _wrap("nmap", cmd, timeout=timeout)
     # Parse basic open ports from nmap output
     if result.raw:
@@ -414,7 +577,7 @@ def run_katana(target: str, depth: int = 3, timeout: int = 180,
     """Crawl with katana; returns list of discovered URLs."""
     cmd = [
         "katana", "-u", target, "-d", str(depth),
-        "-silent", "-nc", "-jc" if js_crawl else "", "-json",
+        "-silent", "-nc", "-jc" if js_crawl else "", "-jsonl",
     ]
     cmd = [c for c in cmd if c]  # remove empty strings
     result = _wrap("katana", cmd, timeout=timeout, parse_fn=_parse_ndjson)
@@ -862,8 +1025,8 @@ def run_nikto(target: str, timeout: int = 300) -> ToolResult:
         try:
             result.data = json.loads(Path(out_file).read_text())
             result.success = True
-        except Exception:
-            pass
+        except Exception as _e:
+            result.error = f"nikto JSON parse failed: {_e}"
         finally:
             Path(out_file).unlink(missing_ok=True)
     return result

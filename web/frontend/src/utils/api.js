@@ -2,6 +2,21 @@ import axios from 'axios'
 
 const api = axios.create({ baseURL: '/api', timeout: 15000 })
 
+// Auto-fetch session API key from backend and attach to all requests
+let _apiKeyReady = false
+const _fetchKey = axios.get('/api/auth-token').then(r => {
+  api.defaults.headers.common['X-API-Key'] = r.data.token
+  _apiKeyReady = true
+}).catch(() => {
+  // If ONEINFINITY_API_KEY is set in the environment, the user can also set it
+  // in localStorage as a fallback.
+  const stored = localStorage.getItem('oneinfinity_api_key')
+  if (stored) {
+    api.defaults.headers.common['X-API-Key'] = stored
+    _apiKeyReady = true
+  }
+})
+
 api.interceptors.response.use(
   r => r,
   err => {
