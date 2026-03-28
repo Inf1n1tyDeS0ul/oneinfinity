@@ -74,7 +74,8 @@ class EnforcementController:
             try:
                 from core.graph_config import load_graph_config
                 self._cfg = load_graph_config().get("enforcement") or {}
-            except Exception:
+            except Exception as exc:
+                log.warning("Failed to load enforcement config: %s", exc)
                 self._cfg = {}
         return self._cfg
 
