@@ -591,11 +591,11 @@ class GodModeConductor:
             bus = get_bus()
             for event_type, handler in self._bus_handlers:
                 try:
-                    bus.off(handler)
+                    bus.off(event_type, handler)
                 except Exception:
                     pass
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("[GOD MODE] Event bus unsubscribe failed: %s", exc)
         self._bus_handlers = []
 
     def _unlock_mission(self, name: str) -> None:
