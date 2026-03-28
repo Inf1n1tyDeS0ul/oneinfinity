@@ -292,3 +292,85 @@ class FoundationMission(Mission):
             "recon_ok": self.recon is not None,
             "app_model_ok": self.app_model is not None,
         }
+
+
+# ── FullScanMission ────────────────────────────────────────────────────────────
+
+class FullScanMission(Mission):
+    """
+    Runs the canonical 10-phase pipeline via run_canonical_pipeline().
+    Seeds phase 1-2 with recon intel from FoundationMission if available.
+    """
+
+    def __init__(self, foundation: FoundationMission):
+        super().__init__("full_scan")
+        self._foundation = foundation
+
+    def _run(self, session: GodModeSession) -> None:
+        from pipeline.executor import run_canonical_pipeline
+        import tempfile as _tmp
+
+        log.info("[GOD MODE] FullScanMission: starting canonical pipeline for %s", session.target)
+
+        # Output dir: ~/.oneinfinity/<scan_id>/full_scan/
+        out_dir = str(GOD_MODE_DIR / session.scan_id / "full_scan")
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+        def _on_progress(phase: str, pct: int, msg: str) -> None:
+            log.info("[GOD MODE] full_scan [%d%%] [%s] %s", pct, phase, msg)
+
+        result = run_canonical_pipeline(
+            target=session.target,
+            output_dir=out_dir,
+            mode="subprocess",
+            on_progress=_on_progress,
+        )
+
+        # Update session finding count
+        new_count = len(result.findings) if result and result.findings else 0
+        session.finding_count += new_count
+        session.phases_complete.append("full_scan")
+        log.info("[GOD MODE] FullScanMission complete — %d findings", new_count)
+        self._result = {"findings": new_count, "output_dir": out_dir}
+
+
+# ── ResearchMission ────────────────────────────────────────────────────────────
+
+class ResearchMission(Mission):
+    """
+    Runs the iterative research loop via ResearchModeController.
+    Each completed iteration notifies the ConvergenceChecker.
+    Unlocked by: NEW_VULNERABILITY count >= 3.
+    """
+
+    def __init__(self, convergence: ConvergenceChecker):
+        super().__init__("research")
+        self._convergence = convergence
+        self._iterations_done: int = 0
+
+    def _run(self, session: GodModeSession) -> None:
+        from research_mode_controller import ResearchModeController
+
+        log.info("[GOD MODE] ResearchMission: starting research loop for %s", session.target)
+
+        out_dir = str(GOD_MODE_DIR / session.scan_id / "research")
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+        ctrl = ResearchModeController(
+            target=session.target,
+            output_dir=out_dir,
+            max_iterations=5,
+            passive_only=False,
+        )
+        discoveries = ctrl.run_research()
+
+        new_count = len(discoveries) if discoveries else 0
+        session.finding_count += new_count
+        self._iterations_done += 1
+        session.phases_complete.append("research")
+
+        # Notify convergence checker
+        self._convergence.record_research_iteration(session.finding_count)
+        log.info("[GOD MODE] ResearchMission complete — %d discoveries, iter=%d",
+                 new_count, self._iterations_done)
+        self._result = {"discoveries": new_count, "iterations": self._iterations_done}
