@@ -57,6 +57,7 @@ export default function GodMode() {
   const [reportFmt, setReportFmt]     = useState('markdown')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [launching, setLaunching]     = useState(false)
+  const [errors, setErrors]           = useState({})
 
   // Active session
   const [session, setSession]         = useState(null)
@@ -127,7 +128,10 @@ export default function GodMode() {
 
   // ── Launch ───────────────────────────────────────────────────────────────────
   const handleLaunch = async () => {
-    if (!target.trim()) return
+    const e = {}
+    if (!target.trim()) e.target = 'Target domain is required'
+    if (Object.keys(e).length) { setErrors(e); return }
+    setErrors({})
     setLaunching(true)
     try {
       const r = await endpoints.godModeRun({
@@ -253,11 +257,12 @@ export default function GodMode() {
               <div>
                 <label className="label">Target</label>
                 <input
-                  className="input"
+                  className={`input ${errors.target ? 'input-error' : ''}`}
                   placeholder="target.com"
                   value={target}
-                  onChange={e => setTarget(e.target.value)}
+                  onChange={e => { setTarget(e.target.value); if (errors.target) setErrors(p => ({...p, target: null})) }}
                 />
+                {errors.target && <p className="field-error">{errors.target}</p>}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
