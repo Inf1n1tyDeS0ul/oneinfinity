@@ -1212,6 +1212,8 @@ def cmd_graph(args):
     elif sub == "neo4j-status":
         banner("Neo4j Status")
         try:
+            from attack_graph_core.graph_engine import get_engine as _init_graph
+            _init_graph()   # side-effect: populates _neo4j_engine_singleton
             from core.graph_neo4j_bootstrap import get_neo4j_engine
             eng = get_neo4j_engine()
             if eng is None:
