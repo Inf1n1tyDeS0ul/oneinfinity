@@ -129,42 +129,50 @@ export default function Dashboard() {
   const recentVulns = vulnerabilities.slice(0, 5)
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
+      {/* Page header */}
+      <div className="section-header">
+        <div>
+          <div className="section-title">Dashboard</div>
+          <div className="text-xs text-slate-500">Autonomous offensive security — realtime overview</div>
+        </div>
+      </div>
+
       {/* Stat cards */}
       <div className="grid grid-cols-4 gap-3">
         <div className="stat-card glow-cyan">
-          <div className="flex items-center justify-between mb-1">
+          <div className="flex items-center justify-between mb-2">
             <span className="stat-label">Active Scans</span>
-            <Scan size={16} className="text-accent-primary/50" />
+            <Scan size={15} className="text-accent-primary/40" />
           </div>
           <div className="stat-value">{stats?.active_scans ?? 0}</div>
-          <div className="text-xs text-slate-500">{scans.length} total</div>
+          <div className="stat-sub">{scans.length} total runs</div>
         </div>
         <div className="stat-card">
-          <div className="flex items-center justify-between mb-1">
+          <div className="flex items-center justify-between mb-2">
             <span className="stat-label">Targets</span>
-            <Target size={16} className="text-accent-secondary/50" />
+            <Target size={15} className="text-accent-secondary/40" />
           </div>
           <div className="stat-value text-accent-secondary">{stats?.total_targets ?? 0}</div>
-          <div className="text-xs text-slate-500">{stats?.attack_surface?.domains ?? 0} domains</div>
+          <div className="stat-sub">{stats?.attack_surface?.domains ?? 0} domains in scope</div>
         </div>
         <div className="stat-card glow-red">
-          <div className="flex items-center justify-between mb-1">
+          <div className="flex items-center justify-between mb-2">
             <span className="stat-label">Vulnerabilities</span>
-            <ShieldAlert size={16} className="text-red-400/50" />
+            <ShieldAlert size={15} className="text-red-400/40" />
           </div>
           <div className="stat-value text-red-400">{stats?.total_vulnerabilities ?? 0}</div>
-          <div className="text-xs text-slate-500">
-            {sevDist.critical ?? 0} critical, {sevDist.high ?? 0} high
+          <div className="stat-sub">
+            <span className="text-red-400">{sevDist.critical ?? 0} crit</span> · <span className="text-orange-400">{sevDist.high ?? 0} high</span>
           </div>
         </div>
         <div className="stat-card">
-          <div className="flex items-center justify-between mb-1">
+          <div className="flex items-center justify-between mb-2">
             <span className="stat-label">AI Campaigns</span>
-            <Bot size={16} className="text-accent-secondary/50" />
+            <Bot size={15} className="text-accent-secondary/40" />
           </div>
           <div className="stat-value text-accent-secondary">{stats?.active_campaigns ?? 0}</div>
-          <div className="text-xs text-slate-500">{campaigns.length} total</div>
+          <div className="stat-sub">{campaigns.length} total campaigns</div>
         </div>
       </div>
 
@@ -173,7 +181,7 @@ export default function Dashboard() {
         {/* Scan activity */}
         <div className="card col-span-2">
           <div className="card-header">
-            <div className="flex items-center gap-2 text-xs text-slate-300">
+            <div className="card-title">
               <Activity size={13} className="text-accent-primary" />
               Scan Activity (7 days)
             </div>
@@ -204,7 +212,7 @@ export default function Dashboard() {
         {/* Severity distribution */}
         <div className="card">
           <div className="card-header">
-            <div className="flex items-center gap-2 text-xs text-slate-300">
+            <div className="card-title">
               <ShieldAlert size={13} className="text-red-400" />
               Severity Distribution
             </div>
@@ -232,22 +240,22 @@ export default function Dashboard() {
         {/* Recent scans */}
         <div className="card">
           <div className="card-header">
-            <span className="text-xs text-slate-300">Recent Scans</span>
+            <span className="card-title">Recent Scans</span>
           </div>
           <div className="divide-y divide-bg-border">
             {recentScans.length === 0 && (
-              <div className="px-4 py-6 text-center text-xs text-slate-500">No scans yet</div>
+              <div className="px-4 py-8 text-center text-sm text-slate-500">No scans yet</div>
             )}
             {recentScans.map(s => (
-              <div key={s.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-white/3">
+              <div key={s.id} className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.02] transition-colors">
                 <div className="flex-1 min-w-0">
-                  <div className="text-xs text-slate-200 truncate">{s.target}</div>
-                  <div className="text-[11px] text-slate-500">{s.scan_type} · {s.profile}</div>
+                  <div className="text-sm text-slate-200 truncate font-medium">{s.target}</div>
+                  <div className="text-xs text-slate-500 mt-0.5">{s.scan_type} · {s.profile}</div>
                 </div>
                 <span className={`badge-${s.status}`}>{s.status}</span>
                 {s.status === 'running' && (
-                  <div className="w-16 h-1 bg-bg-border rounded overflow-hidden">
-                    <div className="h-full bg-accent-primary rounded transition-all" style={{ width: `${s.progress}%` }} />
+                  <div className="progress-bar w-16">
+                    <div className="progress-fill" style={{ width: `${s.progress}%` }} />
                   </div>
                 )}
               </div>
@@ -258,20 +266,20 @@ export default function Dashboard() {
         {/* Recent vulnerabilities */}
         <div className="card">
           <div className="card-header">
-            <span className="text-xs text-slate-300">Recent Vulnerabilities</span>
+            <span className="card-title">Recent Findings</span>
           </div>
           <div className="divide-y divide-bg-border">
             {recentVulns.length === 0 && (
-              <div className="px-4 py-6 text-center text-xs text-slate-500">No findings yet</div>
+              <div className="px-4 py-8 text-center text-sm text-slate-500">No findings yet</div>
             )}
             {recentVulns.map(v => (
-              <div key={v.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-white/3">
+              <div key={v.id} className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.02] transition-colors">
                 <span className={`badge-${v.severity} flex-shrink-0`}>{v.severity}</span>
                 <div className="flex-1 min-w-0">
-                  <div className="text-xs text-slate-200 truncate">{v.title}</div>
-                  <div className="text-[11px] text-slate-500">{v.target} · {v.attack_type}</div>
+                  <div className="text-sm text-slate-200 truncate font-medium">{v.title}</div>
+                  <div className="text-xs text-slate-500 mt-0.5">{v.target} · {v.attack_type}</div>
                 </div>
-                <span className="text-xs text-slate-500">{v.cvss > 0 ? v.cvss.toFixed(1) : '—'}</span>
+                <span className="text-xs text-slate-500 tabular-nums">{v.cvss > 0 ? v.cvss.toFixed(1) : '—'}</span>
               </div>
             ))}
           </div>
@@ -281,7 +289,7 @@ export default function Dashboard() {
       {/* Attack surface */}
       <div className="card">
         <div className="card-header">
-          <div className="flex items-center gap-2 text-xs text-slate-300">
+          <div className="card-title">
             <TrendingUp size={13} className="text-accent-primary" />
             Attack Surface
           </div>
@@ -293,9 +301,9 @@ export default function Dashboard() {
             { label: 'Services', value: stats?.attack_surface?.services ?? 0, color: 'text-yellow-400' },
             { label: 'AI Targets', value: stats?.attack_surface?.ai_targets ?? 0, color: 'text-emerald-400' },
           ].map(item => (
-            <div key={item.label} className="flex flex-col items-center p-3 rounded bg-bg-secondary border border-bg-border">
-              <span className={`text-2xl font-bold ${item.color}`}>{item.value}</span>
-              <span className="text-[11px] text-slate-400 mt-1">{item.label}</span>
+            <div key={item.label} className="flex flex-col items-center p-4 rounded-xl bg-bg-secondary border border-bg-border">
+              <span className={`text-2xl font-bold font-sans tabular-nums ${item.color}`}>{item.value}</span>
+              <span className="text-xs text-slate-400 mt-1.5 font-medium">{item.label}</span>
             </div>
           ))}
         </div>
@@ -303,13 +311,13 @@ export default function Dashboard() {
 
       {/* Targets */}
       <div className="card">
-        <div className="card-header flex items-center justify-between">
-          <div className="flex items-center gap-2 text-xs text-slate-300">
+        <div className="card-header">
+          <div className="card-title">
             <Target size={13} className="text-accent-secondary" />
             Targets ({targets.length})
           </div>
           <button
-            className="btn-primary flex items-center gap-1.5"
+            className="btn-primary"
             onClick={() => setShowAddForm(!showAddForm)}
           >
             {showAddForm ? <X size={11} /> : <Plus size={11} />}

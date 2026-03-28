@@ -1984,6 +1984,116 @@ async def hunter_stop(session_id: str):
     return {"status": "stopped"}
 
 
+# ── GOD MODE ──────────────────────────────────────────────────────────────────
+
+@app.post("/api/god-mode/run", dependencies=[Depends(_require_auth)])
+async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
+    """Launch a GOD MODE session in background."""
+    data = await request.json()
+    target = (data.get("target") or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="target is required")
+    max_time     = str(data.get("max_time", "2h"))
+    max_findings = int(data.get("max_findings", 100))
+    no_swarm     = bool(data.get("no_swarm", False))
+    no_research  = bool(data.get("no_research", False))
+    report_fmt   = str(data.get("report_fmt", "markdown"))
+
+    def _run():
+        try:
+            import sys as _s, os as _o
+            _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)) + "/../..")
+            from god_mode_engine import get_god_mode_conductor
+            get_god_mode_conductor().run(
+                target=target, max_time=max_time, max_findings=max_findings,
+                background=True, no_swarm=no_swarm, no_research=no_research, report_fmt=report_fmt,
+            )
+        except Exception as exc:
+            print(f"[god-mode] run error: {exc}")
+
+    background_tasks.add_task(_run)
+    return {"status": "started", "target": target, "max_time": max_time, "max_findings": max_findings}
+
+
+@app.get("/api/god-mode/status")
+async def god_mode_status_latest():
+    """Status of most recent GOD MODE session."""
+    try:
+        import sys as _s, os as _o
+        _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)) + "/../..")
+        from god_mode_engine import get_god_mode_conductor
+        data = get_god_mode_conductor().status()
+        return data if data is not None else {"status": "no_session"}
+    except Exception as exc:
+        return {"status": "error", "detail": str(exc)}
+
+
+@app.get("/api/god-mode/status/{scan_id}")
+async def god_mode_status_by_id(scan_id: str):
+    """Status of a specific GOD MODE session."""
+    try:
+        import sys as _s, os as _o
+        _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)) + "/../..")
+        from god_mode_engine import get_god_mode_conductor
+        data = get_god_mode_conductor().status(scan_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail=f"Session {scan_id} not found")
+        return data
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/god-mode/sessions")
+async def god_mode_sessions():
+    """List recent GOD MODE sessions from state files."""
+    try:
+        from pathlib import Path
+        import json as _j
+        gm_dir = Path.home() / ".oneinfinity"
+        files = sorted(gm_dir.glob("god-mode-*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        sessions = []
+        for f in files[:20]:
+            try:
+                sessions.append(_j.loads(f.read_text()))
+            except Exception:
+                pass
+        return {"sessions": sessions}
+    except Exception as exc:
+        return {"sessions": [], "error": str(exc)}
+
+
+@app.post("/api/god-mode/stop", dependencies=[Depends(_require_auth)])
+async def god_mode_stop(request: Request):
+    """Stop a GOD MODE session by writing a stop sentinel."""
+    data = await request.json()
+    scan_id = (data.get("scan_id") or "").strip() or None
+    try:
+        import sys as _s, os as _o
+        _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)) + "/../..")
+        from god_mode_engine import get_god_mode_conductor
+        ok = get_god_mode_conductor().stop(scan_id)
+        return {"stopped": ok}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/god-mode/logs/{scan_id}")
+async def god_mode_logs(scan_id: str, lines: int = 150):
+    """Return last N lines of a GOD MODE session log file."""
+    try:
+        from pathlib import Path
+        log_path = Path.home() / ".oneinfinity" / "logs" / f"god-mode-{scan_id}.log"
+        if not log_path.exists():
+            return {"lines": [], "exists": False}
+        text = log_path.read_text(errors="replace")
+        all_lines = text.splitlines()
+        return {"lines": all_lines[-lines:], "exists": True, "total_lines": len(all_lines)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 # ── Graph / Discovery / Swarm routers ─────────────────────────────────────────
 
 try:

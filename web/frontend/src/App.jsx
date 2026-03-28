@@ -21,16 +21,25 @@ import MobileSecurity from './pages/MobileSecurity'
 import BountyHunter from './pages/BountyHunter'
 import SecretDashboard from './pages/SecretDashboard'
 
+// New pages
+import GodMode from './pages/GodMode'
+import Research from './pages/Research'
+import Tools from './pages/Tools'
+import AIModels from './pages/AIModels'
+import Learning from './pages/Learning'
+import Simulation from './pages/Simulation'
+import Utilities from './pages/Utilities'
+import Reports from './pages/Reports'
+import Infrastructure from './pages/Infrastructure'
+
 export default function App() {
   const { addLog, setStats, setTargets, setScans, setVulnerabilities } = useStore()
 
-  // WebSocket for live logs
   useWebSocket((entry) => {
     if (entry.type === 'pong') return
     addLog(entry)
   })
 
-  // Initial data load
   useEffect(() => {
     const load = async () => {
       try {
@@ -49,10 +58,9 @@ export default function App() {
       }
     }
     load()
-    // Refresh stats and scans every 10s
     const interval = setInterval(() => {
-      endpoints.stats().then(r => setStats(r.data)).catch(e => console.warn('Stats poll failed:', e.message))
-      endpoints.scans().then(r => setScans(r.data)).catch(e => console.warn('Scans poll failed:', e.message))
+      endpoints.stats().then(r => setStats(r.data)).catch(() => {})
+      endpoints.scans().then(r => setScans(r.data)).catch(() => {})
     }, 10000)
     return () => clearInterval(interval)
   }, [])
@@ -61,22 +69,34 @@ export default function App() {
     <Layout>
       <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/targets" element={<Targets />} />
-        <Route path="/results" element={<Results />} />
-        <Route path="/attack-graph" element={<AttackGraphPage />} />
-        <Route path="/system" element={<SystemControl />} />
-        <Route path="/traffic" element={<TrafficExplorer />} />
+        <Route path="/dashboard"      element={<Dashboard />} />
+        <Route path="/targets"        element={<Targets />} />
+        <Route path="/results"        element={<Results />} />
+        <Route path="/attack-graph"   element={<AttackGraphPage />} />
+        <Route path="/system"         element={<SystemControl />} />
+        <Route path="/traffic"        element={<TrafficExplorer />} />
         <Route path="/chains/:scanId" element={<ExploitChainViewer />} />
-        <Route path="/chains" element={<ExploitChainViewer />} />
-        <Route path="/brain" element={<BrainDashboard />} />
-        <Route path="/intelligence" element={<LiveIntelligence />} />
-        <Route path="/swarm" element={<SwarmIntelligence />} />
-        <Route path="/evolution" element={<SystemEvolution />} />
-        <Route path="/orchestrator" element={<OrchestratorPanel />} />
-        <Route path="/mobile" element={<MobileSecurity />} />
-        <Route path="/hunter" element={<BountyHunter />} />
-        <Route path="/secrets" element={<SecretDashboard />} />
+        <Route path="/chains"         element={<ExploitChainViewer />} />
+        <Route path="/brain"          element={<BrainDashboard />} />
+        <Route path="/intelligence"   element={<LiveIntelligence />} />
+        <Route path="/swarm"          element={<SwarmIntelligence />} />
+        <Route path="/evolution"      element={<SystemEvolution />} />
+        <Route path="/orchestrator"   element={<OrchestratorPanel />} />
+        <Route path="/mobile"         element={<MobileSecurity />} />
+        <Route path="/hunter"         element={<BountyHunter />} />
+        <Route path="/secrets"        element={<SecretDashboard />} />
+
+        {/* New pages */}
+        <Route path="/god-mode"        element={<GodMode />} />
+        <Route path="/research"        element={<Research />} />
+        <Route path="/tools"           element={<Tools />} />
+        <Route path="/ai-ops"          element={<AIModels />} />
+        <Route path="/learning"        element={<Learning />} />
+        <Route path="/simulation"      element={<Simulation />} />
+        <Route path="/utilities"       element={<Utilities />} />
+        <Route path="/reports"         element={<Reports />} />
+        <Route path="/infrastructure"  element={<Infrastructure />} />
+
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </Layout>

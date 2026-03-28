@@ -1,0 +1,7 @@
+uri: bolt://localhost:7687
+user: neo4j
+password: neo4j123
+database: neo4j
+enabled: true
+path_max_depth: 6
+max_path_query_ms: 5000

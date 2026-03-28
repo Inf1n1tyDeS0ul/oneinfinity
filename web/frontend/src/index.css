@@ -4,69 +4,124 @@
 
 @layer base {
   body {
-    @apply bg-bg-primary text-slate-200 font-mono;
-    font-size: 13px;
+    @apply bg-bg-primary text-slate-200 font-sans antialiased;
+    font-size: 14px;
   }
+  code, pre, .font-mono { font-family: 'JetBrains Mono', monospace; }
 }
 
 @layer components {
-  .card {
-    @apply bg-bg-card border border-bg-border rounded-lg;
-  }
-  .card-header {
-    @apply px-4 py-3 border-b border-bg-border flex items-center justify-between;
-  }
-  .btn {
-    @apply px-3 py-1.5 rounded text-xs font-medium transition-all duration-150 cursor-pointer select-none;
-  }
-  .btn-primary {
-    @apply btn bg-accent-primary/20 border border-accent-primary/40 text-accent-primary hover:bg-accent-primary/30 hover:border-accent-primary/60;
-  }
-  .btn-danger {
-    @apply btn bg-red-500/20 border border-red-500/40 text-red-400 hover:bg-red-500/30;
-  }
-  .btn-success {
-    @apply btn bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/30;
-  }
-  .btn-secondary {
-    @apply btn bg-slate-700/50 border border-slate-600/50 text-slate-300 hover:bg-slate-600/50;
-  }
-  .badge {
-    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
-  }
-  .badge-critical { @apply badge bg-red-500/20 text-red-400 border border-red-500/30; }
-  .badge-high     { @apply badge bg-orange-500/20 text-orange-400 border border-orange-500/30; }
-  .badge-medium   { @apply badge bg-yellow-500/20 text-yellow-400 border border-yellow-500/30; }
-  .badge-low      { @apply badge bg-blue-500/20 text-blue-400 border border-blue-500/30; }
-  .badge-info     { @apply badge bg-slate-500/20 text-slate-400 border border-slate-500/30; }
-  .badge-running  { @apply badge bg-cyan-500/20 text-cyan-400 border border-cyan-500/30; }
-  .badge-completed{ @apply badge bg-emerald-500/20 text-emerald-400 border border-emerald-500/30; }
-  .badge-failed   { @apply badge bg-red-500/20 text-red-400 border border-red-500/30; }
-  .badge-queued   { @apply badge bg-slate-500/20 text-slate-400 border border-slate-500/30; }
-  .input {
-    @apply bg-bg-secondary border border-bg-border rounded px-3 py-1.5 text-xs text-slate-200
-           focus:outline-none focus:border-accent-primary/60 focus:ring-1 focus:ring-accent-primary/20
-           placeholder-slate-500 w-full;
-  }
-  .select {
-    @apply input cursor-pointer;
-  }
-  .label {
-    @apply text-xs text-slate-400 mb-1 block;
-  }
-  .stat-card {
-    @apply card p-4 flex flex-col gap-1;
-  }
-  .stat-value {
-    @apply text-2xl font-bold text-accent-primary;
-  }
-  .stat-label {
-    @apply text-xs text-slate-400 uppercase tracking-wider;
-  }
-  .glow-cyan {
-    box-shadow: 0 0 20px rgba(0, 212, 255, 0.15);
-  }
-  .glow-red {
-    box-shadow: 0 0 20px rgba(239, 68, 68, 0.15);
-  }
+  /* Cards */
+  .card { @apply bg-bg-card border border-bg-border rounded-xl shadow-card; }
+  .card-elevated { @apply bg-bg-elevated border border-bg-border rounded-xl shadow-card; }
+  .card-header { @apply px-5 py-3.5 border-b border-bg-border flex items-center justify-between; }
+  .card-title { @apply text-sm font-semibold text-slate-200 flex items-center gap-2; }
+  .card-body { @apply p-5; }
+
+  /* Buttons */
+  .btn { @apply inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-150 cursor-pointer select-none whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/50; }
+  .btn-primary { @apply btn bg-accent-primary/15 border border-accent-primary/40 text-accent-primary hover:bg-accent-primary/25 hover:border-accent-primary/60 active:scale-95; }
+  .btn-secondary { @apply btn bg-bg-elevated border border-bg-border text-slate-300 hover:bg-bg-muted hover:border-slate-500 active:scale-95; }
+  .btn-danger { @apply btn bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 hover:border-red-400/50 active:scale-95; }
+  .btn-success { @apply btn bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 active:scale-95; }
+  .btn-ghost { @apply btn text-slate-400 hover:text-slate-200 hover:bg-white/5 active:scale-95; }
+  .btn-icon { @apply p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-white/5 transition-all duration-150 cursor-pointer focus:outline-none; }
+  .btn-lg { @apply px-5 py-2.5 text-sm; }
+  .btn-sm { @apply px-2 py-1 text-[10px]; }
+
+  /* Badges */
+  .badge { @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold tracking-wide; }
+  .badge-critical { @apply badge bg-red-500/15 text-red-400 border border-red-500/25; }
+  .badge-high     { @apply badge bg-orange-500/15 text-orange-400 border border-orange-500/25; }
+  .badge-medium   { @apply badge bg-yellow-500/15 text-yellow-400 border border-yellow-500/25; }
+  .badge-low      { @apply badge bg-blue-500/15 text-blue-400 border border-blue-500/25; }
+  .badge-info     { @apply badge bg-slate-500/15 text-slate-400 border border-slate-500/25; }
+  .badge-running  { @apply badge bg-cyan-500/15 text-cyan-400 border border-cyan-500/25; }
+  .badge-completed{ @apply badge bg-emerald-500/15 text-emerald-400 border border-emerald-500/25; }
+  .badge-failed   { @apply badge bg-red-500/15 text-red-400 border border-red-500/25; }
+  .badge-queued   { @apply badge bg-slate-600/20 text-slate-400 border border-slate-600/25; }
+  .badge-pending  { @apply badge bg-yellow-500/15 text-yellow-400 border border-yellow-500/25; }
+
+  /* Inputs */
+  .input { @apply w-full bg-bg-secondary border border-bg-border rounded-lg px-3 py-2 text-sm text-slate-200 font-sans placeholder-slate-500 focus:outline-none focus:border-accent-primary/60 focus:ring-1 focus:ring-accent-primary/20 transition-colors duration-150; }
+  .input-sm { @apply input py-1.5 text-xs; }
+  .select { @apply input cursor-pointer; }
+  .textarea { @apply input resize-none font-mono text-xs; }
+  .label { @apply block text-xs font-medium text-slate-400 mb-1.5; }
+  .label-sm { @apply block text-[10px] font-medium text-slate-500 mb-1 uppercase tracking-wider; }
+
+  /* Stat cards */
+  .stat-card { @apply card p-5 flex flex-col gap-1.5; }
+  .stat-value { @apply text-3xl font-bold text-accent-primary font-sans tabular-nums; }
+  .stat-label { @apply text-xs font-medium text-slate-400 uppercase tracking-widest; }
+  .stat-sub { @apply text-xs text-slate-500; }
+
+  /* Glow effects */
+  .glow-cyan   { box-shadow: 0 0 24px rgba(0,217,255,0.12), 0 0 48px rgba(0,217,255,0.04); }
+  .glow-red    { box-shadow: 0 0 24px rgba(239,68,68,0.12); }
+  .glow-green  { box-shadow: 0 0 24px rgba(16,185,129,0.12); }
+  .glow-purple { box-shadow: 0 0 24px rgba(99,102,241,0.12); }
+  .glow-orange { box-shadow: 0 0 24px rgba(249,115,22,0.12); }
+
+  /* Status dots */
+  .status-dot { @apply w-2 h-2 rounded-full flex-shrink-0; }
+  .status-dot-online  { @apply status-dot bg-emerald-400; box-shadow: 0 0 6px rgba(16,185,129,0.8); }
+  .status-dot-warn    { @apply status-dot bg-yellow-400; box-shadow: 0 0 6px rgba(234,179,8,0.8); }
+  .status-dot-error   { @apply status-dot bg-red-400; box-shadow: 0 0 6px rgba(239,68,68,0.8); }
+  .status-dot-idle    { @apply status-dot bg-slate-500; }
+  .status-dot-pulse   { @apply status-dot bg-cyan-400 animate-pulse; box-shadow: 0 0 6px rgba(0,217,255,0.8); }
+
+  /* Tables */
+  .data-table { @apply w-full text-sm; }
+  .data-table th { @apply px-4 py-3 text-left text-[10px] font-semibold text-slate-500 uppercase tracking-wider border-b border-bg-border; }
+  .data-table td { @apply px-4 py-3 border-b border-bg-border/50; }
+  .data-table tr:last-child td { @apply border-0; }
+  .data-table tbody tr { @apply transition-colors duration-100 hover:bg-white/[0.02]; }
+
+  /* Nav items */
+  .nav-item { @apply flex items-center gap-2.5 px-3 py-2 mx-2 rounded-lg text-sm transition-all duration-150 cursor-pointer select-none; }
+  .nav-item-inactive { @apply nav-item text-slate-400 hover:text-slate-200 hover:bg-white/5; }
+  .nav-item-active { @apply nav-item text-accent-primary bg-accent-primary/10 border border-accent-primary/20 font-medium; }
+  .nav-group-label { @apply px-5 pt-4 pb-1.5 text-[10px] font-semibold text-slate-600 uppercase tracking-widest; }
+
+  /* Section layout */
+  .section-header { @apply flex items-center justify-between mb-5; }
+  .section-title { @apply text-base font-semibold text-slate-100; }
+  .section-sub { @apply text-xs text-slate-500 mt-0.5; }
+
+  /* Empty state */
+  .empty-state { @apply flex flex-col items-center justify-center py-16 text-center gap-3; }
+  .empty-icon { @apply w-12 h-12 rounded-xl bg-bg-elevated border border-bg-border flex items-center justify-center text-slate-600; }
+  .empty-title { @apply text-sm font-medium text-slate-400; }
+  .empty-sub { @apply text-xs text-slate-600 max-w-xs; }
+
+  /* Terminal */
+  .terminal { @apply bg-bg-primary border border-bg-border rounded-xl p-4 font-mono text-xs text-emerald-400 overflow-auto; }
+
+  /* Tabs */
+  .tab-bar { @apply flex gap-1 border-b border-bg-border; }
+  .tab { @apply px-4 py-2 text-xs font-medium text-slate-400 border-b-2 border-transparent hover:text-slate-200 transition-colors duration-150 cursor-pointer select-none -mb-px; }
+  .tab-active { @apply tab text-accent-primary border-accent-primary; }
+
+  /* Progress */
+  .progress-bar { @apply h-1 bg-bg-muted rounded-full overflow-hidden; }
+  .progress-fill { @apply h-full bg-accent-primary rounded-full transition-all duration-500; }
+  .progress-fill-success { @apply progress-fill bg-accent-success; }
+  .progress-fill-warn    { @apply progress-fill bg-accent-warn; }
+  .progress-fill-danger  { @apply progress-fill bg-accent-danger; }
+
+  /* Gradient text */
+  .gradient-text { @apply bg-gradient-to-r from-accent-primary to-accent-secondary bg-clip-text text-transparent; }
+
+  /* Toast */
+  .toast { @apply flex items-start gap-2.5 px-4 py-3 rounded-xl border text-sm backdrop-blur-sm; animation: slide-in 0.2s ease-out; }
+  .toast-error   { @apply toast bg-red-950/90 border-red-600/40 text-red-200; }
+  .toast-success { @apply toast bg-emerald-950/90 border-emerald-600/40 text-emerald-200; }
+  .toast-info    { @apply toast bg-bg-elevated/90 border-bg-border text-slate-200; }
+  .toast-warn    { @apply toast bg-yellow-950/90 border-yellow-600/40 text-yellow-200; }
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0); }
 }

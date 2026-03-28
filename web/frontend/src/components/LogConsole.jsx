@@ -21,17 +21,21 @@ export default function LogConsole() {
   }, [logs])
 
   return (
-    <div className="h-full overflow-y-auto bg-bg-primary px-3 py-1 font-mono text-xs">
+    <div className="h-full overflow-y-auto bg-bg-primary px-4 py-2 font-mono text-xs">
+      {logs.length === 0 && (
+        <div className="text-slate-600 py-2">// Waiting for log events...</div>
+      )}
       {logs.map((entry, i) => (
-        <div key={i} className="flex gap-2 leading-5 hover:bg-white/3">
-          <span className="text-slate-600 flex-shrink-0 select-none">
+        <div key={i} className="flex gap-2 leading-5.5 hover:bg-white/[0.02] rounded px-1 -mx-1">
+          <span className="text-slate-700 flex-shrink-0 select-none tabular-nums">
             {new Date(entry.timestamp).toLocaleTimeString()}
           </span>
           {entry.source && (
-            <span className="text-accent-secondary/70 flex-shrink-0">[{entry.source}]</span>
+            <span className="text-accent-secondary/60 flex-shrink-0">[{entry.source}]</span>
           )}
-          <span className={clsx(LEVEL_COLORS[entry.level] || 'text-slate-300')}>
-            {LEVEL_PREFIX[entry.level] || '[*]'} {entry.message}
+          <span className={clsx(LEVEL_COLORS[entry.level] || 'text-slate-400')}>
+            <span className="opacity-60">{LEVEL_PREFIX[entry.level] || '[*]'}</span>{' '}
+            {entry.message}
           </span>
         </div>
       ))}

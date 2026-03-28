@@ -1,0 +1,18 @@
+{
+  "oi_file": "/tmp/test_oi.json",
+  "comparisons": [
+    {
+      "reference_source": "burp",
+      "reference_count": 0,
+      "oi_count": 0,
+      "common_count": 0,
+      "missed_count": 0,
+      "extra_count": 0,
+      "accuracy_score": 0.0,
+      "coverage": "0/0 (0.0%)",
+      "missed_vulns": [],
+      "extra_findings": [],
+      "common_findings": []
+    }
+  ]
+}

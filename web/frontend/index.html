@@ -3,16 +3,27 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>One&Infinity — Offensive Security Research Framework</title>
+    <title>One&Infinity — Autonomous Offensive Security Platform</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
     <style>
-      * { box-sizing: border-box; margin: 0; padding: 0; }
-      body { background: #0a0e1a; color: #e2e8f0; font-family: 'JetBrains Mono', monospace; }
-      ::-webkit-scrollbar { width: 6px; height: 6px; }
-      ::-webkit-scrollbar-track { background: #0f1629; }
-      ::-webkit-scrollbar-thumb { background: #1e2d4a; border-radius: 3px; }
-      ::-webkit-scrollbar-thumb:hover { background: #00d4ff44; }
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      html { color-scheme: dark; }
+      body {
+        background: #07090f;
+        color: #e2e8f0;
+        font-family: 'Inter', system-ui, sans-serif;
+        font-size: 14px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      ::-webkit-scrollbar { width: 5px; height: 5px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: #1c2a42; border-radius: 3px; }
+      ::-webkit-scrollbar-thumb:hover { background: rgba(0,217,255,0.3); }
+      ::selection { background: rgba(0,217,255,0.2); color: #e2e8f0; }
     </style>
   </head>
   <body>

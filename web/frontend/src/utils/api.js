@@ -222,4 +222,30 @@ export const endpoints = {
   getWafStats:         () => api.get('/waf/stats'),
   getChainContext:     (id) => api.get(`/chains/${id}`),
   runWorkflow:         (data) => api.post('/workflow/run', data),
+
+  // Utilities  (/api/utilities/*)
+  cvssCalculate:       (data) => api.post('/utilities/cvss', data),
+  dedupCheck:          (title) => api.post('/utilities/dedup', { title }),
+  methodologyGet:      (vuln_class) => api.get(`/utilities/methodology/${vuln_class}`),
+  wafBypassPayloads:   (waf, vuln_type) => api.get(`/utilities/waf-bypass/${waf}/${vuln_type}`),
+
+  // Reports  (/api/reports/*)
+  replayFindings:      (data) => api.post('/reports/replay', data),
+
+  // Infrastructure  (/api/infra/*)
+  cacheStats:          () => api.get('/cache/stats'),
+  cacheSweep:          () => api.post('/cache/sweep'),
+  cacheClear:          () => api.post('/cache/clear'),
+  cacheInvalidate:     (target) => api.post(`/cache/invalidate/${encodeURIComponent(target)}`),
+  distributedScan:     (data) => api.post('/distributed/scan', data),
+
+  // Benchmarks
+  benchmark:           (data) => api.post('/benchmark', data),
+
+  // GOD MODE
+  godModeRun:          (data) => api.post('/god-mode/run', data),
+  godModeStatus:       (scanId) => scanId ? api.get(`/god-mode/status/${scanId}`) : api.get('/god-mode/status'),
+  godModeSessions:     () => api.get('/god-mode/sessions'),
+  godModeStop:         (scanId) => api.post('/god-mode/stop', { scan_id: scanId || null }),
+  godModeLogs:         (scanId, lines) => api.get(`/god-mode/logs/${scanId}`, { params: { lines: lines || 150 } }),
 }
