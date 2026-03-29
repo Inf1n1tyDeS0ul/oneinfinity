@@ -484,6 +484,57 @@ def run_httpx_single(url: str, timeout: int = 30) -> ToolResult:
     return run_httpx([url], timeout=timeout)
 
 
+def run_http_request(
+    url: str,
+    method: str = "GET",
+    params: dict = None,
+    data: dict = None,
+    json_body: dict = None,
+    headers: dict = None,
+    timeout: int = 30,
+) -> ToolResult:
+    """
+    Pure-Python HTTP request (no CLI dependency).
+    Used by swarm agents for targeted probes with custom method/params/data/headers.
+    Returns ToolResult with data = {status, body, headers, url, elapsed_ms}.
+    """
+    import time as _time
+    try:
+        import requests as _req
+    except ImportError:
+        return ToolResult(tool="http_request", success=False,
+                          error="requests library not installed")
+    try:
+        clean_headers = {k: v for k, v in (headers or {}).items() if v}
+        t0 = _time.monotonic()
+        resp = _req.request(
+            method=method.upper(),
+            url=url,
+            params=params or {},
+            data=data or {},
+            json=json_body,
+            headers=clean_headers,
+            timeout=timeout,
+            allow_redirects=True,
+            verify=False,
+        )
+        elapsed_ms = int((_time.monotonic() - t0) * 1000)
+        return ToolResult(
+            tool="http_request",
+            success=True,
+            data={
+                "status":      resp.status_code,
+                "body":        resp.text[:8192],
+                "headers":     dict(resp.headers),
+                "url":         resp.url,
+                "elapsed_ms":  elapsed_ms,
+            },
+            raw=resp.text[:2048],
+        )
+    except Exception as exc:
+        return ToolResult(tool="http_request", success=False, error=str(exc))
+
+
 # ============================================================================
 #  PORT SCANNING
 # ============================================================================
@@ -1393,6 +1444,8 @@ TOOL_REGISTRY: dict[str, dict] = {
     "gf":           {"fn": run_gf,           "category": "util",       "args": ["urls", "pattern"]},
     "qsreplace":    {"fn": run_qsreplace,    "category": "util",       "args": ["urls"]},
     "anew":         {"fn": run_anew,         "category": "util",       "args": ["existing", "new_items"]},
+    # Pure-Python HTTP client (no CLI needed — used by swarm agents for targeted probes)
+    "http_request": {"fn": run_http_request, "category": "http",       "args": ["url"]},
 }
 
 
@@ -1412,8 +1465,29 @@ class ToolRegistry:
             cats.setdefault(cat, []).append(name)
         return cats
 
+    # Translate swarm engine's httpx(url=..., method=..., params=..., data=..., headers=...)
+    # calling convention → correct tool wrapper signatures.
+    @staticmethod
+    def _translate_kwargs(tool_name: str, kwargs: dict) -> tuple[str, dict]:
+        """
+        Returns (resolved_tool_name, translated_kwargs).
+        Swarm agents call `httpx` as a generic HTTP client with url/method/params/data/headers.
+        When those kwargs are present, route to http_request instead so the call succeeds.
+        """
+        if tool_name == "httpx":
+            has_client_args = any(k in kwargs for k in ("url", "method", "params", "data", "headers"))
+            if has_client_args and "targets" not in kwargs:
+                # Delegate to http_request which accepts these args natively
+                return "http_request", kwargs
+            if "url" in kwargs and "targets" not in kwargs:
+                # Simple url= → targets=[url] translation for host probing
+                url = kwargs.pop("url")
+                return "httpx", {"targets": [url], **{k: v for k, v in kwargs.items() if k in ("timeout", "flags")}}
+        return tool_name, kwargs
+
     def run(self, tool_name: str, **kwargs) -> ToolResult:
         """Run a tool by name with keyword arguments."""
+        tool_name, kwargs = self._translate_kwargs(tool_name, dict(kwargs))
         if tool_name not in TOOL_REGISTRY:
             return ToolResult(tool=tool_name, success=False,
                               error=f"Unknown tool: {tool_name}")
