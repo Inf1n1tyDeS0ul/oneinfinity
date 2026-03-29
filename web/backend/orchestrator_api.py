@@ -113,7 +113,8 @@ def budget_records(limit: int = Query(50, ge=1, le=200)):
 
 
 @router.post("/execute")
-def orchestrator_execute(req: ExecuteRequest):
+async def orchestrator_execute(req: ExecuteRequest):
+    import asyncio
     from model_orchestrator import ModelTier
     task = req.dict(exclude={"force_tier"})
     # map prompt → description key the classifier expects
@@ -127,7 +128,11 @@ def orchestrator_execute(req: ExecuteRequest):
             raise HTTPException(400, f"Invalid tier: {req.force_tier}. Use FAST, STANDARD, or PREMIUM")
 
     try:
-        output = _orch().execute(task, force_tier=force_tier)
+        # Run the blocking subprocess call in a thread pool so it doesn't block the event loop
+        loop = asyncio.get_event_loop()
+        output = await loop.run_in_executor(
+            None, lambda: _orch().execute(task, force_tier=force_tier)
+        )
         return output.to_dict()
     except Exception as e:
         raise HTTPException(500, str(e))
