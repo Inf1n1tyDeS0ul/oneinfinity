@@ -256,21 +256,28 @@ class RoutingPolicy:
 
 # ── Provider backends ─────────────────────────────────────────────────────────
 
+import shutil as _shutil
+import subprocess as _subprocess
+
+
 class _OpenAIBackend:
-    """Raw HTTP calls to the OpenAI Chat Completions API."""
+    """
+    OpenAI Chat Completions API.
+    Auth: OPENAI_API_KEY env var (required — Codex CLI JWT is not accepted by the standard API).
+    """
 
     BASE_URL = "https://api.openai.com/v1/chat/completions"
 
     def __init__(self) -> None:
         self._api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not self._api_key:
+            log.debug("[openai] OPENAI_API_KEY not set — OpenAI models will be unavailable")
 
     def call(self, model_id: str, system: str, prompt: str,
              temperature: float, max_tokens: int) -> Tuple[str, int, int]:
-        """Returns (content, input_tokens, output_tokens). Raises on error."""
         import requests as req
         if not self._api_key:
             raise RuntimeError("OPENAI_API_KEY not set")
-
         payload = {
             "model": model_id,
             "messages": [
@@ -283,65 +290,143 @@ class _OpenAIBackend:
         resp = req.post(
             self.BASE_URL,
             json=payload,
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type":  "application/json",
-            },
+            headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
             timeout=60,
         )
         resp.raise_for_status()
-        data = resp.json()
-        content      = data["choices"][0]["message"]["content"]
-        usage        = data.get("usage", {})
-        input_tokens  = usage.get("prompt_tokens", len(prompt) // 4)
-        output_tokens = usage.get("completion_tokens", len(content) // 4)
-        return content, input_tokens, output_tokens
+        data          = resp.json()
+        content       = data["choices"][0]["message"]["content"]
+        usage         = data.get("usage", {})
+        return content, usage.get("prompt_tokens", len(prompt) // 4), usage.get("completion_tokens", len(content) // 4)
 
 
 class _AnthropicBackend:
-    """Raw HTTP calls to the Anthropic Messages API."""
+    """
+    Anthropic Claude API.
+    Auth priority:
+      1. ANTHROPIC_API_KEY env var  → direct HTTP to api.anthropic.com
+      2. claude CLI installed       → subprocess: claude -p <prompt> --model <id>
+    """
 
     BASE_URL = "https://api.anthropic.com/v1/messages"
 
+    # Map YAML model IDs to the short aliases accepted by the claude CLI
+    _CLI_MODEL_ALIASES: Dict[str, str] = {
+        "claude-haiku-4-5":  "claude-haiku-4-5",
+        "claude-sonnet-4-6": "claude-sonnet-4-6",
+        "claude-opus-4-6":   "claude-opus-4-6",
+    }
+
     def __init__(self) -> None:
-        self._api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        self._api_key  = os.environ.get("ANTHROPIC_API_KEY", "")
+        self._use_cli  = False
+        if not self._api_key:
+            if _shutil.which("claude"):
+                self._use_cli = True
+                log.info("[anthropic] ANTHROPIC_API_KEY not set — using 'claude' CLI subprocess")
+            else:
+                log.debug("[anthropic] No credentials: set ANTHROPIC_API_KEY or install Claude Code CLI")
 
     def call(self, model_id: str, system: str, prompt: str,
              temperature: float, max_tokens: int) -> Tuple[str, int, int]:
+        if self._use_cli:
+            return self._call_cli(model_id, system, prompt)
+        return self._call_api(model_id, system, prompt, temperature, max_tokens)
+
+    def _call_api(self, model_id: str, system: str, prompt: str,
+                  temperature: float, max_tokens: int) -> Tuple[str, int, int]:
         import requests as req
         if not self._api_key:
             raise RuntimeError("ANTHROPIC_API_KEY not set")
-
         payload = {
-            "model": model_id,
-            "system": system,
+            "model": model_id, "system": system,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature,
-            "max_tokens":  min(max_tokens, 4096),
+            "temperature": temperature, "max_tokens": min(max_tokens, 4096),
         }
-        resp = req.post(
-            self.BASE_URL,
-            json=payload,
-            headers={
-                "x-api-key":        self._api_key,
-                "anthropic-version": "2023-06-01",
-                "Content-Type":      "application/json",
-            },
-            timeout=60,
-        )
+        resp = req.post(self.BASE_URL, json=payload, headers={
+            "x-api-key": self._api_key, "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }, timeout=60)
         resp.raise_for_status()
-        data = resp.json()
-        content      = data["content"][0]["text"]
-        usage        = data.get("usage", {})
-        input_tokens  = usage.get("input_tokens",  len(prompt) // 4)
-        output_tokens = usage.get("output_tokens", len(content) // 4)
-        return content, input_tokens, output_tokens
+        data  = resp.json()
+        content = data["content"][0]["text"]
+        usage = data.get("usage", {})
+        return content, usage.get("input_tokens", len(prompt) // 4), usage.get("output_tokens", len(content) // 4)
+
+    def _call_cli(self, model_id: str, system: str, prompt: str) -> Tuple[str, int, int]:
+        cli_model = self._CLI_MODEL_ALIASES.get(model_id, model_id)
+        full_prompt = f"{system}\n\n{prompt}" if system else prompt
+        cmd = [
+            "claude", "-p", full_prompt,
+            "--model", cli_model,
+            "--allowed-tools", "",          # disable all tools — pure LLM response
+            "--max-budget-usd", "0.50",
+        ]
+        result = _subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            raise RuntimeError(f"claude CLI exited {result.returncode}: {result.stderr[:300]}")
+        content = result.stdout.strip()
+        in_tok  = len(full_prompt) // 4
+        out_tok = len(content) // 4
+        return content, in_tok, out_tok
 
 
-_BACKENDS: Dict[str, Any] = {
-    "openai":    _OpenAIBackend(),
-    "anthropic": _AnthropicBackend(),
-}
+class _GeminiBackend:
+    """
+    Google Gemini via gemini CLI subprocess.
+    Auth: gemini CLI OAuth session (~/.gemini/oauth_creds.json).
+    Requires: npm install -g @google/gemini-cli  +  gemini (login once interactively)
+    """
+
+    # Map YAML model IDs to the -m flag values accepted by the gemini CLI
+    _CLI_MODEL_MAP: Dict[str, Optional[str]] = {
+        "gemini-2.0-flash":              None,         # omit -m → uses CLI default
+        "gemini-2.5-pro-preview-03-25":  "gemini-2.5-pro",
+    }
+
+    def __init__(self) -> None:
+        self._available = bool(_shutil.which("gemini"))
+        if self._available:
+            log.info("[gemini] 'gemini' CLI found — Gemini models available via CLI subprocess")
+        else:
+            log.debug("[gemini] 'gemini' CLI not found — Gemini models unavailable")
+
+    def call(self, model_id: str, system: str, prompt: str,
+             temperature: float, max_tokens: int) -> Tuple[str, int, int]:
+        if not self._available:
+            raise RuntimeError("gemini CLI not installed: npm install -g @google/gemini-cli")
+        full_prompt = f"{system}\n\n{prompt}" if system else prompt
+        cli_model = self._CLI_MODEL_MAP.get(model_id, model_id)
+        cmd = ["gemini", "-p", full_prompt, "--approval-mode", "plan"]
+        if cli_model:
+            cmd.extend(["-m", cli_model])
+        result = _subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            raise RuntimeError(f"gemini CLI exited {result.returncode}: {result.stderr[:300]}")
+        content = result.stdout.strip()
+        in_tok  = len(full_prompt) // 4
+        out_tok = len(content) // 4
+        return content, in_tok, out_tok
+
+
+def _build_backends() -> Dict[str, Any]:
+    """Instantiate all provider backends with auto-detected credentials."""
+    backends: Dict[str, Any] = {
+        "openai":    _OpenAIBackend(),
+        "anthropic": _AnthropicBackend(),
+        "gemini":    _GeminiBackend(),
+    }
+    for name, backend in backends.items():
+        has_cred = bool(
+            getattr(backend, "_api_key",   None)
+            or getattr(backend, "_use_cli",    None)
+            or getattr(backend, "_available",  None)
+        )
+        log.debug("Backend '%s': %s", name, "available" if has_cred else "MISSING credentials")
+    return backends
+
+
+_BACKENDS: Dict[str, Any] = _build_backends()
 
 
 # ── Prompt builder ─────────────────────────────────────────────────────────────
@@ -521,6 +606,7 @@ class ModelOrchestrator:
         if "routing" in cfg:
             self._policy = RoutingPolicy.from_dict(cfg["routing"])
 
+        self._auto_enable_cli_models()
         self._loaded = True
         log.info("Loaded %d models from %s", len(self._models), path)
 
@@ -553,6 +639,32 @@ class ModelOrchestrator:
         for m in defaults:
             self.register_model(m)
         self._loaded = True
+
+    def _auto_enable_cli_models(self) -> None:
+        """
+        Enable models that are disabled in YAML but have CLI credentials available.
+        Priority: env API key > CLI OAuth token.
+        Models are only auto-enabled when their provider backend has valid credentials.
+        """
+        _provider_has_cred: Dict[str, bool] = {}
+        for provider, backend in _BACKENDS.items():
+            has_cred = bool(
+                getattr(backend, "_api_key",   None)   # API key set
+                or getattr(backend, "_use_cli",   None)   # claude CLI available
+                or getattr(backend, "_available", None)   # gemini CLI available
+            )
+            _provider_has_cred[provider] = has_cred
+
+        with self._lock:
+            for model_id, model in self._models.items():
+                if model.enabled:
+                    continue
+                if _provider_has_cred.get(model.provider, False):
+                    model.enabled = True
+                    log.info(
+                        "[CLI auth] Auto-enabled model '%s' (provider=%s)",
+                        model_id, model.provider,
+                    )
 
     def register_model(self, config: ModelConfig) -> None:
         with self._lock:

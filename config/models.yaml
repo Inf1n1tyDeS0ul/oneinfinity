@@ -98,7 +98,47 @@ models:
     cost_per_1k_output: 0.07500
     max_context_tokens: 200000
     latency_class: INTERACTIVE
-    enabled: false
+    enabled: false                   # auto-enabled when ANTHROPIC_API_KEY or Claude Code CLI is present
+    capabilities:
+      - RECON
+      - VULN_ANALYSIS
+      - EXPLOIT_GEN
+      - HYPOTHESIS
+      - CHAIN_DETECTION
+      - PAYLOAD_MUTATION
+      - CODE_ANALYSIS
+      - REPORT_WRITING
+      - OSINT
+      - BIZ_LOGIC
+      - GENERAL
+
+  # ── Google Gemini (via Gemini CLI OAuth) ─────────────────────────────────────
+
+  gemini-2.0-flash:
+    provider: gemini
+    tier: FAST
+    cost_per_1k_input: 0.00000        # free tier via Gemini CLI OAuth
+    cost_per_1k_output: 0.00000
+    max_context_tokens: 1048576       # 1M token context window
+    latency_class: REAL_TIME
+    enabled: false                    # auto-enabled when Gemini CLI OAuth token is present
+    capabilities:
+      - RECON
+      - HYPOTHESIS
+      - PAYLOAD_MUTATION
+      - REPORT_WRITING
+      - OSINT
+      - CHAIN_DETECTION
+      - GENERAL
+
+  gemini-2.5-pro-preview-03-25:
+    provider: gemini
+    tier: STANDARD
+    cost_per_1k_input: 0.00000        # free tier via Gemini CLI OAuth
+    cost_per_1k_output: 0.00000
+    max_context_tokens: 1048576
+    latency_class: INTERACTIVE
+    enabled: false                    # auto-enabled when Gemini CLI OAuth token is present
     capabilities:
       - RECON
       - VULN_ANALYSIS
