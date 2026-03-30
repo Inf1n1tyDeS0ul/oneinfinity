@@ -557,9 +557,12 @@ class CanonicalExecutor:
 
             _base = f"{_parsed.scheme}://{_parsed.netloc}" if _parsed.netloc else f"https://{_host}"
             for _r in check_backup_files(_base, _known_paths[:20]):
-                _f = gap_check_result_to_finding(_r, url=_base)
-                if _f:
-                    gap_findings.append(normalize_finding(_f, source_type="owasp_gap"))
+                try:
+                    _f = gap_check_result_to_finding(_r, url=_base)
+                    if _f:
+                        gap_findings.append(normalize_finding(_f, source_type="owasp_gap"))
+                except Exception as _e:
+                    log.debug("backup_files result processing failed: %s", _e)
         except Exception as _exc:
             log.warning("deep_recon OWASP gap checks failed: %s", _exc)
 
