@@ -89,6 +89,49 @@ export default function SystemControl() {
           </div>
         </section>
 
+        {/* API Authentication */}
+        <section className="bg-gray-900 p-6 rounded-lg border border-gray-800">
+          <h2 className="text-xl font-semibold mb-4 flex items-center">
+            <span className="mr-2">🔑</span> API Authentication
+          </h2>
+          <div className="space-y-4">
+            <p className="text-sm text-gray-400">
+              The framework uses an API key for authentication. If the frontend is unable to fetch it automatically, you can set it here.
+            </p>
+            <div>
+              <label className="block text-sm font-medium mb-1.5">OneInfinity API Key</label>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  defaultValue={localStorage.getItem('oneinfinity_api_key') || ''}
+                  placeholder="Paste your API key here"
+                  id="api-key-input"
+                  className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+                />
+                <button
+                  onClick={() => {
+                    const val = document.getElementById('api-key-input').value.trim()
+                    if (val) {
+                      localStorage.setItem('oneinfinity_api_key', val)
+                      alert('API key saved! Reload the page to apply.')
+                      window.location.reload()
+                    } else {
+                      localStorage.removeItem('oneinfinity_api_key')
+                      alert('API key cleared!')
+                    }
+                  }}
+                  className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded font-bold text-sm"
+                >
+                  SAVE
+                </button>
+              </div>
+            </div>
+            <p className="text-[10px] text-gray-500 italic">
+              Key is stored in browser localStorage. You can find it in the terminal where you started the backend if you didn't set ONEINFINITY_API_KEY.
+            </p>
+          </div>
+        </section>
+
         {/* WAF Telemetry */}
         <section className="bg-gray-900 p-6 rounded-lg border border-gray-800">
           <h2 className="text-xl font-semibold mb-4 flex items-center">

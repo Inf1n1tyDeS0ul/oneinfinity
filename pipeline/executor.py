@@ -142,7 +142,7 @@ def normalize_finding(f: dict, source_type: str = "tool") -> dict:
     """Ensure a finding has all required fields with correct types."""
     out = dict(f)
     out.setdefault("source_type", source_type)
-    out.setdefault("vuln_type", out.pop("title", out.pop("type", "unknown")))
+    out.setdefault("vuln_type", out.pop("title", out.pop("type", out.get("attack_type", "unknown"))))
     out.setdefault("severity", "info")
     out.setdefault("url", out.get("endpoint", out.get("target", "")))
     out.setdefault("endpoint", out["url"])
@@ -196,15 +196,34 @@ class CanonicalExecutor:
         timeout_multiplier: float = 1.0,
         skip_phases: Optional[List[str]] = None,
         prior_results_dir: Optional[str] = None,
+        auth_config: Optional[Dict[str, str]] = None,
     ):
         if mode not in ("inline", "subprocess"):
             raise ValueError(f"mode must be 'inline' or 'subprocess', got: {mode!r}")
         self.mode = mode
+        self._last_emitted_pct: int = 0
         self.waf_profile = waf_profile or {}
         self.on_progress = on_progress
         self.timeout_multiplier = timeout_multiplier
         self.skip_phases = set(skip_phases or [])
         self.prior_results_dir = prior_results_dir
+        # auth_config: optional dict with keys: session_cookie, bearer_token, auth_header
+        # Used by all inline phases to make authenticated requests
+        self.auth_config: Dict[str, str] = auth_config or {}
+
+    def _build_auth_headers(self) -> Dict[str, str]:
+        """Build HTTP headers from auth_config for authenticated scanning."""
+        headers: Dict[str, str] = {}
+        if not self.auth_config:
+            return headers
+        if self.auth_config.get("bearer_token"):
+            headers["Authorization"] = f"Bearer {self.auth_config['bearer_token']}"
+        elif self.auth_config.get("auth_header"):
+            # Raw header value like "Bearer xyz" or "Token abc"
+            headers["Authorization"] = self.auth_config["auth_header"]
+        if self.auth_config.get("session_cookie"):
+            headers["Cookie"] = self.auth_config["session_cookie"]
+        return headers
 
     def run(self, target: str, output_dir: str) -> PipelineResult:
         """Execute all 10 canonical phases against target."""
@@ -550,9 +569,12 @@ class CanonicalExecutor:
 
     def _inline_active_testing(self, target: str, out: Path, waf: dict) -> List[dict]:
         findings = []
+        auth_headers = self._build_auth_headers()
+        probe_target = target if target.startswith("http") else f"https://{target}"
+
+        # ── Original validation engine ─────────────────────────────────────
         try:
             from validation_engine_web import WebValidationEngine
-            # Load existing findings for targeted validation
             existing = self._load_findings_from_dir(out)
             engine = WebValidationEngine()
             waf_detected = waf.get("waf_detected", False)
@@ -563,17 +585,64 @@ class CanonicalExecutor:
                     f["validation_status"] = "confirmed"
                     f["confidence"] = min(1.0, float(f.get("confidence", 0.5)) + r.confidence_delta)
                     findings.append(f)
-            (out / "swarm_findings.json").write_text(
-                json.dumps({"findings": findings, "validated": len(findings)}, indent=2)
-            )
         except Exception as exc:
-            log.warning("active_testing inline failed: %s", exc)
+            log.warning("active_testing validation engine: %s", exc)
+
+        # ── Extended OWASP gap coverage ────────────────────────────────────
+        from modules.tool_wrappers import (
+            run_file_upload_test, run_oauth_test, run_prototype_pollution_test,
+            run_mfa_bypass_test, run_rate_limit_test, run_deserialization_test,
+            run_websocket_test, run_pii_scanner, run_clickjacking_test,
+        )
+
+        # Load discovered URLs for PII scanning
+        discovered_urls: List[str] = []
+        recon_file = out / "adaptive_recon.json"
+        if recon_file.exists():
+            try:
+                recon_data = json.loads(recon_file.read_text())
+                raw_urls = recon_data.get("urls", [])
+                discovered_urls = [u for u in raw_urls if isinstance(u, str)
+                                   and u.startswith("http") and "?" in u][:50]
+            except Exception:
+                pass
+
+        extended_tests = [
+            ("File Upload Bypass",     lambda: run_file_upload_test(probe_target, headers=auth_headers)),
+            ("OAuth/OIDC Flaws",       lambda: run_oauth_test(probe_target, headers=auth_headers)),
+            ("Prototype Pollution",    lambda: run_prototype_pollution_test(probe_target, headers=auth_headers)),
+            ("MFA/2FA Bypass",         lambda: run_mfa_bypass_test(probe_target, headers=auth_headers)),
+            ("Rate Limiting",          lambda: run_rate_limit_test(probe_target, headers=auth_headers)),
+            ("Deserialization",        lambda: run_deserialization_test(probe_target, headers=auth_headers)),
+            ("WebSocket Security",     lambda: run_websocket_test(probe_target, headers=auth_headers)),
+            ("PII Exposure",           lambda: run_pii_scanner(discovered_urls or [probe_target], headers=auth_headers)),
+            ("Clickjacking",           lambda: run_clickjacking_test(probe_target, headers=auth_headers)),
+        ]
+
+        for test_name, test_fn in extended_tests:
+            try:
+                result = test_fn()
+                if result.success and result.data:
+                    raw_findings = result.data.get("findings", [])
+                    for f in raw_findings:
+                        f.setdefault("source_type", "tool")
+                        f.setdefault("confidence", 0.75)
+                        f.setdefault("validation_status", "confirmed")
+                        findings.append(f)
+                    if raw_findings:
+                        log.info("active_testing [%s]: %d findings", test_name, len(raw_findings))
+            except Exception as exc:
+                log.debug("active_testing [%s] failed: %s", test_name, exc)
+
+        (out / "swarm_findings.json").write_text(
+            json.dumps({"findings": findings, "validated": len(findings)}, indent=2)
+        )
         return findings
 
     def _inline_auth_session(self, target: str, out: Path, waf: dict) -> List[dict]:
         findings = []
+        auth_headers_extra = self._build_auth_headers()
         try:
-            # Detect auth endpoints and test default credentials
             import requests
             from urllib.parse import urljoin
             probe_target = target if target.startswith("http") else f"https://{target}"
@@ -583,7 +652,8 @@ class CanonicalExecutor:
                 ("admin", "admin"), ("admin", "password"), ("admin", "admin123"),
                 ("test", "test"), ("user", "user"), ("root", "root"),
             ]
-            headers = {"Content-Type": "application/json", "Accept": "application/json"}
+            req_headers = {"Content-Type": "application/json", "Accept": "application/json",
+                           **auth_headers_extra}
             for path in auth_patterns:
                 url = urljoin(probe_target, path)
                 try:
@@ -595,7 +665,7 @@ class CanonicalExecutor:
                                 resp = requests.post(
                                     url,
                                     json={"username": username, "password": password},
-                                    headers=headers,
+                                    headers=req_headers,
                                     timeout=5,
                                     verify=False,
                                 )
@@ -616,11 +686,32 @@ class CanonicalExecutor:
                                 pass
                 except Exception:
                     pass
-            (out / "auth_findings.json").write_text(
-                json.dumps({"findings": findings}, indent=2)
-            )
         except Exception as exc:
-            log.warning("auth_session inline failed: %s", exc)
+            log.warning("auth_session default creds failed: %s", exc)
+
+        # ── Rate limit + MFA bypass on auth endpoints ──────────────────────
+        try:
+            from modules.tool_wrappers import run_rate_limit_test, run_mfa_bypass_test
+            rl_result = run_rate_limit_test(probe_target, headers=auth_headers_extra)
+            if rl_result.success:
+                for f in (rl_result.data or {}).get("findings", []):
+                    f.setdefault("source_type", "tool")
+                    f.setdefault("confidence", 0.80)
+                    f.setdefault("validation_status", "confirmed")
+                    findings.append(f)
+            mfa_result = run_mfa_bypass_test(probe_target, headers=auth_headers_extra)
+            if mfa_result.success:
+                for f in (mfa_result.data or {}).get("findings", []):
+                    f.setdefault("source_type", "tool")
+                    f.setdefault("confidence", 0.85)
+                    f.setdefault("validation_status", "confirmed")
+                    findings.append(f)
+        except Exception as exc:
+            log.debug("auth_session extended tests failed: %s", exc)
+
+        (out / "auth_findings.json").write_text(
+            json.dumps({"findings": findings}, indent=2)
+        )
         return findings
 
     def _inline_business_logic(self, target: str, out: Path, waf: dict) -> List[dict]:
@@ -629,18 +720,25 @@ class CanonicalExecutor:
         if sim_file.exists():
             try:
                 raw = json.loads(sim_file.read_text())
+                items = []
                 if isinstance(raw, list) and raw:
-                    log.info("business_logic inline: loaded %d seeded findings from %s", len(raw), sim_file)
-                    return raw
+                    items = raw
                 elif isinstance(raw, dict):
                     items = raw.get("findings", raw.get("simulations", raw.get("attacks", [])))
-                    if items:
-                        log.info("business_logic inline: loaded %d seeded findings from %s", len(items), sim_file)
-                        return items
+                if items:
+                    for item in items:
+                        if isinstance(item, dict) and not item.get("vuln_type") and item.get("attack_type"):
+                            item["vuln_type"] = item["attack_type"]
+                    log.info("business_logic inline: loaded %d seeded findings from %s", len(items), sim_file)
+                    return items
             except Exception:
                 pass
 
         findings = []
+        auth_headers = self._build_auth_headers()
+        probe_target = target if target.startswith("http") else f"https://{target}"
+
+        # ── Original simulation engine ─────────────────────────────────────
         try:
             from attack_simulation_engine import AttackSimulationEngine
             engine = AttackSimulationEngine()
@@ -658,7 +756,42 @@ class CanonicalExecutor:
                     fd.setdefault("source_type", "simulated")
                     findings.append(fd)
         except Exception as exc:
-            log.warning("business_logic inline failed: %s", exc)
+            log.warning("business_logic simulation engine: %s", exc)
+
+        # ── Race Condition Testing ─────────────────────────────────────────
+        try:
+            from modules.tool_wrappers import run_race_condition_test
+            # Test checkout/order endpoints for race conditions
+            race_paths = ["/api/checkout", "/api/order", "/checkout",
+                          "/api/cart/checkout", "/api/purchase"]
+            for path in race_paths:
+                race_url = probe_target.rstrip("/") + path
+                result = run_race_condition_test(
+                    race_url, method="POST", headers=auth_headers,
+                    json_body={"quantity": 1}, concurrency=20,
+                )
+                for f in (result.data or {}).get("findings", []):
+                    f.setdefault("source_type", "tool")
+                    f.setdefault("vuln_type", "Race Condition")
+                    f.setdefault("confidence", 0.75)
+                    findings.append(f)
+        except Exception as exc:
+            log.debug("business_logic race condition tests: %s", exc)
+
+        # ── Payment/Price Tampering ────────────────────────────────────────
+        try:
+            from modules.tool_wrappers import run_payment_tampering_test
+            result = run_payment_tampering_test(probe_target, headers=auth_headers)
+            for f in (result.data or {}).get("findings", []):
+                f.setdefault("source_type", "tool")
+                f.setdefault("vuln_type", "Payment/Price Tampering")
+                f.setdefault("confidence", 0.80)
+                findings.append(f)
+            if (result.data or {}).get("findings"):
+                log.info("business_logic payment tampering: %d findings", len(result.data["findings"]))
+        except Exception as exc:
+            log.debug("business_logic payment tampering: %s", exc)
+
         return findings
 
     def _inline_exploit_validation(self, target: str, out: Path) -> List[dict]:
@@ -768,42 +901,119 @@ class CanonicalExecutor:
         return findings
 
     def _inline_browser_analysis(self, target: str, out: Path) -> List[dict]:
-        """Run headless browser: DOM XSS, JS secrets, dynamic endpoint extraction."""
+        """Run headless browser: DOM XSS, JS secrets, dynamic endpoint extraction.
+        Also runs source map scanner, clickjacking test, and WebSocket security tests."""
         findings: List[dict] = []
+        auth_headers = self._build_auth_headers()
+        probe_url = target if target.startswith("http") else f"https://{target}"
+
+        # ── Headless browser engine ────────────────────────────────────────
+        js_urls: List[str] = []
         try:
             from headless_browser_engine import HeadlessBrowserEngine
-            probe_url = target if target.startswith("http") else f"https://{target}"
             engine = HeadlessBrowserEngine(target=probe_url, output_dir=str(out))
             result = engine.run()
             all_f = result.get("findings", []) + result.get("js_secrets", [])
-            # Write canonical output
-            (out / "browser_findings.json").write_text(
-                json.dumps({
-                    "findings": all_f,
-                    "endpoints": result.get("endpoints", []),
-                    "count": len(all_f),
-                }, indent=2, default=str)
-            )
-            findings = all_f
-            log.info("browser_analysis inline: %d findings for %s", len(findings), target)
+            findings.extend(all_f)
+            # Collect JS URLs for source map scanning
+            js_urls = [u for u in result.get("endpoints", [])
+                       if isinstance(u, str) and u.endswith(".js")]
+            log.info("browser_analysis headless: %d findings for %s", len(all_f), target)
         except Exception as exc:
-            log.warning("browser_analysis inline failed (non-mandatory): %s", exc)
+            log.warning("browser_analysis headless engine failed: %s", exc)
+
+        # Also gather JS URLs from recon output
+        recon_file = out / "adaptive_recon.json"
+        if recon_file.exists():
+            try:
+                recon_data = json.loads(recon_file.read_text())
+                js_urls += [u for u in recon_data.get("urls", [])
+                            if isinstance(u, str) and ".js" in u]
+            except Exception:
+                pass
+
+        # ── Source Map Scanner ─────────────────────────────────────────────
+        try:
+            from modules.tool_wrappers import run_source_map_scanner
+            sm_result = run_source_map_scanner(probe_url, urls=js_urls[:30], headers=auth_headers)
+            for f in (sm_result.data or {}).get("findings", []):
+                f.setdefault("source_type", "tool")
+                f.setdefault("vuln_type", "Exposed JavaScript Source Map")
+                f.setdefault("confidence", 0.90)
+                findings.append(f)
+            if (sm_result.data or {}).get("findings"):
+                log.info("browser_analysis source maps: %d findings", len(sm_result.data["findings"]))
+        except Exception as exc:
+            log.debug("browser_analysis source map scan: %s", exc)
+
+        # ── Clickjacking Test ──────────────────────────────────────────────
+        try:
+            from modules.tool_wrappers import run_clickjacking_test
+            cj_result = run_clickjacking_test(probe_url, headers=auth_headers)
+            for f in (cj_result.data or {}).get("findings", []):
+                f.setdefault("source_type", "tool")
+                f.setdefault("vuln_type", "Clickjacking")
+                f.setdefault("confidence", 0.95)
+                findings.append(f)
+        except Exception as exc:
+            log.debug("browser_analysis clickjacking: %s", exc)
+
+        # ── WebSocket Security ─────────────────────────────────────────────
+        try:
+            from modules.tool_wrappers import run_websocket_test
+            ws_result = run_websocket_test(probe_url, headers=auth_headers)
+            for f in (ws_result.data or {}).get("findings", []):
+                f.setdefault("source_type", "tool")
+                f.setdefault("vuln_type", "WebSocket Security Issue")
+                f.setdefault("confidence", 0.80)
+                findings.append(f)
+        except Exception as exc:
+            log.debug("browser_analysis websocket: %s", exc)
+
+        (out / "browser_findings.json").write_text(
+            json.dumps({
+                "findings": findings,
+                "endpoints": js_urls,
+                "count": len(findings),
+            }, indent=2, default=str)
+        )
         return findings
 
     def _inline_smuggling_test(self, target: str, out: Path) -> List[dict]:
-        """Run HTTP request smuggling detection (CL.TE / TE.CL / TE.TE)."""
+        """Run HTTP request smuggling detection (CL.TE / TE.CL / TE.TE).
+        Tries the SmugglingEngine first; falls back to pure-Python raw-socket implementation."""
         findings: List[dict] = []
+        probe_url = target if target.startswith("http") else f"https://{target}"
+
+        # Primary: dedicated engine
+        engine_succeeded = False
         try:
             from smuggling_engine import SmugglingEngine
-            probe_url = target if target.startswith("http") else f"https://{target}"
             engine = SmugglingEngine(target=probe_url, timeout=8)
-            findings = engine.run()
-            (out / "smuggling_findings.json").write_text(
-                json.dumps({"findings": findings, "count": len(findings)}, indent=2, default=str)
-            )
-            log.info("smuggling_test inline: %d findings for %s", len(findings), target)
+            findings = engine.run() or []
+            engine_succeeded = True
+            log.info("smuggling_test engine: %d findings for %s", len(findings), target)
         except Exception as exc:
-            log.warning("smuggling_test inline failed (non-mandatory): %s", exc)
+            log.debug("smuggling_test engine unavailable: %s — using Python fallback", exc)
+
+        # Fallback: pure-Python raw socket implementation (always runs if engine unavailable)
+        if not engine_succeeded:
+            try:
+                from modules.tool_wrappers import run_smuggling_python
+                result = run_smuggling_python(probe_url, timeout=10)
+                for f in (result.data or {}).get("findings", []):
+                    f.setdefault("source_type", "tool")
+                    f.setdefault("vuln_type", "HTTP Request Smuggling")
+                    f.setdefault("confidence", 0.70)
+                    findings.append(f)
+                log.info("smuggling_test python fallback: %d findings for %s",
+                         len(findings), target)
+            except Exception as exc2:
+                log.warning("smuggling_test python fallback failed: %s", exc2)
+
+        (out / "smuggling_findings.json").write_text(
+            json.dumps({"findings": findings, "count": len(findings)}, indent=2, default=str)
+        )
         return findings
 
     def _inline_oob_check(self, target: str, out: Path) -> List[dict]:
@@ -938,6 +1148,9 @@ class CanonicalExecutor:
     def _emit(self, phase: str, pct: int, msg: str) -> None:
         if self.on_progress:
             try:
+                # Clamp to last emitted value so progress never goes backwards
+                pct = max(pct, self._last_emitted_pct)
+                self._last_emitted_pct = pct
                 self.on_progress(phase, pct, msg)
             except Exception:
                 pass
@@ -955,6 +1168,7 @@ def run_canonical_pipeline(
     on_progress: Optional[Callable] = None,
     skip_phases: Optional[List[str]] = None,
     prior_results_dir: Optional[str] = None,
+    auth_config: Optional[Dict[str, str]] = None,
 ) -> PipelineResult:
     """One-call entry point used by both CLI and Docker worker."""
     executor = CanonicalExecutor(
@@ -963,5 +1177,6 @@ def run_canonical_pipeline(
         on_progress=on_progress,
         skip_phases=skip_phases,
         prior_results_dir=prior_results_dir,
+        auth_config=auth_config,
     )
     return executor.run(target, output_dir)

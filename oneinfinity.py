@@ -782,7 +782,13 @@ def cmd_pipeline_vulnscan(args):
     except Exception:
         pass
 
-    # Load cached recon data
+    # Load cached recon data — unwrap wrapper dicts if needed
+    _wrap_keys = {
+        "alive_hosts": ("hosts", "alive_hosts", "results"),
+        "subdomains":  ("subdomains", "domains", "results"),
+        "urls":        ("urls", "all_urls", "results"),
+        "endpoints":   ("endpoints", "results"),
+    }
     for attr, filename in [("subdomains", "subdomains.json"),
                             ("alive_hosts", "alive_hosts.json"),
                             ("urls", "urls.json"),
@@ -790,7 +796,13 @@ def cmd_pipeline_vulnscan(args):
         fpath = Path(output_dir) / filename
         if fpath.exists():
             try:
-                setattr(p.result, attr, json.loads(fpath.read_text()))
+                data = json.loads(fpath.read_text())
+                if isinstance(data, dict):
+                    for key in _wrap_keys.get(attr, ()):
+                        if key in data and isinstance(data[key], list):
+                            data = data[key]
+                            break
+                setattr(p.result, attr, data)
             except Exception:
                 pass
 
@@ -2805,11 +2817,13 @@ def build_parser():
 
     # ── Swarm Intelligence ────────────────────────────────────────────────────
     si_scan = sub.add_parser("swarm-scan",
-        help="Multi-agent swarm intelligence scan (XSS/SQLi/SSRF/IDOR/Auth/BizLogic/Mobile/API)")
+        help="Multi-agent swarm intelligence scan (14 specialized agents)")
     si_scan.add_argument("target", help="Target domain or URL")
     si_scan.add_argument("--agents", nargs="+",
-        choices=["xss", "sqli", "ssrf", "idor", "auth", "business_logic", "mobile", "api"],
-        default=None, help="Agent types to deploy (default: all 8)")
+        choices=["xss", "sqli", "ssrf", "idor", "auth", "business_logic", "mobile", "api",
+                 "deserialization", "race_condition", "file_upload", "oauth",
+                 "prototype_pollution", "clickjacking"],
+        default=None, help="Agent types to deploy (default: all 14)")
     si_scan.add_argument("--concurrency", type=int, default=6,
         help="Max concurrent agents (default: 6)")
     si_scan.add_argument("--no-simulate", action="store_true",
@@ -2818,6 +2832,10 @@ def build_parser():
         help="Comma-separated endpoint list to focus agents on")
     si_scan.add_argument("--tech", default="",
         help="Comma-separated tech stack hints (e.g. php,mysql,aws)")
+    si_scan.add_argument("--session-cookie", default="", dest="session_cookie",
+        help="Session cookie for authenticated scanning (e.g. session=abc123)")
+    si_scan.add_argument("--bearer-token", default="", dest="bearer_token",
+        help="Bearer token for authenticated scanning (JWT or API key)")
     si_scan.add_argument("--output", "-o", default="",
         help="Write JSON results to this file")
     si_scan.add_argument("--yes", "-y", action="store_true", help="Skip confirmation")
@@ -2914,11 +2932,12 @@ def build_parser():
     # ── GOD MODE ──────────────────────────────────────────────────────────────
     gm = sub.add_parser("god-mode",
         help="GOD MODE: full adaptive cascade — every capability, zero skip")
-    # god-mode run (default action — triggered when no subcommand)
     gm.add_argument("target", nargs="?", default="",
-                    help="Target URL or domain")
-
-    gm_sub = gm.add_subparsers(dest="subcommand")
+                    help="Target URL/domain, or: status / logs / stop")
+    gm.add_argument("scan_id", nargs="?", default="",
+                    help="Session ID for status/logs/stop (default: most recent)")
+    gm.add_argument("--follow", "-f", action="store_true",
+                    help="Follow log output (like tail -f) — used with 'logs'")
     gm.add_argument("--max-time", default="2h", metavar="DURATION",
                     help="Time cap: '30m', '2h', '4h' (default: 2h)")
     gm.add_argument("--max-findings", type=int, default=100, metavar="N",
@@ -2932,23 +2951,6 @@ def build_parser():
     gm.add_argument("--report-fmt", default="markdown",
                     choices=["markdown", "json", "html"],
                     help="Report format (default: markdown)")
-
-    # god-mode status [scan-id]
-    gm_status = gm_sub.add_parser("status", help="Show GOD MODE session state")
-    gm_status.add_argument("scan_id", nargs="?", default="",
-                            help="Session ID (default: most recent)")
-
-    # god-mode logs [--follow]
-    gm_logs = gm_sub.add_parser("logs", help="Tail GOD MODE log output")
-    gm_logs.add_argument("scan_id", nargs="?", default="",
-                          help="Session ID (default: most recent)")
-    gm_logs.add_argument("--follow", "-f", action="store_true",
-                          help="Follow log output (like tail -f)")
-
-    # god-mode stop [scan-id]
-    gm_stop = gm_sub.add_parser("stop", help="Stop a running GOD MODE session")
-    gm_stop.add_argument("scan_id", nargs="?", default="",
-                          help="Session ID (default: most recent)")
 
     return p
 
@@ -4068,17 +4070,6 @@ def cmd_benchmark(args):
 
 
 def main():
-    # Workaround: argparse optional positional before subparsers causes ambiguity.
-    # For `god-mode <subcommand> [scan_id]`, shift argv so the subcommand is
-    # not consumed as the optional `target` positional.
-    _GOD_MODE_SUBS = {"status", "logs", "stop"}
-    _argv = sys.argv[1:]
-    if (len(_argv) >= 2 and _argv[0] == "god-mode"
-            and _argv[1] in _GOD_MODE_SUBS):
-        # Insert empty string for target so subcommand token is not consumed
-        _argv = [_argv[0], ""] + _argv[1:]
-        sys.argv = [sys.argv[0]] + _argv
-
     parser = build_parser()
     args = parser.parse_args()
 
@@ -4288,6 +4279,48 @@ def cmd_browser_scan(args):
         if not findings and not js_secrets:
             info("No browser-side vulnerabilities found.")
 
+        # ── Additional browser security tests ────────────────────────────────
+        extra_findings = []
+        try:
+            from modules.tool_wrappers import run_source_map_scanner, run_clickjacking_test, run_websocket_test
+
+            info("Running source map exposure check...")
+            sm_results = run_source_map_scanner(probe_url)
+            if isinstance(sm_results, list):
+                for f in sm_results:
+                    if isinstance(f, dict) and f.get("severity") not in ("info", None):
+                        warn(f"  [SOURCE-MAP] {f.get('title', f.get('vuln_type', '?'))} @ {f.get('url', probe_url)[:80]}")
+                extra_findings.extend(sm_results)
+            elif isinstance(sm_results, dict) and sm_results.get("findings"):
+                extra_findings.extend(sm_results["findings"])
+
+            info("Running clickjacking test...")
+            cj_results = run_clickjacking_test(probe_url)
+            cj_list = cj_results if isinstance(cj_results, list) else ([cj_results] if isinstance(cj_results, dict) else [])
+            for f in cj_list:
+                if isinstance(f, dict) and f.get("severity") not in ("info", None):
+                    warn(f"  [CLICKJACKING] {f.get('title', '?')} @ {f.get('url', probe_url)[:80]}")
+            extra_findings.extend(cj_list)
+
+            info("Running WebSocket security test...")
+            ws_results = run_websocket_test(probe_url)
+            ws_list = ws_results if isinstance(ws_results, list) else ([ws_results] if isinstance(ws_results, dict) else [])
+            for f in ws_list:
+                if isinstance(f, dict) and f.get("severity") not in ("info", None):
+                    warn(f"  [WEBSOCKET] {f.get('title', '?')} @ {f.get('url', probe_url)[:80]}")
+            extra_findings.extend(ws_list)
+
+            vuln_extra = [f for f in extra_findings if isinstance(f, dict) and f.get("severity") not in ("info", None)]
+            if vuln_extra:
+                ok(f"Additional tests: {len(vuln_extra)} finding(s) from source map/clickjacking/WebSocket checks")
+            else:
+                info("Additional tests: no findings from source map/clickjacking/WebSocket checks")
+
+            result.setdefault("findings", [])
+            result["findings"].extend(extra_findings)
+        except Exception as _extra_e:
+            warn(f"Additional browser tests skipped: {_extra_e}")
+
         if output:
             Path(output).write_text(_json.dumps(result, indent=2, default=str))
             ok(f"Results saved: {output}")
@@ -4342,18 +4375,23 @@ def cmd_smuggling_scan(args):
 # ── Swarm Intelligence handlers ───────────────────────────────────────────────
 
 def cmd_swarm_scan(args):
-    """oneinfinity swarm-scan <target> — deploy all 8 specialized agents in parallel."""
+    """oneinfinity swarm-scan <target> — deploy all 14 specialized agents in parallel."""
     import asyncio
     import json as _json
     from pathlib import Path
 
     target = args.target
+    session_cookie = getattr(args, "session_cookie", "") or ""
+    bearer_token   = getattr(args, "bearer_token", "") or ""
+    has_auth = bool(session_cookie or bearer_token)
+
     if not getattr(args, "yes", False):
         print(f"\n[*] Swarm Intelligence Scan")
         print(f"    Target      : {target}")
-        print(f"    Agents      : {args.agents or 'all 8 (XSS/SQLi/SSRF/IDOR/Auth/BizLogic/Mobile/API)'}")
+        print(f"    Agents      : {args.agents or 'all 14'}")
         print(f"    Concurrency : {args.concurrency}")
         print(f"    Simulation  : {'disabled' if args.no_simulate else 'enabled'}")
+        print(f"    Auth mode   : {'enabled' if has_auth else 'unauthenticated'}")
         ans = input("\n  Proceed? [y/N] ").strip().lower()
         if ans != "y":
             print("  Aborted.")
@@ -4366,9 +4404,18 @@ def cmd_swarm_scan(args):
         print(f"[!] Import error: {e}")
         return
 
+    auth_sessions = []
+    jwt_tokens = []
+    if session_cookie:
+        auth_sessions.append({"cookie": session_cookie})
+    if bearer_token:
+        jwt_tokens.append(bearer_token)
+
     context = {
-        "endpoints":  [ep.strip() for ep in args.endpoints.split(",") if ep.strip()] if args.endpoints else [],
-        "tech_stack": [t.strip() for t in args.tech.split(",") if t.strip()] if args.tech else [],
+        "endpoints":    [ep.strip() for ep in args.endpoints.split(",") if ep.strip()] if args.endpoints else [],
+        "tech_stack":   [t.strip() for t in args.tech.split(",") if t.strip()] if args.tech else [],
+        "auth_sessions": auth_sessions,
+        "jwt_tokens":    jwt_tokens,
     }
 
     agent_types = None
@@ -4474,8 +4521,42 @@ def cmd_simulate_attacks(args):
     print(f"    {strategy.reasoning}")
     print(f"    Agents to deploy: {', '.join(strategy.recommended_agents)}")
 
+    # ── Direct vulnerability tests (race condition + payment tampering) ─────
+    extra_findings = []
+    probe_url = target if target.startswith("http") else f"https://{target}"
+    try:
+        from modules.tool_wrappers import run_race_condition_test, run_payment_tampering_test
+
+        print(f"\n[*] Running race condition test against {probe_url}...")
+        rc_results = run_race_condition_test(probe_url)
+        rc_list = rc_results if isinstance(rc_results, list) else ([rc_results] if isinstance(rc_results, dict) else [])
+        for f in rc_list:
+            if isinstance(f, dict) and f.get("severity") not in ("info", None):
+                sev = f.get("severity", "?").upper()
+                print(f"  [{sev}] Race Condition: {f.get('title', '?')} @ {f.get('url', probe_url)[:80]}")
+        extra_findings.extend(rc_list)
+
+        print(f"[*] Running payment/price tampering test against {probe_url}...")
+        pt_results = run_payment_tampering_test(probe_url)
+        pt_list = pt_results if isinstance(pt_results, list) else ([pt_results] if isinstance(pt_results, dict) else [])
+        for f in pt_list:
+            if isinstance(f, dict) and f.get("severity") not in ("info", None):
+                sev = f.get("severity", "?").upper()
+                print(f"  [{sev}] Payment Tampering: {f.get('title', '?')} @ {f.get('url', probe_url)[:80]}")
+        extra_findings.extend(pt_list)
+
+        vuln_extra = [f for f in extra_findings if isinstance(f, dict) and f.get("severity") not in ("info", None)]
+        if vuln_extra:
+            print(f"\n[+] Additional tests: {len(vuln_extra)} finding(s) from race condition/payment checks")
+        else:
+            print(f"[*] Additional tests: no findings from race condition/payment checks")
+    except Exception as _extra_e:
+        print(f"[!] Additional tests skipped: {_extra_e}")
+
     if args.output:
         out = [r.__dict__ for r in results]
+        if extra_findings:
+            out.extend([f for f in extra_findings if isinstance(f, dict)])
         Path(args.output).write_text(_json.dumps(out, indent=2, default=str))
         print(f"\n[+] Results saved: {args.output}")
 

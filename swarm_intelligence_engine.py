@@ -70,6 +70,13 @@ class AgentType(str, Enum):
     BUSINESS_LOGIC = "business_logic"
     MOBILE         = "mobile"
     API            = "api"
+    # Extended agents covering OWASP gaps
+    DESERIALIZATION     = "deserialization"
+    RACE_CONDITION      = "race_condition"
+    FILE_UPLOAD         = "file_upload"
+    OAUTH               = "oauth"
+    PROTOTYPE_POLLUTION = "prototype_pollution"
+    CLICKJACKING        = "clickjacking"
 
 
 class AgentStatus(str, Enum):
@@ -482,6 +489,12 @@ class SwarmAgent(ABC):
 
     def _finding(self, **kwargs) -> AgentFinding:
         """Shortcut to create a properly-typed AgentFinding."""
+        # Sanitize string fields so raw HTTP responses don't break JSON serialization
+        import re as _re
+        _ctrl = _re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
+        for key in ("evidence", "description", "payload", "title", "remediation"):
+            if key in kwargs and isinstance(kwargs[key], str):
+                kwargs[key] = _ctrl.sub('', kwargs[key])
         return AgentFinding(
             finding_id=f"SI-{uuid.uuid4().hex[:10].upper()}",
             agent_id=self.agent_id,
@@ -604,28 +617,64 @@ class XSSAgent(SwarmAgent):
         hypotheses.sort(key=lambda h: h.priority, reverse=True)
         return hypotheses[:60]
 
+    _DALFOX_AVAILABLE: Optional[bool] = None  # cached at class level
+
+    @classmethod
+    def _has_dalfox(cls) -> bool:
+        if cls._DALFOX_AVAILABLE is None:
+            import shutil
+            cls._DALFOX_AVAILABLE = shutil.which("dalfox") is not None
+        return cls._DALFOX_AVAILABLE
+
     async def execute_tests(self, target, hypotheses, context) -> List[AgentFinding]:
         findings: List[AgentFinding] = []
         canary = f"XSSCANARY{uuid.uuid4().hex[:8]}"
+        seen: set = set()
 
         for h in hypotheses:
             if self._stop_event.is_set():
                 break
+            dedup_key = f"{h.target_node}:{h.context.get('param', '')}:{h.attack_vector}"
+            if dedup_key in seen:
+                await asyncio.sleep(0.02)
+                continue
             try:
-                result = await self._tool(
-                    "dalfox",
-                    url=h.target_node,
-                    param=h.context.get("param", ""),
-                    payload=h.payload,
-                )
-                data  = result.get("data") or {}
-                body  = str(data.get("body", "") if isinstance(data, dict) else data)
-                status = (data.get("status", 0) if isinstance(data, dict) else 0)
+                if self._has_dalfox():
+                    # Preferred: use dalfox when available
+                    result = await self._tool(
+                        "dalfox",
+                        url=h.target_node,
+                        param=h.context.get("param", ""),
+                        payload=h.payload,
+                    )
+                    raw = str(result.get("raw", ""))
+                    dalfox_hit = result.get("success") and "XSS" in raw
+                    data = result.get("data") or {}
+                    body = str(data.get("body", "") if isinstance(data, dict) else data)
+                else:
+                    # Fallback: manual reflection probe via http_request
+                    import urllib.parse
+                    probe_url = h.target_node
+                    param = h.context.get("param", "q")
+                    # Build URL with injected canary parameter
+                    sep = "&" if "?" in probe_url else "?"
+                    probe_url_full = f"{probe_url}{sep}{urllib.parse.quote(param)}={urllib.parse.quote(canary)}"
+                    result = await self._tool("http_request", url=probe_url_full,
+                                              method="GET", timeout=10)
+                    data  = result.get("data") or {}
+                    body  = str(data.get("body", "") if isinstance(data, dict) else data)
+                    # Strip control characters so evidence is JSON-safe
+                    import re as _re
+                    body = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', body)
+                    raw   = body
+                    dalfox_hit = False  # fallback path never counts as dalfox-confirmed
 
                 reflected = canary in body or h.payload in body
-                dalfox_hit = result.get("success") and "XSS" in str(result.get("raw", ""))
+                # dalfox_hit only from actual dalfox output, not page content
+                dalfox_hit = dalfox_hit and self._has_dalfox()
 
                 if reflected or dalfox_hit:
+                    seen.add(dedup_key)
                     findings.append(self._finding(
                         target         = h.target_node,
                         vuln_type      = h.attack_vector.split(":")[0],
@@ -657,9 +706,21 @@ class SQLiAgent(SwarmAgent):
     RELEVANT_LABEL_KEYWORDS = ["login", "search", "filter", "query", "user", "id"]
 
     _ERROR_SIGS = [
-        "sql syntax", "mysql_fetch", "ora-", "sqlite3", "pg_query",
-        "unclosed quotation", "syntax error near", "sqlstate", "mysql_num_rows",
-        "microsoft ole db", "odbc drivers error", "division by zero",
+        # MySQL
+        "sql syntax", "mysql_fetch", "mysql_num_rows", "you have an error in your sql",
+        # PostgreSQL
+        "syntax error at or near", "pg_query", "pg::queryresult", "sqlstate",
+        "unterminated quoted string", "invalid input syntax",
+        # Oracle
+        "ora-", "oracle odbc",
+        # SQLite
+        "sqlite3", "sqlite_error",
+        # MSSQL
+        "microsoft ole db", "odbc drivers error", "unclosed quotation",
+        "incorrect syntax near", "syntax error converting",
+        # Generic
+        "division by zero", "supplied argument is not a valid",
+        "quoted string not properly terminated",
     ]
 
     def __init__(self, **kwargs):
@@ -670,8 +731,12 @@ class SQLiAgent(SwarmAgent):
         endpoints  = context.get("endpoints", [target])
         params_map = context.get("parameters", {})
 
+        _DEFAULT_PARAMS = [
+            "id", "user", "username", "email", "password", "search",
+            "q", "query", "filter", "sort", "name", "token",
+        ]
         for ep in endpoints[:20]:
-            ep_params = params_map.get(ep, ["id", "user", "search", "q", "filter", "sort"])
+            ep_params = params_map.get(ep, _DEFAULT_PARAMS)
             for param in ep_params[:5]:
                 # Error-based
                 hypotheses.append(Hypothesis(
@@ -713,24 +778,134 @@ class SQLiAgent(SwarmAgent):
         hypotheses.sort(key=lambda h: h.priority, reverse=True)
         return hypotheses[:45]
 
+    async def _http_sqli_probe(self, url: str, param: str, payload: str) -> str:
+        """
+        Fast HTTP probe for SQL error signatures:
+        - GET ?param=payload
+        - POST form-encoded param=payload
+        - POST JSON {param: payload}
+        Returns the combined response body (empty string on failure).
+        """
+        import urllib.parse
+        results = []
+        # GET probe
+        sep = "&" if "?" in url else "?"
+        get_url = f"{url}{sep}{urllib.parse.quote(param)}={urllib.parse.quote(payload)}"
+        r = await self._tool("http_request", url=get_url, method="GET", timeout=8)
+        d = r.get("data") or {}
+        results.append(str(d.get("body", "") if isinstance(d, dict) else d))
+
+        # POST form-encoded probe
+        r2 = await self._tool("http_request", url=url, method="POST",
+                               data={param: payload}, timeout=8)
+        d2 = r2.get("data") or {}
+        results.append(str(d2.get("body", "") if isinstance(d2, dict) else d2))
+
+        # POST JSON probe
+        r3 = await self._tool("http_request", url=url, method="POST",
+                               json_body={param: payload}, timeout=8,
+                               headers={"Content-Type": "application/json"})
+        d3 = r3.get("data") or {}
+        results.append(str(d3.get("body", "") if isinstance(d3, dict) else d3))
+
+        import re as _re
+        combined = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', " ".join(results))
+        return combined.lower()
+
     async def execute_tests(self, target, hypotheses, context) -> List[AgentFinding]:
         findings: List[AgentFinding] = []
+        seen_params: set = set()       # endpoint:param already tested
+        sqlmap_tested: set = set()     # endpoint:param already run through sqlmap
+        MAX_SQLMAP_CALLS = 10          # cap total sqlmap invocations per scan
 
         for h in hypotheses:
             if self._stop_event.is_set():
                 break
+            param_key = f"{h.target_node}:{h.context.get('param', '')}"
+            if param_key in seen_params:
+                await asyncio.sleep(0.02)
+                continue
             try:
+                param = h.context.get("param", "id")
+
+                # ── Fast pre-probe: direct HTTP injection check ───────────────
+                # Catches error-based SQLi without waiting for sqlmap
+                probe_body = await self._http_sqli_probe(h.target_node, param, "'")
+                if any(sig in probe_body for sig in self._ERROR_SIGS):
+                    seen_params.add(param_key)
+                    # Extract the relevant SQL error snippet from the combined body
+                    matched_sig = next(s for s in self._ERROR_SIGS if s in probe_body)
+                    err_idx = probe_body.find(matched_sig)
+                    evidence_snippet = probe_body[max(0, err_idx - 20): err_idx + 400].strip()
+                    findings.append(self._finding(
+                        target         = h.target_node,
+                        vuln_type      = "sqli_error_based",
+                        severity       = "critical",
+                        title          = f"SQL Injection (Error-Based) — param: {param}",
+                        description    = (f"SQL error message exposed when injecting into '{param}' "
+                                          f"via GET, POST form, or POST JSON."),
+                        payload        = "'",
+                        evidence       = evidence_snippet,
+                        cvss           = 9.8,
+                        confidence     = 0.92,
+                        reproduced     = True,
+                        chain_potential= ["sqli_to_rce", "sqli_to_data_exfiltration"],
+                        remediation    = "Use parameterised queries / prepared statements exclusively.",
+                    ))
+                    continue  # skip sqlmap for this param, already confirmed
+
+                # Skip sqlmap if we've hit the cap or already tested this endpoint:param
+                if len(sqlmap_tested) >= MAX_SQLMAP_CALLS or param_key in sqlmap_tested:
+                    await asyncio.sleep(0.02)
+                    continue
+                sqlmap_tested.add(param_key)
+
                 t0     = time.time()
                 result = await self._tool("sqlmap",
                     url=h.target_node,
-                    param=h.context.get("param", "id"),
+                    param=param,
                     level=1, risk=1,
+                    timeout=45,   # capped: fast hosts respond in <10s
                 )
                 elapsed = time.time() - t0
                 data    = result.get("data") or {}
-                body    = str(data.get("body", "") if isinstance(data, dict) else data).lower()
+                raw     = str(result.get("raw", ""))
+                # sqlmap returns structured dict with is_vulnerable + raw text output
+                body_lower = (
+                    str(data.get("body", "") if isinstance(data, dict) else data).lower()
+                    + raw.lower()
+                )
 
-                if any(sig in body for sig in self._ERROR_SIGS):
+                vuln_params = (data.get("vulnerable_parameters", [])
+                               if isinstance(data, dict) else [])
+                inj_types   = (data.get("injection_types", [])
+                               if isinstance(data, dict) else [])
+                is_vuln     = (data.get("is_vulnerable", False)
+                               if isinstance(data, dict) else False)
+
+                # Case 1: sqlmap detected vulnerable parameter (structured result)
+                if is_vuln and vuln_params:
+                    seen_params.add(param_key)
+                    inj_label = inj_types[0] if inj_types else "injection"
+                    is_blind = any("time" in t.lower() or "boolean" in t.lower()
+                                   for t in inj_types)
+                    findings.append(self._finding(
+                        target         = h.target_node,
+                        vuln_type      = "sqli_blind_time_based" if is_blind else "sqli_confirmed",
+                        severity       = "critical",
+                        title          = f"SQL Injection ({inj_label}) — param: {vuln_params[0]}",
+                        description    = f"sqlmap confirmed SQL injection on parameter '{vuln_params[0]}'.",
+                        payload        = h.payload,
+                        evidence       = f"Vulnerable params: {vuln_params}; Types: {inj_types}",
+                        cvss           = 9.8,
+                        confidence     = 0.95,
+                        reproduced     = True,
+                        chain_potential= ["sqli_to_rce", "sqli_to_data_exfiltration"],
+                        remediation    = "Use parameterised queries / prepared statements exclusively.",
+                    ))
+                # Case 2: SQL error signatures in raw output
+                elif any(sig in body_lower for sig in self._ERROR_SIGS):
+                    seen_params.add(param_key)
                     findings.append(self._finding(
                         target         = h.target_node,
                         vuln_type      = "sqli_error_based",
@@ -738,14 +913,16 @@ class SQLiAgent(SwarmAgent):
                         title          = f"SQL Injection (Error-Based) — param: {h.context.get('param')}",
                         description    = "SQL error message exposed in response reveals injectable parameter.",
                         payload        = h.payload,
-                        evidence       = body[:400],
+                        evidence       = body_lower[:400],
                         cvss           = 9.8,
                         confidence     = 0.92,
                         reproduced     = True,
                         chain_potential= ["sqli_to_rce", "sqli_to_data_exfiltration"],
                         remediation    = "Use parameterised queries / prepared statements exclusively.",
                     ))
+                # Case 3: time-based blind (response delay)
                 elif elapsed >= 4.8 and h.attack_vector == "sqli_blind_time":
+                    seen_params.add(param_key)
                     findings.append(self._finding(
                         target         = h.target_node,
                         vuln_type      = "sqli_blind_time_based",
@@ -760,7 +937,12 @@ class SQLiAgent(SwarmAgent):
                         chain_potential= ["sqli_to_rce"],
                         remediation    = "Replace dynamic SQL with ORM parameterised queries.",
                     ))
-                elif result.get("success") and "injectable" in str(result.get("raw", "")).lower():
+                # Case 4: sqlmap text output says "is vulnerable" or "vulnerable"
+                elif (result.get("success") and
+                      any(kw in body_lower for kw in
+                          ("is vulnerable", "sqlmap identified", "parameter", "injectable",
+                           "injection", "parameter appears to be"))):
+                    seen_params.add(param_key)
                     findings.append(self._finding(
                         target         = h.target_node,
                         vuln_type      = "sqli_confirmed",
@@ -768,7 +950,7 @@ class SQLiAgent(SwarmAgent):
                         title          = f"SQL Injection Confirmed — param: {h.context.get('param')}",
                         description    = "sqlmap confirmed injection point.",
                         payload        = h.payload,
-                        evidence       = str(result.get("raw", ""))[:500],
+                        evidence       = raw[:500],
                         cvss           = 9.8,
                         confidence     = 0.95,
                         reproduced     = True,
@@ -1518,6 +1700,350 @@ class APISecurityAgent(SwarmAgent):
         return findings
 
 
+class DeserializationAgent(SwarmAgent):
+    """Targets insecure deserialization in Java/.NET/PHP/Python endpoints."""
+
+    RELEVANT_NODE_TYPES     = ["url", "api_endpoint"]
+    RELEVANT_LABEL_KEYWORDS = ["upload", "data", "object", "payload", "body", "import"]
+
+    def __init__(self, **kwargs):
+        super().__init__(AgentType.DESERIALIZATION, **kwargs)
+
+    async def generate_hypotheses(self, target, graph_nodes, context) -> List[Hypothesis]:
+        endpoints = [n["label"] for n in graph_nodes if n.get("label", "").startswith("http")]
+        endpoints = endpoints[:20] or [target]
+        hypotheses = []
+        for ep in endpoints:
+            hypotheses.append(Hypothesis(
+                hypothesis_id = uuid.uuid4().hex[:8],
+                agent_type    = self.agent_type,
+                target_node   = ep,
+                attack_vector = "deserialization_probe",
+                confidence    = self.memory.rate("deserialization_probe", 0.30),
+                payload       = "java_serialized|php_serialized|dotnet_viewstate",
+                context       = {"endpoint": ep},
+                reasoning     = "Endpoint may deserialize untrusted input",
+                priority      = self.memory.rate("deserialization_probe", 0.30),
+            ))
+        return hypotheses
+
+    async def execute_tests(self, target, hypotheses, context) -> List[AgentFinding]:
+        findings: List[AgentFinding] = []
+        try:
+            from modules.tool_wrappers import run_deserialization_test
+            for h in hypotheses[:10]:
+                if self._stop_event.is_set():
+                    break
+                result = run_deserialization_test(h.target_node)
+                for f in (result.data or {}).get("findings", []):
+                    findings.append(self._finding(
+                        target      = h.target_node,
+                        vuln_type   = "insecure_deserialization",
+                        severity    = f.get("severity", "critical"),
+                        title       = f.get("vulnerability", "Insecure Deserialization"),
+                        description = "Endpoint accepts and deserializes untrusted object payloads.",
+                        payload     = h.payload,
+                        evidence    = str(f.get("extra", "")),
+                        cvss        = 9.8,
+                        confidence  = 0.75,
+                        reproduced  = True,
+                        chain_potential = ["deserialization_to_rce"],
+                        remediation = "Use safe deserialization libraries; validate input type/origin before deserializing.",
+                    ))
+                await asyncio.sleep(0.1)
+        except Exception as exc:
+            logger.debug("[%s] deserialization test error: %s", self.name, exc)
+        return findings
+
+
+class RaceConditionAgent(SwarmAgent):
+    """Targets race conditions in concurrent state-changing endpoints."""
+
+    RELEVANT_NODE_TYPES     = ["url", "api_endpoint"]
+    RELEVANT_LABEL_KEYWORDS = ["checkout", "order", "payment", "transfer", "redeem",
+                                "coupon", "purchase", "buy", "cart", "vote"]
+
+    def __init__(self, **kwargs):
+        super().__init__(AgentType.RACE_CONDITION, **kwargs)
+
+    async def generate_hypotheses(self, target, graph_nodes, context) -> List[Hypothesis]:
+        endpoints = [n["label"] for n in graph_nodes
+                     if any(k in n.get("label", "").lower()
+                            for k in self.RELEVANT_LABEL_KEYWORDS)]
+        endpoints = endpoints[:10] or [target]
+        return [
+            Hypothesis(
+                hypothesis_id = uuid.uuid4().hex[:8],
+                agent_type    = self.agent_type,
+                target_node   = ep,
+                attack_vector = "concurrent_requests",
+                confidence    = self.memory.rate("concurrent_requests", 0.35),
+                payload       = '{"quantity":1}',
+                context       = {"endpoint": ep},
+                reasoning     = "State-changing endpoint vulnerable to concurrent execution",
+                priority      = self.memory.rate("concurrent_requests", 0.35),
+            )
+            for ep in endpoints
+        ]
+
+    async def execute_tests(self, target, hypotheses, context) -> List[AgentFinding]:
+        findings: List[AgentFinding] = []
+        try:
+            from modules.tool_wrappers import run_race_condition_test
+            for h in hypotheses[:5]:
+                if self._stop_event.is_set():
+                    break
+                result = run_race_condition_test(h.target_node, method="POST",
+                                                 json_body={"quantity": 1}, concurrency=20)
+                for f in (result.data or {}).get("findings", []):
+                    findings.append(self._finding(
+                        target      = h.target_node,
+                        vuln_type   = "race_condition",
+                        severity    = "high",
+                        title       = "Race Condition — Concurrent Request Exploitation",
+                        description = "Multiple simultaneous requests produced duplicate success responses.",
+                        payload     = h.payload,
+                        evidence    = str(f.get("extra", "")),
+                        cvss        = 7.5,
+                        confidence  = 0.80,
+                        reproduced  = True,
+                        chain_potential = ["race_to_double_spend", "race_to_privilege_escalation"],
+                        remediation = "Use database-level row locking or idempotency keys on state-changing operations.",
+                    ))
+                await asyncio.sleep(0.5)
+        except Exception as exc:
+            logger.debug("[%s] race condition test error: %s", self.name, exc)
+        return findings
+
+
+class FileUploadAgent(SwarmAgent):
+    """Tests file upload endpoints for bypass vulnerabilities."""
+
+    RELEVANT_NODE_TYPES     = ["url", "api_endpoint"]
+    RELEVANT_LABEL_KEYWORDS = ["upload", "file", "avatar", "image", "document",
+                                "attachment", "media", "photo", "profile"]
+
+    def __init__(self, **kwargs):
+        super().__init__(AgentType.FILE_UPLOAD, **kwargs)
+
+    async def generate_hypotheses(self, target, graph_nodes, context) -> List[Hypothesis]:
+        endpoints = [n["label"] for n in graph_nodes
+                     if any(k in n.get("label", "").lower()
+                            for k in self.RELEVANT_LABEL_KEYWORDS)]
+        endpoints = endpoints[:15] or [target]
+        return [
+            Hypothesis(
+                hypothesis_id = uuid.uuid4().hex[:8],
+                agent_type    = self.agent_type,
+                target_node   = ep,
+                attack_vector = "upload_bypass",
+                confidence    = self.memory.rate("upload_bypass", 0.35),
+                payload       = "php.jpg|svg_xss|double_extension",
+                context       = {"endpoint": ep},
+                reasoning     = "Upload endpoint may lack file type validation",
+                priority      = self.memory.rate("upload_bypass", 0.35),
+            )
+            for ep in endpoints
+        ]
+
+    async def execute_tests(self, target, hypotheses, context) -> List[AgentFinding]:
+        findings: List[AgentFinding] = []
+        try:
+            from modules.tool_wrappers import run_file_upload_test
+            for h in hypotheses[:8]:
+                if self._stop_event.is_set():
+                    break
+                # Use the base URL for endpoint discovery
+                from urllib.parse import urlparse
+                parsed = urlparse(h.target_node)
+                base = f"{parsed.scheme}://{parsed.netloc}"
+                result = run_file_upload_test(base)
+                for f in (result.data or {}).get("findings", []):
+                    findings.append(self._finding(
+                        target      = f.get("url", h.target_node),
+                        vuln_type   = "file_upload_bypass",
+                        severity    = "high",
+                        title       = f.get("vulnerability", "Insecure File Upload"),
+                        description = "File upload endpoint accepts dangerous file types.",
+                        payload     = f.get("extra", {}).get("filename", h.payload),
+                        evidence    = str(f.get("extra", "")),
+                        cvss        = 8.8,
+                        confidence  = 0.85,
+                        reproduced  = True,
+                        chain_potential = ["upload_to_rce", "upload_to_stored_xss"],
+                        remediation = "Validate file type by magic bytes; use randomized names; serve from CDN outside app context.",
+                    ))
+                await asyncio.sleep(0.2)
+        except Exception as exc:
+            logger.debug("[%s] file upload test error: %s", self.name, exc)
+        return findings
+
+
+class OAuthAgent(SwarmAgent):
+    """Tests OAuth/OIDC flows for state CSRF, open redirect_uri, implicit flow."""
+
+    RELEVANT_NODE_TYPES     = ["url"]
+    RELEVANT_LABEL_KEYWORDS = ["oauth", "auth", "login", "openid", "connect", "sso",
+                                "authorize", "callback", "token"]
+
+    def __init__(self, **kwargs):
+        super().__init__(AgentType.OAUTH, **kwargs)
+
+    async def generate_hypotheses(self, target, graph_nodes, context) -> List[Hypothesis]:
+        from urllib.parse import urlparse
+        parsed = urlparse(target if "://" in target else f"https://{target}")
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        return [Hypothesis(
+            hypothesis_id = uuid.uuid4().hex[:8],
+            agent_type    = self.agent_type,
+            target_node   = base,
+            attack_vector = "oauth_flaw",
+            confidence    = self.memory.rate("oauth_flaw", 0.32),
+            payload       = "missing_state|open_redirect_uri|implicit_flow",
+            context       = {"target": base},
+            reasoning     = "OAuth endpoints may lack state validation or allow open redirects",
+            priority      = self.memory.rate("oauth_flaw", 0.32),
+        )]
+
+    async def execute_tests(self, target, hypotheses, context) -> List[AgentFinding]:
+        findings: List[AgentFinding] = []
+        try:
+            from modules.tool_wrappers import run_oauth_test
+            from urllib.parse import urlparse
+            parsed = urlparse(target if "://" in target else f"https://{target}")
+            base = f"{parsed.scheme}://{parsed.netloc}"
+            result = run_oauth_test(base)
+            for f in (result.data or {}).get("findings", []):
+                sev = f.get("severity", "medium")
+                findings.append(self._finding(
+                    target      = f.get("url", base),
+                    vuln_type   = "oauth_flaw",
+                    severity    = sev,
+                    title       = f.get("vulnerability", "OAuth/OIDC Vulnerability"),
+                    description = "OAuth flow has exploitable security misconfiguration.",
+                    payload     = f.get("parameter", ""),
+                    evidence    = str(f.get("extra", "")),
+                    cvss        = 8.1 if sev == "high" else 5.3,
+                    confidence  = 0.82,
+                    reproduced  = True,
+                    chain_potential = ["oauth_to_account_takeover", "oauth_csrf"],
+                    remediation = "Enforce state parameter; whitelist redirect_uri; disable implicit flow.",
+                ))
+        except Exception as exc:
+            logger.debug("[%s] OAuth test error: %s", self.name, exc)
+        return findings
+
+
+class PrototypePollutionAgent(SwarmAgent):
+    """Tests for prototype pollution via query params and JSON body."""
+
+    RELEVANT_NODE_TYPES     = ["url", "api_endpoint"]
+    RELEVANT_LABEL_KEYWORDS = ["api", "json", "config", "settings", "merge", "extend", "assign"]
+
+    def __init__(self, **kwargs):
+        super().__init__(AgentType.PROTOTYPE_POLLUTION, **kwargs)
+
+    async def generate_hypotheses(self, target, graph_nodes, context) -> List[Hypothesis]:
+        endpoints = context.get("endpoints", [target])[:20]
+        return [
+            Hypothesis(
+                hypothesis_id = uuid.uuid4().hex[:8],
+                agent_type    = self.agent_type,
+                target_node   = ep,
+                attack_vector = "prototype_pollution",
+                confidence    = self.memory.rate("prototype_pollution", 0.28),
+                payload       = "__proto__[polluted]=pp_canary_1337",
+                context       = {"endpoint": ep},
+                reasoning     = "JavaScript endpoint may be vulnerable to prototype pollution",
+                priority      = self.memory.rate("prototype_pollution", 0.28),
+            )
+            for ep in endpoints
+        ]
+
+    async def execute_tests(self, target, hypotheses, context) -> List[AgentFinding]:
+        findings: List[AgentFinding] = []
+        try:
+            from modules.tool_wrappers import run_prototype_pollution_test
+            for h in hypotheses[:15]:
+                if self._stop_event.is_set():
+                    break
+                result = run_prototype_pollution_test(h.target_node)
+                for f in (result.data or {}).get("findings", []):
+                    findings.append(self._finding(
+                        target      = h.target_node,
+                        vuln_type   = "prototype_pollution",
+                        severity    = "high",
+                        title       = f.get("vulnerability", "Prototype Pollution"),
+                        description = "Application reflects prototype pollution canary — server-side or client-side JS vulnerable.",
+                        payload     = h.payload,
+                        evidence    = str(f.get("extra", "")),
+                        cvss        = 7.4,
+                        confidence  = 0.85,
+                        reproduced  = True,
+                        chain_potential = ["prototype_pollution_to_rce", "prototype_pollution_to_auth_bypass"],
+                        remediation = "Use Object.create(null) for parsed JSON; freeze Object.prototype; sanitize __proto__.",
+                    ))
+                await asyncio.sleep(0.1)
+        except Exception as exc:
+            logger.debug("[%s] prototype pollution test error: %s", self.name, exc)
+        return findings
+
+
+class ClickjackingAgent(SwarmAgent):
+    """Tests for clickjacking — missing X-Frame-Options and CSP frame-ancestors."""
+
+    RELEVANT_NODE_TYPES     = ["url"]
+    RELEVANT_LABEL_KEYWORDS = ["login", "account", "profile", "settings", "transfer", "payment"]
+
+    def __init__(self, **kwargs):
+        super().__init__(AgentType.CLICKJACKING, **kwargs)
+
+    async def generate_hypotheses(self, target, graph_nodes, context) -> List[Hypothesis]:
+        endpoints = context.get("endpoints", [target])[:10]
+        return [
+            Hypothesis(
+                hypothesis_id = uuid.uuid4().hex[:8],
+                agent_type    = self.agent_type,
+                target_node   = ep,
+                attack_vector = "clickjacking",
+                confidence    = self.memory.rate("clickjacking", 0.40),
+                payload       = "iframe_embed_test",
+                context       = {"endpoint": ep},
+                reasoning     = "Sensitive page may lack frame protection headers",
+                priority      = self.memory.rate("clickjacking", 0.40),
+            )
+            for ep in endpoints
+        ]
+
+    async def execute_tests(self, target, hypotheses, context) -> List[AgentFinding]:
+        findings: List[AgentFinding] = []
+        try:
+            from modules.tool_wrappers import run_clickjacking_test
+            for h in hypotheses[:10]:
+                if self._stop_event.is_set():
+                    break
+                result = run_clickjacking_test(h.target_node)
+                for f in (result.data or {}).get("findings", []):
+                    findings.append(self._finding(
+                        target      = h.target_node,
+                        vuln_type   = "clickjacking",
+                        severity    = "medium",
+                        title       = f.get("vulnerability", "Clickjacking"),
+                        description = "Page can be embedded in cross-origin iframe enabling UI redress attacks.",
+                        payload     = h.payload,
+                        evidence    = str(f.get("extra", "")),
+                        cvss        = 4.3,
+                        confidence  = 0.95,
+                        reproduced  = True,
+                        chain_potential = ["clickjacking_to_csrf", "clickjacking_to_credential_steal"],
+                        remediation = "Set X-Frame-Options: DENY or Content-Security-Policy: frame-ancestors 'self'.",
+                    ))
+                await asyncio.sleep(0.05)
+        except Exception as exc:
+            logger.debug("[%s] clickjacking test error: %s", self.name, exc)
+        return findings
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # FACTORY
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1531,6 +2057,13 @@ _AGENT_CLASSES: Dict[AgentType, type] = {
     AgentType.BUSINESS_LOGIC: BusinessLogicAgent,
     AgentType.MOBILE:         MobileSecurityAgent,
     AgentType.API:            APISecurityAgent,
+    # Extended agents
+    AgentType.DESERIALIZATION:     DeserializationAgent,
+    AgentType.RACE_CONDITION:      RaceConditionAgent,
+    AgentType.FILE_UPLOAD:         FileUploadAgent,
+    AgentType.OAUTH:               OAuthAgent,
+    AgentType.PROTOTYPE_POLLUTION: PrototypePollutionAgent,
+    AgentType.CLICKJACKING:        ClickjackingAgent,
 }
 
 

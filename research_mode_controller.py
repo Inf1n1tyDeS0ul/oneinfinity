@@ -20,12 +20,15 @@ multi-agent architecture, and payload mutation engine.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+
+log = logging.getLogger("oneinfinity.research")
 
 from path_manager import research_db_path, resolve_output_dir
 
@@ -1086,12 +1089,14 @@ class ResearchModeController:
         return time.time() - self._start_time >= self.timeout
 
     def _log(self, msg: str, level: str = "info"):
-        colors = {"info": "\033[0;36m[*]\033[0m",
-                  "ok":   "\033[0;32m[+]\033[0m",
-                  "warn": "\033[0;33m[!]\033[0m",
-                  "error":"\033[0;31m[!]\033[0m"}
-        prefix = colors.get(level, "[*]")
-        print(f"  {prefix} {msg}", flush=True)
+        if level in ("warn", "warning"):
+            log.warning("[Research] %s", msg)
+        elif level == "error":
+            log.error("[Research] %s", msg)
+        elif level == "ok":
+            log.info("[Research] [+] %s", msg)
+        else:
+            log.info("[Research] %s", msg)
 
     def _finalize(self):
         """Write session summary and all discoveries to disk."""

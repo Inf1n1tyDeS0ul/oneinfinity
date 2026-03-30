@@ -75,6 +75,7 @@ class GodModeSession:
     terminated_by: Optional[str] = None            # "convergence"|"time"|"cap"|"stop"|"error"
     log_path: str = ""
     background: bool = False
+    auth_config: dict = field(default_factory=dict)  # session_cookie/bearer_token/auth_header
 
     def elapsed(self) -> float:
         return time.time() - self.start_time
@@ -303,14 +304,17 @@ class FullScanMission(Mission):
     # TODO: pass recon intel to pipeline when run_canonical_pipeline supports seed_recon param
     """
 
-    def __init__(self, foundation: FoundationMission):
+    def __init__(self, foundation: FoundationMission, auth_config: dict = None):
         super().__init__("full_scan")
         self._foundation = foundation
+        self._auth_config = auth_config or {}
 
     def _run(self, session: GodModeSession) -> None:
         from pipeline.executor import run_canonical_pipeline
 
         log.info("[GOD MODE] FullScanMission: starting canonical pipeline for %s", session.target)
+        if self._auth_config and any(self._auth_config.values()):
+            log.info("[GOD MODE] FullScanMission: authenticated scan mode active")
 
         # Output dir: ~/.oneinfinity/<scan_id>/full_scan/
         out_dir = str(GOD_MODE_DIR / session.scan_id / "full_scan")
@@ -324,12 +328,38 @@ class FullScanMission(Mission):
             output_dir=out_dir,
             mode="subprocess",
             on_progress=_on_progress,
+            auth_config=self._auth_config if self._auth_config else None,
         )
 
         # Update session finding count
         new_count = len(result.findings) if result and result.findings else 0
         session.finding_count += new_count
         session.phases_complete.append("full_scan")
+
+        # Push findings into the ingestion engine so ReportMission can read them
+        if result and result.findings:
+            try:
+                from result_ingestion_engine import get_ingestion_engine, RawResult
+                bus = get_ingestion_engine()
+                for f in result.findings:
+                    fd = f if isinstance(f, dict) else (f.__dict__ if hasattr(f, "__dict__") else {})
+                    if fd:
+                        bus.ingest(RawResult(scan_id=session.scan_id, source="god-mode-full-scan", raw=fd))
+            except Exception as exc:
+                log.warning("[GOD MODE] FullScanMission ingestion bus publish failed: %s", exc)
+
+        # Fire NEW_VULNERABILITY events so ResearchMission can unlock
+        if result and result.findings:
+            try:
+                from event_bus import get_bus, EventType
+                bus = get_bus()
+                for f in result.findings:
+                    fd = f if isinstance(f, dict) else {}
+                    if fd:
+                        bus.publish(EventType.NEW_VULNERABILITY, fd, source="god-mode-full-scan")
+            except Exception as exc:
+                log.warning("[GOD MODE] FullScanMission event bus publish failed: %s", exc)
+
         log.info("[GOD MODE] FullScanMission complete — %d findings", new_count)
         self._result = {"findings": new_count, "output_dir": out_dir}
 
@@ -515,9 +545,17 @@ class ReportMission(Mission):
 
         # Step 4: learn
         try:
+            import types
             from learning import LearningSystem
             ls = LearningSystem()
-            ls.record_scan_result(session.target, validated, tools_used=[])
+            task_result = types.SimpleNamespace(
+                target=session.target,
+                findings=validated,
+                tools_used=[],
+                success=True,
+                duration=session.elapsed(),
+            )
+            ls.record_result(task_result)
             ls.close()
             log.info("[GOD MODE] Report: learning system updated")
         except Exception as exc:
@@ -738,6 +776,7 @@ class GodModeConductor:
         no_swarm: bool = False,
         no_research: bool = False,
         report_fmt: str = "markdown",
+        auth_config: dict = None,
     ) -> GodModeSession:
         """
         Run GOD MODE against target.
@@ -754,6 +793,7 @@ class GodModeConductor:
             max_findings=max_findings,
             log_path=log_path,
             background=background,
+            auth_config=auth_config or {},
         )
         self._session = session
         self._state_file = GodModeStateFile(scan_id)
@@ -813,7 +853,7 @@ class GodModeConductor:
         """Stages 2-5: pipeline + event missions + convergence + report."""
 
         # ── Build mission list ─────────────────────────────────────────────
-        full_scan = FullScanMission(foundation)
+        full_scan = FullScanMission(foundation, auth_config=session.auth_config)
         research = ResearchMission(self._convergence) if not no_research else None
         swarm = SwarmMission() if not no_swarm else None
         chains = ChainsMission()
@@ -826,6 +866,24 @@ class GodModeConductor:
         print(f"\n[*] Stage 2: Full scan + event bus active")
         self._subscribe_to_event_bus()
         full_scan.start(session)
+
+        # Fire NEW_ENDPOINT events from Foundation recon so SwarmMission can unlock
+        try:
+            from event_bus import get_bus, EventType
+            bus = get_bus()
+            recon = foundation.recon
+            if recon:
+                urls = list(getattr(recon, "all_urls", []) or [])
+                api_map = getattr(recon, "api_map", None)
+                if api_map:
+                    urls += list(getattr(api_map, "endpoints", []) or [])
+                for url in urls[:EVENT_UNLOCK_ENDPOINT_THRESHOLD + 5]:
+                    bus.publish(EventType.NEW_ENDPOINT, {"url": str(url)}, source="god-mode-foundation")
+                if urls:
+                    log.info("[GOD MODE] Fired %d NEW_ENDPOINT events from Foundation recon", min(len(urls), EVENT_UNLOCK_ENDPOINT_THRESHOLD + 5))
+        except Exception as exc:
+            log.warning("[GOD MODE] Foundation endpoint event fire failed: %s", exc)
+
         self._update_session_missions()
 
         # ── Stage 3 is automatic (event-driven unlocking from _on_vuln/_on_endpoint)

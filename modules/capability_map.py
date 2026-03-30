@@ -50,6 +50,20 @@ class Vuln:
     HOST_HEADER    = "Host Header Injection"
     CACHE_POISON   = "Cache Poisoning"
     API_EXPOSURE   = "Undocumented API Endpoint"
+    # Extended vuln classes — added to close OWASP Top 10 gaps
+    DESERIALIZATION     = "Insecure Deserialization"
+    RACE_CONDITION      = "Race Condition"
+    FILE_UPLOAD         = "Insecure File Upload"
+    OAUTH_FLAW          = "OAuth/OIDC Vulnerability"
+    PROTOTYPE_POLLUTION = "Prototype Pollution"
+    WEBSOCKET_VULN      = "WebSocket Security Issue"
+    MFA_BYPASS          = "MFA/2FA Bypass"
+    RATE_LIMIT_BYPASS   = "Missing Rate Limiting"
+    PII_EXPOSURE        = "PII Exposure in API Response"
+    PAYMENT_TAMPERING   = "Payment/Price Tampering"
+    CLICKJACKING        = "Clickjacking"
+    DOM_XSS             = "DOM-based XSS"
+    SOURCE_MAP_EXPOSURE = "Exposed JavaScript Source Map"
 
 
 # ── Data types ────────────────────────────────────────────────────────────────

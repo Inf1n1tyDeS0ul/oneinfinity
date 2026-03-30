@@ -137,6 +137,54 @@ AGENT_CATALOGUE = [
         "cvss_range":  "5.3 – 8.8",
         "color":       "#3b82f6",
     },
+    {
+        "type":        "deserialization",
+        "name":        "Deserialization Agent",
+        "description": "Detects insecure deserialization via Java magic bytes, PHP serialize() payloads, and .NET ViewState probes.",
+        "techniques":  ["Java gadget chain detection", "PHP unserialize probes", ".NET ViewState tampering"],
+        "cvss_range":  "8.1 – 9.8",
+        "color":       "#a855f7",
+    },
+    {
+        "type":        "race_condition",
+        "name":        "Race Condition Agent",
+        "description": "Identifies race conditions via concurrent request bursting on state-changing endpoints.",
+        "techniques":  ["25-thread concurrent request burst", "Duplicate success response detection"],
+        "cvss_range":  "7.5 – 9.0",
+        "color":       "#f43f5e",
+    },
+    {
+        "type":        "file_upload",
+        "name":        "File Upload Agent",
+        "description": "Tests insecure file upload endpoints for PHP-in-JPEG, double extension, SVG XSS, and JSP bypass.",
+        "techniques":  ["PHP header injection in JPEG", "Double extension (.php.jpg)", "SVG XSS payload", "JSP in GIF magic bytes"],
+        "cvss_range":  "8.8 – 10.0",
+        "color":       "#fb923c",
+    },
+    {
+        "type":        "oauth",
+        "name":        "OAuth/OIDC Agent",
+        "description": "Tests OAuth 2.0 and OIDC flows for missing state parameter, open redirect_uri, and implicit flow abuse.",
+        "techniques":  ["Missing CSRF state", "Open redirect_uri validation", "Implicit flow detection"],
+        "cvss_range":  "7.5 – 9.3",
+        "color":       "#22d3ee",
+    },
+    {
+        "type":        "prototype_pollution",
+        "name":        "Prototype Pollution Agent",
+        "description": "Detects JavaScript prototype pollution via __proto__ and constructor.prototype injection in GET/POST.",
+        "techniques":  ["GET param __proto__[polluted]", "JSON POST constructor[prototype]", "Response reflection check"],
+        "cvss_range":  "7.0 – 8.5",
+        "color":       "#84cc16",
+    },
+    {
+        "type":        "clickjacking",
+        "name":        "Clickjacking Agent",
+        "description": "Checks for missing X-Frame-Options and CSP frame-ancestors headers enabling UI redress attacks.",
+        "techniques":  ["X-Frame-Options header check", "CSP frame-ancestors check", "Frameable response detection"],
+        "cvss_range":  "5.4 – 7.4",
+        "color":       "#94a3b8",
+    },
 ]
 
 # ── Routers ───────────────────────────────────────────────────────────────────
@@ -146,7 +194,7 @@ router = APIRouter(prefix="/api/swarm-intel", tags=["swarm-intelligence"])
 
 @router.get("/agents")
 async def list_agents():
-    """Return descriptions of all 8 swarm agent types."""
+    """Return descriptions of all 14 swarm agent types."""
     return {"agents": AGENT_CATALOGUE, "total": len(AGENT_CATALOGUE)}
 
 
@@ -230,6 +278,86 @@ async def stop_swarm_scan(session_id: str):
     return {"status": "stopped"}
 
 
+async def _pre_scan_recon(target: str, session: dict) -> list:
+    """
+    Quick pre-scan: normalise target → URL, probe common paths, return endpoint list.
+    Returns a list of live URL strings to seed context["endpoints"].
+    """
+    import urllib.parse
+
+    # Normalise target to a base URL
+    if not target.startswith(("http://", "https://")):
+        base_url = f"https://{target}"
+    else:
+        base_url = target.rstrip("/")
+
+    session["log"].append(f"[*] Pre-scan recon: probing {base_url}")
+
+    # Common paths to probe
+    probe_paths = [
+        "/", "/login", "/register", "/signup", "/search", "/api", "/api/v1",
+        "/admin", "/dashboard", "/profile", "/user", "/users", "/account",
+        "/forgot-password", "/reset-password", "/contact", "/about",
+        "/products", "/items", "/orders", "/cart", "/checkout",
+        "/graphql", "/api/graphql", "/swagger", "/api-docs",
+    ]
+
+    live_endpoints: list = []
+    try:
+        import asyncio
+        import aiohttp
+        timeout = aiohttp.ClientTimeout(total=5, connect=3)
+        connector = aiohttp.TCPConnector(ssl=False, limit=10)
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as http:
+            async def probe(path: str):
+                url = f"{base_url}{path}"
+                try:
+                    async with http.get(url, allow_redirects=True,
+                                        headers={"User-Agent": "Mozilla/5.0"}) as resp:
+                        if resp.status < 500:
+                            return url
+                except Exception:
+                    pass
+                return None
+
+            tasks = [probe(p) for p in probe_paths]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            live_endpoints = [r for r in results if isinstance(r, str)]
+    except ImportError:
+        # aiohttp not available — fall back to sync requests via executor
+        import asyncio
+        loop = asyncio.get_event_loop()
+
+        def _sync_probe(path: str):
+            import urllib.request
+            import ssl
+            url = f"{base_url}{path}"
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                resp = urllib.request.urlopen(req, timeout=5, context=ctx)
+                if resp.status < 500:
+                    return url
+            except Exception:
+                pass
+            return None
+
+        results = await asyncio.gather(
+            *[loop.run_in_executor(None, _sync_probe, p) for p in probe_paths[:8]],
+            return_exceptions=True,
+        )
+        live_endpoints = [r for r in results if isinstance(r, str)]
+
+    # Always include the base URL itself
+    if base_url not in live_endpoints:
+        live_endpoints.insert(0, base_url)
+
+    session["log"].append(f"[+] Pre-scan discovered {len(live_endpoints)} live endpoints")
+    return live_endpoints
+
+
 async def _run_swarm_scan_bg(session_id: str, req: SwarmScanRequest):
     """Background task: run the swarm coordinator and populate the session dict."""
     session = SWARM_SESSIONS[session_id]
@@ -248,8 +376,14 @@ async def _run_swarm_scan_bg(session_id: str, req: SwarmScanRequest):
             except ValueError:
                 pass
 
+        # ── Pre-scan recon: discover live endpoints if none provided ──────────
+        endpoints = list(req.endpoints)
+        if not endpoints:
+            session["progress"] = 8
+            endpoints = await _pre_scan_recon(req.target, session)
+
         context = {
-            "endpoints":     req.endpoints,
+            "endpoints":     endpoints,
             "tech_stack":    req.tech_stack,
             "auth_sessions": req.auth_sessions,
             "jwt_tokens":    req.jwt_tokens,

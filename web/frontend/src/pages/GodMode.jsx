@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Zap, Play, Square, RefreshCw, Terminal, Clock,
   ShieldAlert, Target, CheckCircle2, AlertTriangle,
   ChevronDown, ChevronRight, Settings2, Activity,
-  Flame, Brain, Users, Search, FileText
+  Flame, Brain, Users, Search, FileText, Trash2, ExternalLink
 } from 'lucide-react'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
@@ -11,16 +12,25 @@ import clsx from 'clsx'
 
 const MISSION_ICONS = {
   foundation: Search,
-  fullscan:   ShieldAlert,
+  full_scan:  ShieldAlert,
   research:   Brain,
   swarm:      Users,
   chains:     Zap,
   report:     FileText,
 }
 
+const MISSION_DISPLAY_NAMES = {
+  foundation: 'Foundation',
+  full_scan:  'Full Scan',
+  research:   'Research',
+  swarm:      'Swarm',
+  chains:     'Chains',
+  report:     'Report',
+}
+
 const MISSION_STATUS_STYLE = {
   running:   'text-cyan-400 badge-running',
-  complete:  'text-emerald-400 badge-completed',
+  done:      'text-emerald-400 badge-completed',
   failed:    'text-red-400 badge-failed',
   pending:   'text-slate-500 badge-queued',
   skipped:   'text-slate-600 badge-info',
@@ -47,6 +57,7 @@ function formatDuration(secs) {
 
 export default function GodMode() {
   const { addNotification } = useStore()
+  const navigate = useNavigate()
 
   // Launch form
   const [target, setTarget]           = useState('')
@@ -57,6 +68,10 @@ export default function GodMode() {
   const [reportFmt, setReportFmt]     = useState('markdown')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [launching, setLaunching]     = useState(false)
+  // Authenticated scanning
+  const [showAuth, setShowAuth]       = useState(false)
+  const [authType, setAuthType]       = useState('none')   // none | cookie | bearer | header
+  const [authValue, setAuthValue]     = useState('')
 
   // Active session
   const [session, setSession]         = useState(null)
@@ -100,26 +115,32 @@ export default function GodMode() {
     finally { setLogsLoading(false) }
   }
 
+  // On mount: load latest session + session list
   useEffect(() => {
     refresh()
     refreshSessions()
-    pollRef.current = setInterval(() => {
-      if (session && !session.terminated_by) refresh()
-    }, 5000)
-    return () => clearInterval(pollRef.current)
   }, [])
 
+  // Status polling: runs every 5s while a session is active, clears when done
   useEffect(() => {
+    clearInterval(pollRef.current)
     if (session && !session.terminated_by) {
-      clearInterval(pollRef.current)
       pollRef.current = setInterval(() => refresh(), 5000)
     }
     return () => clearInterval(pollRef.current)
   }, [session?.terminated_by, selectedSessionId])
 
+  // Log refresh: on tab switch + auto-refresh every 8s when scan is running
   useEffect(() => {
     if (tab === 'logs' && selectedSessionId) refreshLogs(selectedSessionId)
   }, [tab, selectedSessionId])
+
+  useEffect(() => {
+    const active = !!(session && !session.terminated_by)
+    if (tab !== 'logs' || !selectedSessionId || !active) return
+    const id = setInterval(() => refreshLogs(selectedSessionId), 8000)
+    return () => clearInterval(id)
+  }, [tab, selectedSessionId, session?.terminated_by])
 
   useEffect(() => {
     logBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -130,6 +151,14 @@ export default function GodMode() {
     if (!target.trim()) return
     setLaunching(true)
     try {
+      const authPayload = {}
+      if (authType === 'cookie' && authValue.trim()) {
+        authPayload.session_cookie = authValue.trim()
+      } else if (authType === 'bearer' && authValue.trim()) {
+        authPayload.bearer_token = authValue.trim()
+      } else if (authType === 'header' && authValue.trim()) {
+        authPayload.auth_header = authValue.trim()
+      }
       const r = await endpoints.godModeRun({
         target: target.trim(),
         max_time: maxTime,
@@ -137,6 +166,7 @@ export default function GodMode() {
         no_swarm: noSwarm,
         no_research: noResearch,
         report_fmt: reportFmt,
+        ...authPayload,
       })
       addNotification('GOD MODE launched — Stage 1 starting', 'success')
       setSession(null)
@@ -165,12 +195,29 @@ export default function GodMode() {
       setStopping(false) }
   }
 
+  const handleDelete = async (scanId, e) => {
+    e.stopPropagation()
+    if (!window.confirm('Delete this session state and logs?')) return
+    try {
+      await endpoints.godModeDelete(scanId)
+      addNotification('Session deleted', 'success')
+      if (selectedSessionId === scanId) {
+        setSession(null)
+        setSelectedSessionId(null)
+      }
+      refreshSessions()
+    } catch (e) {
+      addNotification('Delete failed: ' + e.message, 'error')
+    }
+  }
+
   // ── Derived ──────────────────────────────────────────────────────────────────
-  const isRunning = session && !session.terminated_by
-  const missions  = Object.entries(session?.missions || {})
-  const elapsed   = session?.elapsed_seconds ?? 0
-  const maxSec    = session?.max_time_sec ?? 7200
-  const progress  = Math.min(100, (elapsed / maxSec) * 100)
+  const isRunning  = session && !session.terminated_by
+  const missions   = Object.entries(session?.missions || {})
+  const elapsed    = session?.elapsed_seconds ?? 0
+  const maxSec     = session?.max_time_sec ?? 7200
+  // Show 100% progress when scan is done, actual % while running
+  const progress   = session?.terminated_by ? 100 : Math.min(100, (elapsed / maxSec) * 100)
   const termReason = session?.terminated_by ? TERM_REASONS[session.terminated_by] : null
 
   const logLevelColor = (line) => {
@@ -228,14 +275,20 @@ export default function GodMode() {
       {session?.terminated_by && termReason && (
         <div className="card border-emerald-500/20 bg-emerald-500/5 p-4 flex items-center gap-3">
           <termReason.icon size={16} className={termReason.color} />
-          <div>
+          <div className="flex-1">
             <div className={clsx('text-sm font-semibold', termReason.color)}>
               Session Complete — {termReason.label}
             </div>
             <div className="text-xs text-slate-500 mt-0.5">
-              {session.target} · {formatDuration(elapsed)} · {session.finding_count} findings
+              {session.target} · Completed in {formatDuration(elapsed)} · {session.finding_count} findings
             </div>
           </div>
+          <button
+            className="btn-secondary flex-shrink-0"
+            onClick={() => navigate('/results')}
+          >
+            <ExternalLink size={12} />View Findings
+          </button>
         </div>
       )}
 
@@ -303,6 +356,57 @@ export default function GodMode() {
                 </div>
               )}
 
+              {/* Authentication — optional; unlocks authenticated scan coverage */}
+              <button
+                className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors"
+                onClick={() => setShowAuth(!showAuth)}
+              >
+                <ShieldAlert size={12} />
+                Authentication <span className="text-slate-600">(optional — for deeper coverage)</span>
+                {showAuth ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              </button>
+
+              {showAuth && (
+                <div className="flex flex-col gap-3 p-3 rounded-lg bg-bg-secondary border border-cyan-500/20">
+                  <div className="text-xs text-cyan-400/80">
+                    Providing credentials enables authenticated scanning: IDOR, privilege escalation, post-login business logic, and PII exposure in authenticated API responses.
+                  </div>
+                  <div>
+                    <label className="label">Auth Type</label>
+                    <select className="select" value={authType} onChange={e => { setAuthType(e.target.value); setAuthValue('') }}>
+                      <option value="none">None (unauthenticated scan)</option>
+                      <option value="cookie">Session Cookie</option>
+                      <option value="bearer">Bearer Token (JWT)</option>
+                      <option value="header">Raw Auth Header</option>
+                    </select>
+                  </div>
+                  {authType !== 'none' && (
+                    <div>
+                      <label className="label">
+                        {authType === 'cookie'  && 'Cookie Value (e.g. session=abc123; csrf=xyz)'}
+                        {authType === 'bearer'  && 'Bearer Token (JWT — paste token only, no "Bearer" prefix)'}
+                        {authType === 'header'  && 'Raw Header Value (e.g. Bearer eyJ... or Token abc123)'}
+                      </label>
+                      <input
+                        className="input font-mono text-xs"
+                        placeholder={
+                          authType === 'cookie' ? 'session=abc123; _csrf=xyz789' :
+                          authType === 'bearer' ? 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...' :
+                          'Bearer eyJhbGciOiJIUzI1NiJ9...'
+                        }
+                        value={authValue}
+                        onChange={e => setAuthValue(e.target.value)}
+                      />
+                      {authValue && (
+                        <div className="text-xs text-emerald-400 mt-1 flex items-center gap-1">
+                          <CheckCircle2 size={10} /> Authenticated scanning enabled — IDOR, post-auth business logic, and PII checks will run with these credentials.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <button
                 className={clsx(
                   'btn-lg justify-center rounded-xl font-semibold transition-all',
@@ -332,11 +436,11 @@ export default function GodMode() {
               </div>
               <div className="divide-y divide-bg-border">
                 {sessions.slice(0, 8).map((s, i) => (
-                  <button
+                  <div
                     key={s.scan_id || i}
                     onClick={() => { setSelectedSessionId(s.scan_id); setSession(s); setTab('status') }}
                     className={clsx(
-                      'w-full text-left flex items-center gap-3 px-4 py-2.5 hover:bg-white/[0.02] transition-colors',
+                      'w-full text-left flex items-center gap-3 px-4 py-2.5 hover:bg-white/[0.02] transition-colors cursor-pointer group',
                       selectedSessionId === s.scan_id && 'bg-accent-primary/5'
                     )}
                   >
@@ -350,7 +454,14 @@ export default function GodMode() {
                       </div>
                       <div className="text-[10px] text-slate-600">{s.finding_count ?? 0} findings</div>
                     </div>
-                  </button>
+                    <button
+                      className="btn-icon text-slate-600 hover:text-red-400 p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                      onClick={(e) => handleDelete(s.scan_id, e)}
+                      title="Delete session"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
                 ))}
               </div>
             </div>
@@ -395,12 +506,23 @@ export default function GodMode() {
                   <div>
                     <div className="flex justify-between text-xs text-slate-500 mb-1.5">
                       <span>Time Progress</span>
-                      <span>{formatDuration(elapsed)} / {formatDuration(maxSec)}</span>
+                      <span>
+                        {session?.terminated_by
+                          ? `Completed in ${formatDuration(elapsed)}`
+                          : `${formatDuration(elapsed)} / ${formatDuration(maxSec)}`}
+                      </span>
                     </div>
                     <div className="h-2 bg-bg-muted rounded-full overflow-hidden">
                       <div
                         className="h-full rounded-full transition-all duration-1000"
-                        style={{ width: `${progress}%`, background: progress > 80 ? 'linear-gradient(90deg,#f97316,#ef4444)' : 'linear-gradient(90deg,#00d9ff,#6366f1)' }}
+                        style={{
+                          width: `${progress}%`,
+                          background: session?.terminated_by
+                            ? 'linear-gradient(90deg,#10b981,#34d399)'
+                            : progress > 80
+                            ? 'linear-gradient(90deg,#f97316,#ef4444)'
+                            : 'linear-gradient(90deg,#00d9ff,#6366f1)'
+                        }}
                       />
                     </div>
                   </div>
@@ -414,6 +536,7 @@ export default function GodMode() {
                           const Icon = MISSION_ICONS[name] || Zap
                           const statusStyle = MISSION_STATUS_STYLE[status] || 'text-slate-500 badge-info'
                           const isActive = status === 'running'
+                          const isDone   = status === 'done'
                           return (
                             <div
                               key={name}
@@ -421,7 +544,7 @@ export default function GodMode() {
                                 'flex items-center gap-3 p-3 rounded-xl border transition-all',
                                 isActive
                                   ? 'border-cyan-500/30 bg-cyan-500/5'
-                                  : status === 'complete'
+                                  : isDone
                                   ? 'border-emerald-500/20 bg-emerald-500/5'
                                   : status === 'failed'
                                   ? 'border-red-500/20 bg-red-500/5'
@@ -432,13 +555,13 @@ export default function GodMode() {
                               <div className={clsx(
                                 'w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0',
                                 isActive ? 'bg-cyan-500/20 text-cyan-400' :
-                                status === 'complete' ? 'bg-emerald-500/20 text-emerald-400' :
+                                isDone ? 'bg-emerald-500/20 text-emerald-400' :
                                 'bg-bg-elevated text-slate-600'
                               )}>{i + 1}</div>
-                              <Icon size={13} className={isActive ? 'text-cyan-400' : status === 'complete' ? 'text-emerald-400' : 'text-slate-600'} />
+                              <Icon size={13} className={isActive ? 'text-cyan-400' : isDone ? 'text-emerald-400' : 'text-slate-600'} />
                               <div className="flex-1">
-                                <span className={clsx('text-sm font-medium capitalize', isActive ? 'text-slate-100' : 'text-slate-400')}>
-                                  {name}Mission
+                                <span className={clsx('text-sm font-medium', isActive ? 'text-slate-100' : 'text-slate-400')}>
+                                  {MISSION_DISPLAY_NAMES[name] || name} Mission
                                 </span>
                               </div>
                               <span className={clsx('badge', statusStyle)}>

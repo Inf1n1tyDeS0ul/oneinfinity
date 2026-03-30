@@ -3,7 +3,7 @@ import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, Tooltip, ResponsiveContainer, Legend
 } from 'recharts'
-import { ShieldAlert, Target, Scan, Bot, TrendingUp, Activity, Plus, Play, Trash2, X, Smartphone, Upload, Globe, Cpu } from 'lucide-react'
+import { ShieldAlert, Target, Scan, Bot, TrendingUp, Activity, Plus, Play, Trash2, X, Smartphone, Upload, Globe, Cpu, Lock, CheckCircle2, ChevronDown, ChevronUp } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { endpoints } from '../utils/api'
 import clsx from 'clsx'
@@ -44,13 +44,18 @@ function relativeTime(iso) {
 }
 
 export default function Dashboard() {
-  const { stats, scans, vulnerabilities, campaigns, targets, setTargets, addNotification } = useStore()
+  const { stats, scans, setScans, vulnerabilities, campaigns, targets, setTargets, addNotification } = useStore()
   const [showAddForm, setShowAddForm] = useState(false)
   const [formData, setFormData] = useState({ name: '', domain: '', platform: 'hackerone', type: 'web' })
   const [formLoading, setFormLoading] = useState(false)
   const [mobileFile, setMobileFile] = useState(null)
   const [uploadProgress, setUploadProgress] = useState(0)
   const fileInputRef = useRef(null)
+  // Auth for scan launch
+  const [scanAuthTarget, setScanAuthTarget] = useState(null)
+  const [showScanAuth, setShowScanAuth] = useState(false)
+  const [scanAuthType, setScanAuthType] = useState('none')
+  const [scanAuthValue, setScanAuthValue] = useState('')
 
   const handleAddTarget = async (e) => {
     e.preventDefault()
@@ -111,12 +116,39 @@ export default function Dashboard() {
     }
   }
 
-  const handleScanTarget = async (target) => {
+  const handleDeleteScan = async (id, e) => {
+    e.stopPropagation()
+    if (!window.confirm('Delete this scan from history?')) return
     try {
-      await endpoints.launchScan({ target: target.domain, scan_type: 'full' })
-      addNotification(`Scan launched for ${target.domain}`, 'success')
+      await endpoints.deleteScan(id)
+      setScans(scans.filter(s => s.id !== id))
+      addNotification('Scan deleted from history', 'success')
     } catch (err) {
       addNotification(`Error: ${err.message}`, 'error')
+    }
+  }
+
+  const handleScanClick = (target) => {
+    setScanAuthTarget(target)
+    setShowScanAuth(false)
+    setScanAuthType('none')
+    setScanAuthValue('')
+  }
+
+  const handleScanTarget = async (target, authType, authValue) => {
+    const payload = { target: target.domain, scan_type: 'full' }
+    if (authType === 'cookie' && authValue) payload.session_cookie = authValue
+    if (authType === 'bearer' && authValue) payload.bearer_token = authValue
+    if (authType === 'header' && authValue) payload.auth_header = authValue
+    try {
+      await endpoints.launchScan(payload)
+      addNotification(`Scan launched for ${target.domain}${authType !== 'none' ? ' (authenticated)' : ''}`, 'success')
+    } catch (err) {
+      addNotification(`Error: ${err.message}`, 'error')
+    } finally {
+      setScanAuthTarget(null)
+      setScanAuthValue('')
+      setScanAuthType('none')
     }
   }
 
@@ -258,6 +290,13 @@ export default function Dashboard() {
                     <div className="progress-fill" style={{ width: `${s.progress}%` }} />
                   </div>
                 )}
+                <button
+                  className="btn-icon text-slate-600 hover:text-red-400 p-1 ml-1"
+                  onClick={(e) => handleDeleteScan(s.id, e)}
+                  title="Delete scan"
+                >
+                  <Trash2 size={12} />
+                </button>
               </div>
             ))}
           </div>
@@ -511,11 +550,18 @@ export default function Dashboard() {
                   <div className="flex items-center gap-1.5">
                     <button
                       className="btn-primary flex items-center gap-1 text-[11px] py-0.5 px-2"
-                      onClick={() => handleScanTarget(t)}
+                      onClick={() => handleScanClick(t)}
                       title="Launch full scan"
                     >
                       <Play size={10} />
                       Scan
+                    </button>
+                    <button
+                      className="btn-icon flex items-center text-[11px] py-0.5 px-1.5 border border-bg-border text-slate-400 hover:text-accent-primary hover:border-accent-primary rounded transition-colors"
+                      onClick={() => { handleScanClick(t); setShowScanAuth(true) }}
+                      title="Scan with authentication"
+                    >
+                      <Lock size={10} />
                     </button>
                     <button
                       className="btn-danger flex items-center gap-1 text-[11px] py-0.5 px-2"
@@ -531,6 +577,82 @@ export default function Dashboard() {
           </tbody>
         </table>
       </div>
+
+      {/* Scan launch dialog */}
+      {scanAuthTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-bg-card border border-bg-border rounded-xl shadow-2xl w-full max-w-md p-5">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <div className="text-sm font-semibold text-slate-200">Launch Scan</div>
+                <div className="text-xs text-slate-500 mt-0.5 truncate max-w-xs">{scanAuthTarget.domain}</div>
+              </div>
+              <button className="btn-icon text-slate-500 hover:text-slate-200" onClick={() => setScanAuthTarget(null)}>
+                <X size={15} />
+              </button>
+            </div>
+
+            {/* Auth toggle */}
+            <button
+              className="w-full flex items-center justify-between px-3 py-2 rounded border border-bg-border text-xs text-slate-400 hover:border-accent-primary/50 hover:text-accent-primary transition-colors mb-3"
+              onClick={() => setShowScanAuth(v => !v)}
+            >
+              <span className="flex items-center gap-1.5">
+                <Lock size={11} />
+                Authentication (optional)
+              </span>
+              {showScanAuth ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+            </button>
+
+            {showScanAuth && (
+              <div className="flex flex-col gap-2 mb-3 px-1">
+                <div className="text-[10px] text-slate-500">
+                  Providing credentials enables authenticated scanning — tests MFA bypass, session fixation, privilege escalation, PII in authenticated responses, and more.
+                </div>
+                <select
+                  className="select text-xs"
+                  value={scanAuthType}
+                  onChange={e => { setScanAuthType(e.target.value); setScanAuthValue('') }}
+                >
+                  <option value="none">No authentication</option>
+                  <option value="cookie">Session Cookie</option>
+                  <option value="bearer">Bearer Token / JWT</option>
+                  <option value="header">Custom Auth Header</option>
+                </select>
+                {scanAuthType !== 'none' && (
+                  <input
+                    className="input text-xs"
+                    placeholder={
+                      scanAuthType === 'cookie' ? 'session=abc123; token=xyz' :
+                      scanAuthType === 'bearer' ? 'eyJhbGciOiJSUzI1NiJ9...' :
+                      'Authorization: Bearer token123'
+                    }
+                    value={scanAuthValue}
+                    onChange={e => setScanAuthValue(e.target.value)}
+                  />
+                )}
+                {scanAuthType !== 'none' && scanAuthValue && (
+                  <div className="flex items-center gap-1.5 text-[10px] text-emerald-400">
+                    <CheckCircle2 size={10} />
+                    Authenticated scan — additional tests will run with your credentials
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button className="btn-secondary text-xs" onClick={() => setScanAuthTarget(null)}>Cancel</button>
+              <button
+                className="btn-primary flex items-center gap-1.5 text-xs"
+                onClick={() => handleScanTarget(scanAuthTarget, scanAuthType, scanAuthValue)}
+              >
+                <Play size={11} />
+                Launch Scan
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

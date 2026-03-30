@@ -2,19 +2,24 @@ import axios from 'axios'
 
 const api = axios.create({ baseURL: '/api', timeout: 15000 })
 
-// Auto-fetch session API key from backend and attach to all requests
-let _apiKeyReady = false
+// Auto-fetch session API key from backend and attach to all requests.
+// Stored as a Promise so the request interceptor can await it before dispatch.
 const _fetchKey = axios.get('/api/auth-token').then(r => {
   api.defaults.headers.common['X-API-Key'] = r.data.token
-  _apiKeyReady = true
 }).catch(() => {
   // If ONEINFINITY_API_KEY is set in the environment, the user can also set it
   // in localStorage as a fallback.
   const stored = localStorage.getItem('oneinfinity_api_key')
   if (stored) {
     api.defaults.headers.common['X-API-Key'] = stored
-    _apiKeyReady = true
   }
+})
+
+// Wait for the key to be resolved before dispatching any request,
+// so requests fired during startup don't go out without the header.
+api.interceptors.request.use(async config => {
+  await _fetchKey
+  return config
 })
 
 api.interceptors.response.use(
@@ -38,6 +43,7 @@ export const endpoints = {
   startScan:       (data) => api.post('/scans', data),
   simpleScan:      (target) => api.post('/scan', { target }),
   stopScan:        (id) => api.post(`/scans/${id}/stop`),
+  deleteScan:      (id) => api.delete(`/scans/${id}`),
   vulnerabilities: (params) => api.get('/vulnerabilities', { params }),
   getVuln:         (id) => api.get(`/vulnerabilities/${id}`),
   updateVuln:      (id, data) => api.patch(`/vulnerabilities/${id}`, data),
@@ -247,5 +253,6 @@ export const endpoints = {
   godModeStatus:       (scanId) => scanId ? api.get(`/god-mode/status/${scanId}`) : api.get('/god-mode/status'),
   godModeSessions:     () => api.get('/god-mode/sessions'),
   godModeStop:         (scanId) => api.post('/god-mode/stop', { scan_id: scanId || null }),
+  godModeDelete:       (scanId) => api.delete(`/god-mode/${scanId}`),
   godModeLogs:         (scanId, lines) => api.get(`/god-mode/logs/${scanId}`, { params: { lines: lines || 150 } }),
 }

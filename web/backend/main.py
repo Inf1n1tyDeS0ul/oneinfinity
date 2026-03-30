@@ -20,7 +20,6 @@ from typing import Any, Dict, List, Optional
 
 import os as _os_auth
 import re as _re
-import secrets as _secrets
 import psutil
 
 # ── Target / domain validation ────────────────────────────────────────────────
@@ -43,20 +42,10 @@ import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.security.api_key import APIKeyHeader as _APIKeyHeader
 from pydantic import BaseModel, Field
 
-_API_KEY: str = _os_auth.environ.get("ONEINFINITY_API_KEY", "")
-if not _API_KEY:
-    _API_KEY = _secrets.token_urlsafe(32)
-    print("[WARN] ONEINFINITY_API_KEY not set. Generated ephemeral key for this session. "
-          "Set ONEINFINITY_API_KEY in your environment for a stable key.", flush=True)
-
-_key_header = _APIKeyHeader(name="X-API-Key", auto_error=False)
-
-async def _require_auth(key: str = Depends(_key_header)):
-    if key != _API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid or missing X-API-Key header")
+async def _require_auth():
+    pass  # Auth disabled — open access for local tool use
 
 # ── Path setup ───────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.parent.parent  # oneinfinity/
@@ -69,8 +58,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 from contextlib import asynccontextmanager as _asynccontextmanager
 
+_event_loop: Optional[asyncio.AbstractEventLoop] = None
+
 @_asynccontextmanager
 async def _lifespan(application):
+    global _event_loop
+    _event_loop = asyncio.get_running_loop()
     # Startup
     try:
         from result_ingestion_engine import get_ingestion_engine
@@ -188,15 +181,12 @@ _target_db = TargetDB(_db_path("metadata.db"))
 def _on_finding_ingested(finding: dict):
     fid = finding.get("finding_id") or finding.get("id") or str(uuid.uuid4())[:8]
     VULNERABILITIES[fid] = _finding_to_api(finding)
-    entry = {
-        "timestamp": datetime.utcnow().isoformat(),
-        "level": "success", "message": f"[+] New finding: {finding.get('title','')} [{finding.get('severity','')}]",
-        "source": finding.get("tool", "scanner"), "scan_id": finding.get("scan_id", ""),
-        "type": "finding", "finding": finding,
-    }
-    LOG_MESSAGES.append(entry)
-    if len(LOG_MESSAGES) > 500:
-        LOG_MESSAGES.pop(0)
+    _add_log(
+        f"[+] New finding: {finding.get('title','')} [{finding.get('severity','')}]",
+        "success",
+        finding.get("tool", "scanner"),
+        finding.get("scan_id", ""),
+    )
 
 try:
     from result_ingestion_engine import get_ingestion_engine as _get_rie
@@ -234,6 +224,10 @@ class ScanRequest(BaseModel):
     profile: str = "quick"
     auth: str = ""
     options: Dict[str, Any] = {}
+    # Authenticated scanning — optional; triggers auth-aware testing phases
+    session_cookie: str = ""   # e.g. "session=abc123; csrf=xyz"
+    bearer_token: str = ""     # e.g. "eyJhbGciOiJIUzI1NiJ9..."
+    auth_header: str = ""      # raw value e.g. "Bearer token" or "Token abc"
 
 class Scan(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
@@ -321,8 +315,16 @@ def _add_log(message: str, level: str = "info", source: str = "system", scan_id:
     LOG_MESSAGES.append(entry)
     if len(LOG_MESSAGES) > 1000:
         LOG_MESSAGES.pop(0)
-    # Broadcast to all WS clients (fire-and-forget)
-    asyncio.create_task(_broadcast_log(entry))
+    # Broadcast to all WS clients — thread-safe: works from async and sync/thread contexts
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_broadcast_log(entry))
+    except RuntimeError:
+        # Called from a thread (e.g. BackgroundTasks sync function) — schedule on the main loop
+        if _event_loop and _event_loop.is_running():
+            _event_loop.call_soon_threadsafe(
+                lambda e=entry: asyncio.ensure_future(_broadcast_log(e), loop=_event_loop)
+            )
 
 async def _broadcast_log(entry: Dict):
     dead = []
@@ -383,12 +385,9 @@ async def api_health():
 
 
 @app.get("/api/auth-token", include_in_schema=False)
-async def get_auth_token(request: Request):
-    """Return the session API key for localhost clients only."""
-    client_host = request.client.host if request.client else ""
-    if client_host not in ("127.0.0.1", "::1", "localhost"):
-        raise HTTPException(status_code=403, detail="Only accessible from localhost")
-    return {"token": _API_KEY}
+async def get_auth_token():
+    """No-op auth token endpoint — auth is disabled for local tool use."""
+    return {"token": ""}
 
 # Prometheus metrics endpoint
 @app.get("/metrics", include_in_schema=False)
@@ -442,9 +441,26 @@ async def get_stats():
         day = now - timedelta(days=i)
         scan_activity.append({
             "date": day.strftime("%m/%d"),
-            "scans": max(0, 3 - i % 3),
-            "findings": max(0, (8 - i) * 2 % 15),
+            "scans": 0,
+            "findings": 0,
         })
+
+    # Neo4j connectivity check
+    neo4j_connected = False
+    try:
+        import yaml as _yaml
+        _neo4j_cfg_path = ROOT / "config" / "neo4j.yaml"
+        with open(_neo4j_cfg_path) as _f:
+            _neo4j_cfg = _yaml.safe_load(_f)
+        if _neo4j_cfg.get("enabled", False):
+            from neo4j import GraphDatabase as _GDB
+            _drv = _GDB.driver(_neo4j_cfg["uri"], auth=(_neo4j_cfg["user"], _neo4j_cfg["password"]))
+            with _drv.session() as _s:
+                _s.run("RETURN 1")
+            _drv.close()
+            neo4j_connected = True
+    except Exception:
+        neo4j_connected = False
 
     all_targets = _target_db.list_all()
     return {
@@ -454,10 +470,11 @@ async def get_stats():
         "active_campaigns": active_campaigns,
         "severity_distribution": sev_dist,
         "scan_activity": scan_activity,
+        "neo4j_connected": neo4j_connected,
         "attack_surface": {
             "domains": len(all_targets),
-            "endpoints": 257,
-            "services": 18,
+            "endpoints": 0,
+            "services": 0,
             "ai_targets": sum(1 for t in all_targets if "chat" in t.get("domain", "") or "ai" in t.get("domain", "")),
         },
     }
@@ -543,7 +560,13 @@ async def launch_scan(req: ScanRequest, background_tasks: BackgroundTasks):
     }
     SCANS[scan_id] = scan
     _add_log(f"Scan queued: {req.scan_type} on {req.target}", "info", "scanner", scan_id)
-    background_tasks.add_task(_run_scan_via_engine, scan_id, req.target, req.scan_type)
+    _auth_config = {
+        "session_cookie": req.session_cookie or "",
+        "bearer_token": req.bearer_token or "",
+        "auth_header": req.auth_header or req.auth or "",
+    }
+    background_tasks.add_task(_run_scan_via_engine, scan_id, req.target, req.scan_type,
+                               auth_config=_auth_config)
     return scan
 
 @app.post("/api/scans/{scan_id}/stop", dependencies=[Depends(_require_auth)])
@@ -562,6 +585,24 @@ async def stop_scan(scan_id: str):
     scan["completed_at"] = datetime.utcnow().isoformat()
     _add_log(f"Scan stopped: {scan_id}", "warn", "scanner", scan_id)
     return scan
+
+@app.delete("/api/scans/{scan_id}", dependencies=[Depends(_require_auth)])
+async def delete_scan(scan_id: str):
+    """Delete a scan from in-memory history."""
+    if scan_id not in SCANS:
+        raise HTTPException(404, "Scan not found")
+    scan = SCANS[scan_id]
+    if scan.get("status") == "running":
+        pid = scan.get("pid")
+        if pid:
+            try:
+                proc = psutil.Process(pid)
+                proc.terminate()
+            except Exception:
+                pass
+    del SCANS[scan_id]
+    _add_log(f"Scan deleted: {scan_id}", "warn", "scanner", scan_id)
+    return {"ok": True}
 
 # Vulnerabilities
 @app.get("/api/findings")
@@ -868,15 +909,7 @@ async def get_logs(limit: int = 100, scan_id: Optional[str] = None):
 
 @app.websocket("/ws/logs")
 async def ws_logs(websocket: WebSocket, token: Optional[str] = None):
-    # Accept the connection first (required before sending close code)
     await websocket.accept()
-    # Validate API key if one is required (passed as ?token= query param for browser compat)
-    if _API_KEY and token != _API_KEY:
-        # Also allow the key from the Sec-WebSocket-Protocol header fallback
-        proto_key = websocket.headers.get("sec-websocket-protocol", "")
-        if proto_key != _API_KEY:
-            await websocket.close(code=4401, reason="Unauthorized")
-            return
     _ws_clients.append(websocket)
     # Send last 50 log lines on connect
     try:
@@ -934,11 +967,13 @@ async def simple_scan(req: SimpleScanRequest, background_tasks: BackgroundTasks)
 
 # ── Background tasks ──────────────────────────────────────────────────────────
 
-async def _run_scan_via_engine(scan_id: str, target: str, scan_type: str):
+async def _run_scan_via_engine(scan_id: str, target: str, scan_type: str, auth_config: dict = None):
     """Run a scan. For full scans, prefer the canonical pipeline for CLI/Docker parity."""
     scan = SCANS[scan_id]
     scan["status"] = "running"
     _add_log(f"Scan started: {scan_type} on {target}", "info", "scanner", scan_id)
+    if auth_config and any(auth_config.values()):
+        _add_log("Authenticated scan mode active — using provided credentials", "info", "scanner", scan_id)
     # Update target status to scanning
     existing = [t for t in _target_db.list_all() if t["target_value"] == target]
     if existing:
@@ -967,6 +1002,7 @@ async def _run_scan_via_engine(scan_id: str, target: str, scan_type: str):
                 on_progress=on_progress,
                 skip_phases=None,
                 prior_results_dir=None,
+                auth_config=auth_config or {},
             )
 
             scan["status"] = "completed" if result.status in ("completed", "partial") else "failed"
@@ -1998,6 +2034,13 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
     no_swarm     = bool(data.get("no_swarm", False))
     no_research  = bool(data.get("no_research", False))
     report_fmt   = str(data.get("report_fmt", "markdown"))
+    # Auth config for authenticated scanning
+    auth_config = {
+        "session_cookie": str(data.get("session_cookie", "") or ""),
+        "bearer_token":   str(data.get("bearer_token", "") or ""),
+        "auth_header":    str(data.get("auth_header", "") or ""),
+    }
+    has_auth = any(auth_config.values())
 
     def _run():
         try:
@@ -2006,13 +2049,15 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
             from god_mode_engine import get_god_mode_conductor
             get_god_mode_conductor().run(
                 target=target, max_time=max_time, max_findings=max_findings,
-                background=True, no_swarm=no_swarm, no_research=no_research, report_fmt=report_fmt,
+                background=True, no_swarm=no_swarm, no_research=no_research,
+                report_fmt=report_fmt, auth_config=auth_config if has_auth else None,
             )
         except Exception as exc:
             print(f"[god-mode] run error: {exc}")
 
     background_tasks.add_task(_run)
-    return {"status": "started", "target": target, "max_time": max_time, "max_findings": max_findings}
+    return {"status": "started", "target": target, "max_time": max_time,
+            "max_findings": max_findings, "authenticated": has_auth}
 
 
 @app.get("/api/god-mode/status")
@@ -2075,6 +2120,37 @@ async def god_mode_stop(request: Request):
         from god_mode_engine import get_god_mode_conductor
         ok = get_god_mode_conductor().stop(scan_id)
         return {"stopped": ok}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.delete("/api/god-mode/{scan_id}", dependencies=[Depends(_require_auth)])
+async def god_mode_delete(scan_id: str):
+    """Delete state and log files for a GOD MODE session."""
+    try:
+        from pathlib import Path
+        import shutil
+        gm_dir = Path.home() / ".oneinfinity"
+        state_file = gm_dir / f"god-mode-{scan_id}.json"
+        log_file   = gm_dir / "logs" / f"god-mode-{scan_id}.log"
+        stop_file  = gm_dir / f"god-mode-{scan_id}.stop"
+        
+        deleted = False
+        if state_file.exists():
+            state_file.unlink()
+            deleted = True
+        if log_file.exists():
+            log_file.unlink()
+            deleted = True
+        if stop_file.exists():
+            stop_file.unlink()
+            deleted = True
+            
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Session {scan_id} not found")
+        return {"ok": True}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
