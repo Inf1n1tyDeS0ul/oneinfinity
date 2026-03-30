@@ -134,9 +134,9 @@ class FindingValidationEngine:
 
     # ── Dispatch ──────────────────────────────────────────────────────────────
 
-    def _dispatch(self, result: ValidationResult, finding: dict, url: str,
-                  vuln_type: str, payload: str, param: str, method: str) -> bool:
-        dispatch = {
+    def _get_dispatch(self) -> dict:
+        """Return the full dispatch mapping of vuln_type → validator method."""
+        return {
             "sqli": self._validate_sqli,
             "sql_injection": self._validate_sqli,
             "xss": self._validate_xss,
@@ -152,7 +152,22 @@ class FindingValidationEngine:
             "idor": self._validate_idor,
             "xxe": self._validate_xxe,
             "http_request_smuggling": self._validate_passthrough,
+            # OWASP gap checks
+            "csrf":                  self.validate_csrf,
+            "missing_csrf":          self.validate_csrf,
+            "cookie_attributes":     self.validate_cookie_attrs,
+            "insecure_cookie":       self.validate_cookie_attrs,
+            "session_fixation":      self.validate_session_fixation,
+            "ldap_injection":        self.validate_ldap_injection,
+            "weak_tls":              self.validate_weak_tls,
+            "ssrf_oob":              self.validate_ssrf_oob,
+            "padding_oracle":        self.validate_padding_oracle,
+            "account_enumeration":   self.validate_account_enumeration,
         }
+
+    def _dispatch(self, result: ValidationResult, finding: dict, url: str,
+                  vuln_type: str, payload: str, param: str, method: str) -> bool:
+        dispatch = self._get_dispatch()
         fn = dispatch.get(vuln_type, self._validate_generic)
         return fn(result, finding, url, payload, param, method)
 
@@ -436,6 +451,123 @@ class FindingValidationEngine:
             result.evidence = finding.get("evidence", "")[:200]
             result.evidence_type = "passthrough"
             result.flags.append("tool_validated_passthrough")
+            return True
+        return False
+
+    # ── OWASP Gap Check Validators ────────────────────────────────────────────
+
+    def validate_csrf(self, result: ValidationResult, finding: dict,
+                      url: str, payload: str, param: str, method: str) -> bool:
+        """Re-validate CSRF: replay POST without token, expect non-403."""
+        from modules.owasp_gap_checks import check_csrf
+        r = check_csrf(url, finding.get("response_body", ""),
+                       finding.get("response_headers", {}), method)
+        if r.active_confirmed:
+            result.evidence = r.evidence
+            result.evidence_type = "csrf_active"
+            result.confidence = r.confidence
+            result.flags.append("csrf_active_confirmed")
+            self._build_poc(result, url, param, "POST without CSRF token", method)
+            return True
+        return False
+
+    def validate_cookie_attrs(self, result: ValidationResult, finding: dict,
+                               url: str, payload: str, param: str, method: str) -> bool:
+        from modules.owasp_gap_checks import check_cookie_attributes
+        headers = finding.get("response_headers", {})
+        r = check_cookie_attributes(url, headers)
+        if r.passive_finding and r.confidence >= 0.7:
+            result.evidence = r.evidence
+            result.evidence_type = "cookie_attribute"
+            result.confidence = r.confidence
+            result.flags.append("insecure_cookie")
+            return r.active_confirmed  # only True if HTTP transmission confirmed
+        return False
+
+    def validate_session_fixation(self, result: ValidationResult, finding: dict,
+                                   url: str, payload: str, param: str, method: str) -> bool:
+        pre = finding.get("pre_login_session_id", "")
+        post = finding.get("post_login_session_id", "")
+        from modules.owasp_gap_checks import check_session_fixation
+        r = check_session_fixation(pre, post, url)
+        if r.active_confirmed:
+            result.evidence = r.evidence
+            result.evidence_type = "session_fixation"
+            result.confidence = r.confidence
+            result.flags.append("session_fixation")
+            return True
+        return False
+
+    def validate_ldap_injection(self, result: ValidationResult, finding: dict,
+                                 url: str, payload: str, param: str, method: str) -> bool:
+        from modules.owasp_gap_checks import check_ldap_injection
+        r = check_ldap_injection(url, param, method)
+        if r.active_confirmed:
+            result.evidence = r.evidence
+            result.evidence_type = "ldap_injection"
+            result.confidence = r.confidence
+            result.flags.append("ldap_injection_confirmed")
+            self._build_poc(result, url, param, payload, method)
+            return True
+        return False
+
+    def validate_weak_tls(self, result: ValidationResult, finding: dict,
+                           url: str, payload: str, param: str, method: str) -> bool:
+        import urllib.parse as _up
+        parsed = _up.urlparse(url)
+        host = parsed.hostname or url
+        port = parsed.port or 443
+        from modules.owasp_gap_checks import check_weak_tls
+        r = check_weak_tls(host, port)
+        if r.active_confirmed:
+            result.evidence = r.evidence
+            result.evidence_type = "weak_tls"
+            result.confidence = r.confidence
+            result.flags.append("weak_tls_accepted")
+            return True
+        return False
+
+    def validate_ssrf_oob(self, result: ValidationResult, finding: dict,
+                           url: str, payload: str, param: str, method: str) -> bool:
+        """SSRF: only confirm if OOB callback flag is explicitly set."""
+        oob_received = finding.get("oob_callback_received", False)
+        if oob_received:
+            result.evidence = finding.get("evidence", "SSRF confirmed via OOB callback")
+            result.evidence_type = "oob_callback"
+            result.confidence = 0.95
+            result.flags.append("ssrf_oob_confirmed")
+            self._build_poc(result, url, param, payload, method)
+            return True
+        # Downgrade without OOB
+        result.confidence = 0.35
+        result.flags.append("ssrf_unconfirmed_no_oob")
+        return False
+
+    def validate_padding_oracle(self, result: ValidationResult, finding: dict,
+                                 url: str, payload: str, param: str, method: str) -> bool:
+        cookie_name = finding.get("cookie_name", "")
+        cookie_value = finding.get("cookie_value", "")
+        from modules.owasp_gap_checks import check_padding_oracle
+        r = check_padding_oracle(url, cookie_name, cookie_value)
+        if r.active_confirmed:
+            result.evidence = r.evidence
+            result.evidence_type = "padding_oracle"
+            result.confidence = r.confidence
+            result.flags.append("padding_oracle_confirmed")
+            return True
+        return False
+
+    def validate_account_enumeration(self, result: ValidationResult, finding: dict,
+                                      url: str, payload: str, param: str, method: str) -> bool:
+        valid_user = finding.get("valid_username", "admin")
+        invalid_user = finding.get("invalid_username", "nonexistent_oi_test_user_xyz")
+        from modules.owasp_gap_checks import check_account_enumeration_timing
+        r = check_account_enumeration_timing(url, valid_user, invalid_user)
+        if r.active_confirmed:
+            result.evidence = r.evidence
+            result.evidence_type = "timing_enumeration"
+            result.confidence = r.confidence
+            result.flags.append("account_enumeration_timing")
             return True
         return False
 
