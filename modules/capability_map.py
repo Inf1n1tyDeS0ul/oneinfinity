@@ -64,6 +64,30 @@ class Vuln:
     CLICKJACKING        = "Clickjacking"
     DOM_XSS             = "DOM-based XSS"
     SOURCE_MAP_EXPOSURE = "Exposed JavaScript Source Map"
+    # OWASP WSTG v4.2 gap checks
+    WEAK_TLS            = "Weak TLS Configuration"
+    TLS_CERT_ISSUE      = "TLS Certificate Issue"
+    BACKUP_FILES        = "Backup/Archive File Exposed"
+    COOKIE_ATTRS        = "Insecure Cookie Attributes"
+    CSRF                = "Cross-Site Request Forgery (CSRF)"
+    SESSION_FIXATION    = "Session Fixation"
+    SESSION_TIMEOUT     = "Missing Session Timeout"
+    ACCOUNT_ENUM        = "Account Enumeration via Timing"
+    WEAK_PASSWORD_POLICY= "Weak Password Policy"
+    SAML_VULN           = "SAML Assertion Vulnerability"
+    LDAP_INJECTION      = "LDAP Injection"
+    MAIL_HEADER_INJ     = "Mail Header Injection"
+    CODE_INJECTION      = "Code Injection"
+    CSV_INJECTION       = "CSV Injection"
+    POSTMESSAGE_HIJACK  = "postMessage Hijacking Risk"
+    WEB_STORAGE         = "Sensitive Data in Web Storage"
+    INSECURE_RNG        = "Insecure Random Number Generation"
+    WEAK_CRYPTO         = "Weak Encryption Algorithm"
+    PADDING_ORACLE      = "Padding Oracle"
+    SERVICE_WORKER      = "Service Worker Abuse Risk"
+    WEBRTC_LEAK         = "WebRTC IP Leakage"
+    GRPC_SOAP_EXPOSED   = "gRPC/SOAP Endpoint Exposed"
+    CODE_INJECTION_EVAL = "Code Injection via eval"
 
 
 # ── Data types ────────────────────────────────────────────────────────────────
@@ -1101,6 +1125,256 @@ CAPABILITIES: dict[str, ToolCapability] = {
         noise_level="low",
         passive=True,
         notes="Use between every tool to avoid re-scanning already-seen assets.",
+    ),
+
+    # =========================================================================
+    # OWASP WSTG v4.2 GAP CHECKS
+    # =========================================================================
+
+    "owasp_gap_weak_tls": ToolCapability(
+        name="owasp_gap_weak_tls",
+        category="crypto",
+        description="Detects deprecated TLS versions (1.0/1.1) and weak cipher suites.",
+        detects=[Vuln.WEAK_TLS, Vuln.TLS_CERT_ISSUE],
+        inputs=[InputSpec("host", "host", True, "Target hostname")],
+        outputs=[OutputField("findings", "list[dict]", "TLS weakness findings")],
+        requires_phase=["deep_recon"],
+        feeds_into=["exploit_chains"],
+        confidence={Vuln.WEAK_TLS: "high", Vuln.TLS_CERT_ISSUE: "high"},
+        typical_duration_sec=10, rate_sensitive=False, noise_level="low", passive=False,
+        notes="Uses stdlib ssl module — no external tools required.",
+    ),
+    "owasp_gap_backup_files": ToolCapability(
+        name="owasp_gap_backup_files",
+        category="config",
+        description="Probes for backup/archive files (.bak, .old, .zip, .sql, etc.) in webroot.",
+        detects=[Vuln.BACKUP_FILES, Vuln.INFO_LEAK],
+        inputs=[InputSpec("base_url", "url", True), InputSpec("paths", "list[str]", False)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["deep_recon"],
+        feeds_into=["exploit_chains"],
+        confidence={Vuln.BACKUP_FILES: "high"},
+        typical_duration_sec=30, rate_sensitive=True, noise_level="medium",
+        notes="Caps at 20 paths × 13 extensions = 260 requests max.",
+    ),
+    "owasp_gap_csrf": ToolCapability(
+        name="owasp_gap_csrf",
+        category="session",
+        description="Detects missing CSRF token protection on state-changing endpoints.",
+        detects=[Vuln.CSRF],
+        inputs=[InputSpec("url", "url", True), InputSpec("body", "str", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["auth_session"],
+        feeds_into=["exploit_chains"],
+        confidence={Vuln.CSRF: "high"},
+        typical_duration_sec=10, rate_sensitive=False, noise_level="low",
+    ),
+    "owasp_gap_cookie_attrs": ToolCapability(
+        name="owasp_gap_cookie_attrs",
+        category="session",
+        description="Checks Set-Cookie headers for missing HttpOnly, Secure, SameSite flags.",
+        detects=[Vuln.COOKIE_ATTRS],
+        inputs=[InputSpec("url", "url", True), InputSpec("headers", "dict", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["auth_session"],
+        feeds_into=[],
+        confidence={Vuln.COOKIE_ATTRS: "high"},
+        typical_duration_sec=5, rate_sensitive=False, noise_level="low", passive=True,
+    ),
+    "owasp_gap_session_fixation": ToolCapability(
+        name="owasp_gap_session_fixation",
+        category="session",
+        description="Compares session IDs before and after login to detect fixation.",
+        detects=[Vuln.SESSION_FIXATION],
+        inputs=[InputSpec("url", "url", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["auth_session"],
+        feeds_into=[],
+        confidence={Vuln.SESSION_FIXATION: "high"},
+        typical_duration_sec=15, rate_sensitive=False, noise_level="low",
+    ),
+    "owasp_gap_account_enum": ToolCapability(
+        name="owasp_gap_account_enum",
+        category="auth",
+        description="Statistical timing comparison between valid and invalid usernames at login.",
+        detects=[Vuln.ACCOUNT_ENUM],
+        inputs=[InputSpec("login_url", "url", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["auth_session"],
+        feeds_into=[],
+        confidence={Vuln.ACCOUNT_ENUM: "medium"},
+        typical_duration_sec=30, rate_sensitive=True, noise_level="medium",
+        notes="Sends 20 login requests (10 valid, 10 invalid). May trigger lockout on aggressive targets.",
+    ),
+    "owasp_gap_ldap_injection": ToolCapability(
+        name="owasp_gap_ldap_injection",
+        category="injection",
+        description="Detects LDAP injection via response differential on LDAP-backed auth endpoints.",
+        detects=[Vuln.LDAP_INJECTION],
+        inputs=[InputSpec("url", "url", True), InputSpec("param", "str", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["active_testing"],
+        feeds_into=["exploit_chains"],
+        confidence={Vuln.LDAP_INJECTION: "high"},
+        typical_duration_sec=20, rate_sensitive=False, noise_level="medium",
+    ),
+    "owasp_gap_mail_header_inj": ToolCapability(
+        name="owasp_gap_mail_header_inj",
+        category="injection",
+        description="Detects mail header injection via CRLF in email form parameters.",
+        detects=[Vuln.MAIL_HEADER_INJ],
+        inputs=[InputSpec("url", "url", True), InputSpec("param", "str", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["active_testing"],
+        feeds_into=[],
+        confidence={Vuln.MAIL_HEADER_INJ: "medium"},
+        typical_duration_sec=10, rate_sensitive=False, noise_level="low",
+    ),
+    "owasp_gap_code_injection": ToolCapability(
+        name="owasp_gap_code_injection",
+        category="injection",
+        description="Detects server-side code injection (PHP eval, Node exec, Python exec).",
+        detects=[Vuln.CODE_INJECTION],
+        inputs=[InputSpec("url", "url", True), InputSpec("param", "str", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["active_testing"],
+        feeds_into=["exploit_chains"],
+        confidence={Vuln.CODE_INJECTION: "high"},
+        typical_duration_sec=20, rate_sensitive=False, noise_level="high",
+    ),
+    "owasp_gap_csv_injection": ToolCapability(
+        name="owasp_gap_csv_injection",
+        category="injection",
+        description="Detects CSV formula injection in data export endpoints.",
+        detects=[Vuln.CSV_INJECTION],
+        inputs=[InputSpec("url", "url", True), InputSpec("param", "str", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["active_testing"],
+        feeds_into=[],
+        confidence={Vuln.CSV_INJECTION: "medium"},
+        typical_duration_sec=10, rate_sensitive=False, noise_level="low",
+    ),
+    "owasp_gap_web_storage": ToolCapability(
+        name="owasp_gap_web_storage",
+        category="client_side",
+        description="Detects sensitive data (tokens, passwords) stored in localStorage/sessionStorage.",
+        detects=[Vuln.WEB_STORAGE],
+        inputs=[InputSpec("url", "url", True), InputSpec("js_body", "str", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["active_testing"],
+        feeds_into=[],
+        confidence={Vuln.WEB_STORAGE: "medium"},
+        typical_duration_sec=5, rate_sensitive=False, noise_level="low", passive=True,
+    ),
+    "owasp_gap_postmessage": ToolCapability(
+        name="owasp_gap_postmessage",
+        category="client_side",
+        description="Detects postMessage listeners without origin validation.",
+        detects=[Vuln.POSTMESSAGE_HIJACK],
+        inputs=[InputSpec("url", "url", True), InputSpec("js_body", "str", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["active_testing"],
+        feeds_into=[],
+        confidence={Vuln.POSTMESSAGE_HIJACK: "medium"},
+        typical_duration_sec=5, rate_sensitive=False, noise_level="low", passive=True,
+    ),
+    "owasp_gap_insecure_rng": ToolCapability(
+        name="owasp_gap_insecure_rng",
+        category="crypto",
+        description="Chi-squared entropy analysis of session tokens to detect weak/predictable RNG.",
+        detects=[Vuln.INSECURE_RNG],
+        inputs=[InputSpec("url", "url", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["active_testing"],
+        feeds_into=[],
+        confidence={Vuln.INSECURE_RNG: "medium"},
+        typical_duration_sec=15, rate_sensitive=True, noise_level="low",
+    ),
+    "owasp_gap_weak_crypto": ToolCapability(
+        name="owasp_gap_weak_crypto",
+        category="crypto",
+        description="Static analysis of JS/response bodies for MD5, SHA1, DES, AES-ECB, base64-as-crypto patterns.",
+        detects=[Vuln.WEAK_CRYPTO],
+        inputs=[InputSpec("url", "url", True), InputSpec("body", "str", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["vuln_scan"],
+        feeds_into=[],
+        confidence={Vuln.WEAK_CRYPTO: "medium"},
+        typical_duration_sec=5, rate_sensitive=False, noise_level="low", passive=True,
+    ),
+    "owasp_gap_padding_oracle": ToolCapability(
+        name="owasp_gap_padding_oracle",
+        category="crypto",
+        description="Detects padding oracle vulnerability by bit-flipping CBC-mode cookies.",
+        detects=[Vuln.PADDING_ORACLE],
+        inputs=[InputSpec("url", "url", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["vuln_scan"],
+        feeds_into=["exploit_chains"],
+        confidence={Vuln.PADDING_ORACLE: "high"},
+        typical_duration_sec=20, rate_sensitive=False, noise_level="low",
+    ),
+    "owasp_gap_service_worker": ToolCapability(
+        name="owasp_gap_service_worker",
+        category="client_side",
+        description="Detects service worker registered at root scope — may intercept sensitive API calls.",
+        detects=[Vuln.SERVICE_WORKER],
+        inputs=[InputSpec("url", "url", True), InputSpec("js_body", "str", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["vuln_scan"],
+        feeds_into=[],
+        confidence={Vuln.SERVICE_WORKER: "low"},
+        typical_duration_sec=5, rate_sensitive=False, noise_level="low", passive=True,
+    ),
+    "owasp_gap_webrtc": ToolCapability(
+        name="owasp_gap_webrtc",
+        category="client_side",
+        description="Detects WebRTC API usage that may leak real IP through STUN/TURN.",
+        detects=[Vuln.WEBRTC_LEAK],
+        inputs=[InputSpec("url", "url", True), InputSpec("js_body", "str", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["vuln_scan"],
+        feeds_into=[],
+        confidence={Vuln.WEBRTC_LEAK: "low"},
+        typical_duration_sec=5, rate_sensitive=False, noise_level="low", passive=True,
+        notes="Browser-based confirmation required for definitive result.",
+    ),
+    "owasp_gap_grpc_soap": ToolCapability(
+        name="owasp_gap_grpc_soap",
+        category="api",
+        description="Detects exposed gRPC and SOAP/WSDL endpoints.",
+        detects=[Vuln.GRPC_SOAP_EXPOSED],
+        inputs=[InputSpec("url", "url", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["vuln_scan"],
+        feeds_into=["exploit_chains"],
+        confidence={Vuln.GRPC_SOAP_EXPOSED: "medium"},
+        typical_duration_sec=10, rate_sensitive=False, noise_level="low", passive=True,
+    ),
+    "owasp_gap_saml": ToolCapability(
+        name="owasp_gap_saml",
+        category="auth",
+        description="Detects unsigned SAML assertions vulnerable to forgery.",
+        detects=[Vuln.SAML_VULN],
+        inputs=[InputSpec("url", "url", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["auth_session"],
+        feeds_into=["exploit_chains"],
+        confidence={Vuln.SAML_VULN: "high"},
+        typical_duration_sec=10, rate_sensitive=False, noise_level="low", passive=True,
+    ),
+    "owasp_gap_password_policy": ToolCapability(
+        name="owasp_gap_password_policy",
+        category="auth",
+        description="Tests if application accepts weak passwords (1-char, 'password', '12345').",
+        detects=[Vuln.WEAK_PASSWORD_POLICY],
+        inputs=[InputSpec("register_url", "url", True)],
+        outputs=[OutputField("findings", "list[dict]")],
+        requires_phase=["auth_session"],
+        feeds_into=[],
+        confidence={Vuln.WEAK_PASSWORD_POLICY: "high"},
+        typical_duration_sec=20, rate_sensitive=True, noise_level="medium",
+        notes="Creates temporary test accounts — cleans up if 'delete account' endpoint exists.",
     ),
 }
 
