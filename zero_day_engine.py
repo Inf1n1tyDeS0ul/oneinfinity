@@ -143,15 +143,48 @@ _DATA_LEAKAGE_PATTERNS: list[tuple[re.Pattern, str, str]] = [
      "Server file path in response", "medium"),
 ]
 
+_DESERIALIZATION_PATTERNS: list[tuple[re.Pattern, str, str]] = [
+    (re.compile(r"rO0AB|aced0005", re.I),
+     "Java serialized object in response", "critical"),
+    (re.compile(r"O:\d+:\"[A-Za-z_]+\":\d+:\{", re.I),
+     "PHP serialized object in response", "high"),
+    (re.compile(r"__VIEWSTATE|__EVENTVALIDATION", re.I),
+     ".NET ViewState in response", "medium"),
+    (re.compile(r"YToxOntpOjA7", re.I),
+     "PHP serialized array (base64) in response", "high"),
+]
+
+_SOURCE_EXPOSURE_PATTERNS: list[tuple[re.Pattern, str, str]] = [
+    (re.compile(r"sourceMappingURL\s*=", re.I),
+     "JavaScript source map reference exposed", "medium"),
+    (re.compile(r"\"sources\"\s*:\s*\[|\"mappings\"\s*:", re.I),
+     "JavaScript source map content exposed", "high"),
+    (re.compile(r"//# sourceMappingURL=.*\.map", re.I),
+     "Source map URL in JS response", "medium"),
+]
+
+_PII_PATTERNS: list[tuple[re.Pattern, str, str]] = [
+    (re.compile(r"\b[2-9]\d{11}\b"),
+     "Aadhaar number pattern in response", "critical"),
+    (re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b"),
+     "PAN card pattern in response", "high"),
+    (re.compile(r"\b\d{2}[-/]\d{2}[-/]\d{4}\b|\b(0[1-9]|[12]\d|3[01])[-/](0[1-9]|1[0-2])[-/]\d{4}\b"),
+     "Date of birth pattern in response", "medium"),
+    (re.compile(r"\b[A-Z]{1,2}[0-9]{7}\b"),
+     "Passport number pattern in response", "high"),
+]
+
 _INTERESTING_HEADERS: set[str] = {
     "x-powered-by", "server", "x-aspnet-version", "x-aspnetmvc-version",
     "x-debug", "x-debug-token", "x-request-id", "x-correlation-id",
     "x-internal", "x-forwarded-server",
 }
 
-_TIMING_THRESHOLD_MS = 4000   # >4s response = possible blind injection
-_SIZE_DEVIATION_PCT  = 0.25   # >25% size change = significant
-_MIN_BODY_SIZE       = 100    # ignore tiny responses for size comparisons
+_TIMING_THRESHOLD_MS  = 6000   # >6s delta above baseline = possible blind injection
+_SIZE_DEVIATION_PCT   = 0.25   # >25% size change = significant
+_MIN_BODY_SIZE        = 100    # ignore tiny responses for size comparisons
+_CONFIDENCE_FLOOR     = 0.40   # suppress anomalies below this confidence
+_MEANINGFUL_PAYLOAD_CHARS = set('<>"\'{};()')  # chars that make a payload injection-relevant
 
 
 # ── Zero-Day Engine ───────────────────────────────────────────────────────────
@@ -262,8 +295,13 @@ class ZeroDayEngine:
         """
         anomalies: list[Anomaly] = []
 
-        # 1. Status code change
-        if baseline.status_code != probe.status_code:
+        # 1. Status code change — only flag meaningful security-relevant transitions
+        # Ignore redirects (301/302/303/307/308): they are normal app behaviour
+        _ignore_observed = {301, 302, 303, 307, 308}
+        _require_baseline = {200}  # only flag when baseline was a successful response
+        if (baseline.status_code != probe.status_code
+                and probe.status_code not in _ignore_observed
+                and baseline.status_code in _require_baseline):
             severity = self._status_change_severity(baseline.status_code, probe.status_code)
             if severity:
                 anomalies.append(self._make_anomaly(
@@ -308,8 +346,9 @@ class ZeroDayEngine:
                     recommended_follow_up="Larger response may indicate data injection or IDOR",
                 ))
 
-        # 3. Timing anomaly (potential blind injection)
-        if probe.response_time_ms > _TIMING_THRESHOLD_MS:
+        # 3. Timing anomaly — delta above baseline must exceed threshold (not just absolute value)
+        _timing_delta = probe.response_time_ms - baseline.response_time_ms
+        if _timing_delta > _TIMING_THRESHOLD_MS:
             anomalies.append(self._make_anomaly(
                 anomaly_type="TimingAnomaly",
                 endpoint=baseline.url,
@@ -317,9 +356,10 @@ class ZeroDayEngine:
                 baseline_value=f"{baseline.response_time_ms:.0f}ms",
                 observed_value=f"{probe.response_time_ms:.0f}ms",
                 severity="high",
-                confidence=0.75 if probe.response_time_ms > 6000 else 0.60,
+                confidence=0.75 if _timing_delta > 8000 else 0.60,
                 evidence=(
-                    f"Response took {probe.response_time_ms:.0f}ms (baseline: {baseline.response_time_ms:.0f}ms) "
+                    f"Response took {probe.response_time_ms:.0f}ms "
+                    f"(baseline: {baseline.response_time_ms:.0f}ms, delta: {_timing_delta:.0f}ms) "
                     f"with {probe.parameter}='{probe.payload[:40]}' — possible blind SQLi or SSRF"
                 ),
                 payload_used=probe.payload,
@@ -345,11 +385,14 @@ class ZeroDayEngine:
                 recommended_follow_up="New fields may indicate excessive data exposure or IDOR",
             ))
 
-        # 5. Reflection detection
-        if probe.payload and len(probe.payload) >= 4:
-            if probe.payload in probe.body_snippet and probe.payload not in baseline.body_snippet:
-                sev = "high" if any(c in probe.payload for c in "<>\"'") else "medium"
-                anomalies.append(self._make_anomaly(
+        # 5. Reflection detection — only flag payloads containing injection-relevant chars
+        _payload_is_meaningful = (bool(set(probe.payload) & _MEANINGFUL_PAYLOAD_CHARS)
+                                   if probe.payload else False)
+        if (probe.payload and len(probe.payload) >= 4 and _payload_is_meaningful
+                and probe.payload in probe.body_snippet
+                and probe.payload not in baseline.body_snippet):
+            sev = "high" if any(c in probe.payload for c in "<>\"'") else "medium"
+            anomalies.append(self._make_anomaly(
                     anomaly_type="ReflectionDetected",
                     endpoint=baseline.url,
                     parameter=probe.parameter,
@@ -396,6 +439,8 @@ class ZeroDayEngine:
                 recommended_follow_up="Server errors on input may indicate injection point",
             ))
 
+        # Apply confidence floor — suppress noise below threshold
+        anomalies = [a for a in anomalies if a.confidence >= _CONFIDENCE_FLOOR]
         return anomalies
 
     # ── Passive response scanner ───────────────────────────────────────────────
@@ -435,6 +480,55 @@ class ZeroDayEngine:
                     confidence=0.90,
                     evidence=f"{description} in response: '{snippet}...'",
                     recommended_follow_up="Remove sensitive data from response; implement proper masking",
+                ))
+
+        # Deserialization artifacts
+        for pattern, description, severity in _DESERIALIZATION_PATTERNS:
+            m = pattern.search(body)
+            if m:
+                anomalies.append(self._make_anomaly(
+                    anomaly_type="DeserializationArtifact",
+                    endpoint=profile.url,
+                    parameter="",
+                    baseline_value="(no serialized data expected)",
+                    observed_value=description,
+                    severity=severity,
+                    confidence=0.85,
+                    evidence=f"{description} in response body",
+                    recommended_follow_up="Review serialization endpoints; avoid Java/PHP native deserialization",
+                ))
+
+        # Source map exposure
+        for pattern, description, severity in _SOURCE_EXPOSURE_PATTERNS:
+            m = pattern.search(body)
+            if m:
+                anomalies.append(self._make_anomaly(
+                    anomaly_type="SourceMapExposure",
+                    endpoint=profile.url,
+                    parameter="",
+                    baseline_value="(no source map expected in production)",
+                    observed_value=description,
+                    severity=severity,
+                    confidence=0.90,
+                    evidence=f"{description} detected in response",
+                    recommended_follow_up="Remove source map references from production JS; configure bundler to omit .map files",
+                ))
+
+        # PII exposure
+        for pattern, description, severity in _PII_PATTERNS:
+            m = pattern.search(body)
+            if m:
+                snippet = m.group(0)[:20]
+                anomalies.append(self._make_anomaly(
+                    anomaly_type="PIIExposure",
+                    endpoint=profile.url,
+                    parameter="",
+                    baseline_value="(no PII expected in response)",
+                    observed_value=description,
+                    severity=severity,
+                    confidence=0.80,
+                    evidence=f"{description}: '{snippet}...'",
+                    recommended_follow_up="Mask or remove PII from API responses; implement response filtering",
                 ))
 
         # Auth inconsistency: 200 on obvious sensitive path
@@ -738,8 +832,15 @@ def print_anomaly_report(anomalies: list[Anomaly]):
 
 def main_cli(args):
     from modules.utils import banner, section, ok, info, warn
-    target = args.domain
-    output = resolve_output_dir(getattr(args, "output", None), target)
+    target = args.target
+    raw_output = getattr(args, "output", None)
+    # When pipeline passes a full .json file path, use its parent as the output dir
+    # and write results directly to that file after the run.
+    _output_file: Optional[str] = None
+    if raw_output and str(raw_output).endswith(".json"):
+        _output_file = raw_output
+        raw_output = str(Path(raw_output).parent)
+    output = resolve_output_dir(raw_output, target)
     banner(f"Zero-Day Discovery Engine — {target}")
     warn("Performing anomaly-based probing. Ensure you have written authorization.")
     print()
@@ -755,7 +856,7 @@ def main_cli(args):
             pass
 
     # Determine base URL
-    base_url = f"https://{target}"
+    base_url = target if target.startswith("http") else f"https://{target}"
     alive_file = Path(output) / "alive_hosts.json"
     if alive_file.exists():
         try:
@@ -779,6 +880,14 @@ def main_cli(args):
     section(f"Anomalies Detected: {len(anomalies)}")
     print_anomaly_report(anomalies)
 
-    ok(f"Anomalies saved: {output}/anomalies.json")
+    # When called from pipeline with --output <path>/zero_day.json, write findings there
+    if _output_file:
+        try:
+            findings = [a.to_dict() if hasattr(a, "to_dict") else (a if isinstance(a, dict) else vars(a)) for a in anomalies]
+            Path(_output_file).write_text(json.dumps({"findings": findings, "count": len(findings)}, indent=2, default=str))
+        except Exception:
+            pass
+    else:
+        ok(f"Anomalies saved: {output}/anomalies.json")
     print()
     return anomalies
