@@ -67,7 +67,7 @@ EVIDENCE_PATTERNS = {
 }
 
 TIME_BASED_TYPES = {"sqli_time", "cmdi_time"}
-TIMING_THRESHOLD_S = 4.0
+TIMING_THRESHOLD_S = 6.0
 
 
 @dataclass
@@ -151,6 +151,7 @@ class FindingValidationEngine:
             "auth_bypass": self._validate_auth_bypass,
             "idor": self._validate_idor,
             "xxe": self._validate_xxe,
+            "http_request_smuggling": self._validate_passthrough,
         }
         fn = dispatch.get(vuln_type, self._validate_generic)
         return fn(result, finding, url, payload, param, method)
@@ -171,15 +172,21 @@ class FindingValidationEngine:
                 result.duration_ms = resp["duration_ms"]
                 body = resp["body"]
 
-                # Time-based detection
-                if category == "blind_time" and resp["duration_ms"] >= TIMING_THRESHOLD_S * 1000:
-                    result.evidence = f"Time-based SQLi: {resp['duration_ms']:.0f}ms delay"
-                    result.evidence_type = "timing"
-                    result.confidence = 0.85
-                    result.payload = p
-                    result.flags.append("time_based_sqli")
-                    self._build_poc(result, url, param, p, method)
-                    return True
+                # Time-based detection — must exceed baseline by threshold (not just absolute value)
+                if category == "blind_time":
+                    _baseline_ms = (baseline or {}).get("duration_ms", 0.0)
+                    _delta_ms = resp["duration_ms"] - _baseline_ms
+                    if _delta_ms >= TIMING_THRESHOLD_S * 1000:
+                        result.evidence = (
+                            f"Time-based SQLi: {resp['duration_ms']:.0f}ms "
+                            f"(baseline {_baseline_ms:.0f}ms, delta {_delta_ms:.0f}ms)"
+                        )
+                        result.evidence_type = "timing"
+                        result.confidence = 0.85
+                        result.payload = p
+                        result.flags.append("time_based_sqli")
+                        self._build_poc(result, url, param, p, method)
+                        return True
 
                 # Error-based detection
                 for pat in EVIDENCE_PATTERNS["sqli"]:
@@ -420,6 +427,18 @@ class FindingValidationEngine:
                     return True
         return False
 
+    def _validate_passthrough(self, result: ValidationResult, finding: dict,
+                              url: str, payload: str, param: str, method: str) -> bool:
+        """Pass through tool-validated findings that can't be re-probed (e.g. timing-based)."""
+        original_confidence = float(finding.get("confidence", 0) or 0)
+        if original_confidence >= 0.5:
+            result.confidence = original_confidence
+            result.evidence = finding.get("evidence", "")[:200]
+            result.evidence_type = "passthrough"
+            result.flags.append("tool_validated_passthrough")
+            return True
+        return False
+
     def _validate_generic(self, result: ValidationResult, finding: dict,
                           url: str, payload: str, param: str, method: str) -> bool:
         """Generic validation: send original payload, check evidence string."""
@@ -436,6 +455,8 @@ class FindingValidationEngine:
             result.response_status = resp["status"]
             result.flags.append("generic_validation")
             return True
+        # No evidence to validate — preserve original tool confidence rather than leaving 0.0
+        result.confidence = float(finding.get("confidence", 0) or 0)
         return False
 
     def _baseline(self, url: str, method: str, param: str) -> Optional[dict]:

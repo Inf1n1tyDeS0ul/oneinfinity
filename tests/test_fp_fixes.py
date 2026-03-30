@@ -92,3 +92,27 @@ def test_401_to_200_fires_auth_bypass():
     anomalies = e.analyze_responses(baseline, probe)
     status_anomalies = [a for a in anomalies if a.anomaly_type == "StatusCodeChange"]
     assert len(status_anomalies) == 1, "401→200 auth bypass must trigger StatusCodeChange"
+
+
+# SQLi time-blind FP fix
+from finding_validation_engine import TIMING_THRESHOLD_S
+
+def test_sqli_timing_threshold_is_six_seconds():
+    assert TIMING_THRESHOLD_S == 6.0, f"Expected 6.0, got {TIMING_THRESHOLD_S}"
+
+
+def test_ssrf_finding_without_oob_gets_low_confidence():
+    """SSRF findings without OOB callback must be tagged needs_manual_verification."""
+    from modules.tool_wrappers import tag_ssrf_confidence
+    finding = {"vuln_type": "SSRF", "url": "http://test.local/fetch", "confidence": 0.9}
+    tagged = tag_ssrf_confidence(finding, oob_callback_received=False)
+    assert tagged["confidence"] <= 0.4
+    assert tagged.get("needs_manual_verification") is True
+
+
+def test_ssrf_finding_with_oob_keeps_confidence():
+    from modules.tool_wrappers import tag_ssrf_confidence
+    finding = {"vuln_type": "SSRF", "url": "http://test.local/fetch", "confidence": 0.9}
+    tagged = tag_ssrf_confidence(finding, oob_callback_received=True)
+    assert tagged["confidence"] == 0.9
+    assert tagged.get("needs_manual_verification") is not True

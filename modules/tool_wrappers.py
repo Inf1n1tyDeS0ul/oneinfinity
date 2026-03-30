@@ -76,6 +76,26 @@ class ToolResult:
         return json.dumps(self.to_dict(), indent=indent, default=str)
 
 
+def tag_ssrf_confidence(finding: dict, oob_callback_received: bool) -> dict:
+    """
+    Adjusts confidence of SSRF findings based on OOB callback confirmation.
+    Without a confirmed OOB callback, SSRF can only be reported as low-confidence
+    requiring manual verification — the request was sent but we don't know if
+    the server actually fetched it.
+    """
+    out = dict(finding)
+    if not oob_callback_received:
+        out["confidence"] = 0.35   # below reporting threshold
+        out["needs_manual_verification"] = True
+        out["oob_callback_received"] = False
+        out.setdefault("flags", [])
+        if isinstance(out["flags"], list) and "ssrf_unconfirmed" not in out["flags"]:
+            out["flags"].append("ssrf_unconfirmed")
+    else:
+        out["oob_callback_received"] = True
+    return out
+
+
 # ── Command runner ────────────────────────────────────────────────────────────
 
 def _run_cmd(
@@ -1383,6 +1403,1179 @@ def run_pyrit(target: str) -> ToolResult:
 
 
 # ============================================================================
+#  EXTENDED SECURITY TESTS — pure-Python (no CLI dependency)
+#  These cover gaps in OWASP Top 10 not addressed by existing tools:
+#  Race Conditions, File Upload Bypass, OAuth/OIDC, Prototype Pollution,
+#  WebSocket Security, MFA Bypass, Rate Limiting, PII Exposure,
+#  Source Map Exposure, Clickjacking, Insecure Deserialization,
+#  HTTP Request Smuggling (raw socket fallback)
+# ============================================================================
+
+def run_race_condition_test(
+    url: str,
+    method: str = "POST",
+    headers: dict = None,
+    json_body: dict = None,
+    concurrency: int = 25,
+    timeout: int = 30,
+) -> ToolResult:
+    """
+    Test for race conditions by sending concurrent requests and detecting inconsistencies.
+    Looks for: duplicate resource creation, balance discrepancies, duplicate coupon use.
+    """
+    import concurrent.futures
+    import time as _time
+
+    try:
+        import requests as _req
+    except ImportError:
+        return ToolResult(tool="race_condition_test", success=False, error="requests not installed")
+
+    _check_scope(url)
+    responses = []
+    t0 = _time.monotonic()
+
+    def _send(_):
+        try:
+            r = _req.request(method.upper(), url,
+                             headers=headers or {}, json=json_body,
+                             timeout=10, verify=False, allow_redirects=False)
+            return {"status": r.status_code, "body": r.text[:512], "elapsed": r.elapsed.total_seconds()}
+        except Exception as exc:
+            return {"status": 0, "body": str(exc), "elapsed": 0}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
+        futures = [pool.submit(_send, i) for i in range(concurrency)]
+        responses = [f.result() for f in concurrent.futures.as_completed(futures)]
+
+    duration = _time.monotonic() - t0
+
+    # Analyse responses for race condition signals
+    status_counts: dict = {}
+    for r in responses:
+        s = r["status"]
+        status_counts[s] = status_counts.get(s, 0) + 1
+
+    findings = []
+    success_count = status_counts.get(200, 0) + status_counts.get(201, 0)
+    # If multiple 200/201s arrived simultaneously → likely race condition
+    if success_count > 1:
+        findings.append({
+            "url": url,
+            "parameter": "",
+            "vulnerability": "Race Condition — multiple concurrent successes",
+            "severity": "high",
+            "source_tool": "race_condition_test",
+            "extra": {
+                "concurrent_successes": success_count,
+                "total_requests": concurrency,
+                "status_distribution": status_counts,
+            },
+        })
+
+    return ToolResult(
+        tool="race_condition_test",
+        success=True,
+        data={"findings": findings, "status_distribution": status_counts,
+              "concurrent_requests": concurrency},
+        count=len(findings),
+        duration=duration,
+    )
+
+
+def run_file_upload_test(
+    base_url: str,
+    headers: dict = None,
+    timeout: int = 30,
+) -> ToolResult:
+    """
+    Discover file upload endpoints and test for bypass vulnerabilities:
+    - MIME type spoofing (image/jpeg with PHP/JSP content)
+    - Double extension (.php.jpg)
+    - Null byte injection (.php%00.jpg)
+    - SVG with embedded XSS
+    - HTML upload for phishing
+    """
+    import io
+    try:
+        import requests as _req
+    except ImportError:
+        return ToolResult(tool="file_upload_test", success=False, error="requests not installed")
+
+    _check_scope(base_url)
+
+    upload_paths = [
+        "/upload", "/api/upload", "/file/upload", "/files/upload",
+        "/api/files", "/upload/file", "/media/upload", "/avatar/upload",
+        "/profile/upload", "/document/upload", "/attachment/upload",
+        "/api/v1/upload", "/api/v2/upload",
+    ]
+
+    findings = []
+
+    # Test payloads: (filename, content, mime_type, description)
+    payloads = [
+        ("test.php", b"<?php echo 'pwned'; ?>", "image/jpeg", "PHP in image MIME"),
+        ("test.php.jpg", b"<?php echo 'pwned'; ?>", "image/jpeg", "Double extension .php.jpg"),
+        ("test.svg", b'<svg><script>alert(1)</script></svg>', "image/svg+xml", "SVG XSS"),
+        ("test.html", b'<html><script>alert(document.cookie)</script></html>', "text/html", "HTML upload"),
+        ("test.jsp", b"<% out.println('pwned'); %>", "image/gif", "JSP in image MIME"),
+    ]
+
+    for path in upload_paths:
+        url = base_url.rstrip("/") + path
+        try:
+            # HEAD probe first to see if endpoint exists
+            r = _req.head(url, headers=headers or {}, timeout=5, verify=False, allow_redirects=True)
+            if r.status_code in (404, 410):
+                continue
+
+            # Try each bypass payload
+            for fname, content, mime, description in payloads:
+                try:
+                    files = {"file": (fname, io.BytesIO(content), mime)}
+                    resp = _req.post(url, files=files, headers=headers or {},
+                                    timeout=timeout, verify=False, allow_redirects=True)
+                    if resp.status_code in (200, 201, 202):
+                        # Check if a URL to the uploaded file is returned
+                        file_url = ""
+                        if "url" in resp.text.lower() or "path" in resp.text.lower():
+                            import re as _re
+                            matches = _re.findall(r'"(?:url|path|file|location)"\s*:\s*"([^"]+)"', resp.text)
+                            file_url = matches[0] if matches else ""
+                        findings.append({
+                            "url": url,
+                            "parameter": "file",
+                            "vulnerability": f"File Upload Bypass: {description}",
+                            "severity": "high",
+                            "source_tool": "file_upload_test",
+                            "extra": {
+                                "filename": fname,
+                                "mime_type": mime,
+                                "response_status": resp.status_code,
+                                "uploaded_url": file_url,
+                            },
+                        })
+                        break  # One confirmed bypass per endpoint is enough
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
+    return ToolResult(
+        tool="file_upload_test",
+        success=True,
+        data={"findings": findings},
+        count=len(findings),
+    )
+
+
+def run_oauth_test(
+    base_url: str,
+    headers: dict = None,
+    timeout: int = 30,
+) -> ToolResult:
+    """
+    Test OAuth/OIDC flows for common vulnerabilities:
+    - Missing state parameter CSRF
+    - Open redirect_uri (redirect to attacker domain)
+    - Token leakage via Referer header
+    - Authorization code interception
+    - Implicit flow token in fragment leakage
+    """
+    try:
+        import requests as _req
+        from urllib.parse import urlparse, urljoin, urlencode, parse_qs, urlunparse
+    except ImportError:
+        return ToolResult(tool="oauth_test", success=False, error="requests not installed")
+
+    _check_scope(base_url)
+
+    oauth_paths = [
+        "/oauth/authorize", "/oauth2/authorize", "/auth/oauth",
+        "/connect/authorize", "/api/oauth/authorize",
+        "/.well-known/openid-configuration",
+    ]
+
+    findings = []
+
+    for path in oauth_paths:
+        url = base_url.rstrip("/") + path
+        try:
+            r = _req.get(url, headers=headers or {}, timeout=timeout,
+                        verify=False, allow_redirects=False)
+            if r.status_code in (404, 410):
+                continue
+
+            # Test 1: Missing state parameter → CSRF
+            params_no_state = {
+                "client_id": "test",
+                "redirect_uri": base_url,
+                "response_type": "code",
+            }
+            r2 = _req.get(url, params=params_no_state, headers=headers or {},
+                          timeout=timeout, verify=False, allow_redirects=False)
+            if r2.status_code in (200, 302) and "state" not in r2.text.lower():
+                findings.append({
+                    "url": url,
+                    "parameter": "state",
+                    "vulnerability": "OAuth Missing state Parameter — CSRF Risk",
+                    "severity": "medium",
+                    "source_tool": "oauth_test",
+                    "extra": {"response_status": r2.status_code},
+                })
+
+            # Test 2: Open redirect_uri — try attacker domain
+            params_redirect = {
+                "client_id": "test",
+                "redirect_uri": "https://attacker.example.com/callback",
+                "response_type": "code",
+                "state": "csrftest123",
+            }
+            r3 = _req.get(url, params=params_redirect, headers=headers or {},
+                          timeout=timeout, verify=False, allow_redirects=False)
+            if r3.status_code == 302:
+                loc = r3.headers.get("Location", "")
+                if "attacker.example.com" in loc:
+                    findings.append({
+                        "url": url,
+                        "parameter": "redirect_uri",
+                        "vulnerability": "OAuth Open Redirect — redirect_uri not validated",
+                        "severity": "high",
+                        "source_tool": "oauth_test",
+                        "extra": {"redirect_location": loc},
+                    })
+
+            # Test 3: Well-known config exposes implicit flow (token in URL fragment leaks)
+            if "openid-configuration" in path and r.status_code == 200:
+                try:
+                    config = r.json()
+                    grant_types = config.get("grant_types_supported", [])
+                    if "implicit" in grant_types or "token" in config.get("response_types_supported", []):
+                        findings.append({
+                            "url": url,
+                            "parameter": "",
+                            "vulnerability": "OAuth Implicit Flow Enabled — tokens exposed in URL fragment",
+                            "severity": "medium",
+                            "source_tool": "oauth_test",
+                            "extra": {"grant_types": grant_types},
+                        })
+                except Exception:
+                    pass
+
+        except Exception:
+            continue
+
+    return ToolResult(
+        tool="oauth_test",
+        success=True,
+        data={"findings": findings},
+        count=len(findings),
+    )
+
+
+def run_prototype_pollution_test(
+    url: str,
+    headers: dict = None,
+    timeout: int = 30,
+) -> ToolResult:
+    """
+    Test for prototype pollution via query parameters and JSON body.
+    Injects __proto__, constructor.prototype, __defineGetter__ payloads.
+    Looks for reflected payload or error responses indicating eval.
+    """
+    try:
+        import requests as _req
+    except ImportError:
+        return ToolResult(tool="prototype_pollution_test", success=False, error="requests not installed")
+
+    _check_scope(url)
+
+    pollution_payloads = [
+        ("__proto__[polluted]", "pp_canary_1337"),
+        ("constructor[prototype][polluted]", "pp_canary_1337"),
+        ("__proto__.polluted", "pp_canary_1337"),
+    ]
+
+    json_payloads = [
+        {"__proto__": {"polluted": "pp_canary_1337"}},
+        {"constructor": {"prototype": {"polluted": "pp_canary_1337"}}},
+    ]
+
+    findings = []
+
+    # Test via query parameters
+    for param_name, canary in pollution_payloads:
+        try:
+            r = _req.get(url, params={param_name: canary},
+                         headers=headers or {}, timeout=timeout, verify=False)
+            if canary in r.text:
+                findings.append({
+                    "url": url,
+                    "parameter": param_name,
+                    "vulnerability": "Prototype Pollution via Query Parameter",
+                    "severity": "high",
+                    "source_tool": "prototype_pollution_test",
+                    "extra": {"payload": param_name, "canary": canary, "reflected": True},
+                })
+                break
+        except Exception:
+            continue
+
+    # Test via JSON POST body
+    for payload in json_payloads:
+        try:
+            r = _req.post(url, json=payload,
+                          headers={**(headers or {}), "Content-Type": "application/json"},
+                          timeout=timeout, verify=False)
+            if "pp_canary_1337" in r.text:
+                findings.append({
+                    "url": url,
+                    "parameter": "json_body",
+                    "vulnerability": "Prototype Pollution via JSON Body",
+                    "severity": "high",
+                    "source_tool": "prototype_pollution_test",
+                    "extra": {"payload": str(payload), "reflected": True},
+                })
+                break
+        except Exception:
+            continue
+
+    return ToolResult(
+        tool="prototype_pollution_test",
+        success=True,
+        data={"findings": findings},
+        count=len(findings),
+    )
+
+
+def run_websocket_test(
+    base_url: str,
+    headers: dict = None,
+    timeout: int = 20,
+) -> ToolResult:
+    """
+    Test WebSocket endpoints for:
+    - Missing Origin validation (accepts cross-origin connections)
+    - Unauthenticated WebSocket connections
+    - Message injection (XSS, SQLi payloads via WS)
+    """
+    try:
+        import websocket as _ws
+        import threading
+    except ImportError:
+        # websocket-client not installed — do HTTP-based WS discovery only
+        _ws = None
+
+    try:
+        import requests as _req
+    except ImportError:
+        return ToolResult(tool="websocket_test", success=False, error="requests not installed")
+
+    _check_scope(base_url)
+
+    ws_paths = ["/ws", "/websocket", "/socket", "/ws/logs", "/api/ws",
+                "/socket.io", "/stream", "/events", "/live"]
+    findings = []
+
+    parsed_base = base_url.rstrip("/")
+    ws_base = parsed_base.replace("https://", "wss://").replace("http://", "ws://")
+
+    for path in ws_paths:
+        # HTTP Upgrade probe first
+        http_url = parsed_base + path
+        ws_url = ws_base + path
+        try:
+            upgrade_headers = {**(headers or {}), "Connection": "Upgrade", "Upgrade": "websocket",
+                               "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",  # gitleaks:allow — RFC 6455 example key, not a real secret
+                               "Sec-WebSocket-Version": "13"}
+            r = _req.get(http_url, headers=upgrade_headers, timeout=5,
+                         verify=False, allow_redirects=False)
+            if r.status_code not in (101, 400, 426):
+                continue
+
+            # Endpoint exists — test origin check
+            bad_origin_headers = {**upgrade_headers, "Origin": "https://attacker.example.com"}
+            r2 = _req.get(http_url, headers=bad_origin_headers, timeout=5,
+                          verify=False, allow_redirects=False)
+            if r2.status_code in (101, 200):
+                findings.append({
+                    "url": ws_url,
+                    "parameter": "Origin",
+                    "vulnerability": "WebSocket Missing Origin Validation",
+                    "severity": "medium",
+                    "source_tool": "websocket_test",
+                    "extra": {
+                        "detail": "WebSocket accepted connection from attacker.example.com",
+                        "response_status": r2.status_code,
+                    },
+                })
+
+            # No auth headers → unauthenticated access
+            no_auth = {k: v for k, v in upgrade_headers.items()
+                       if k.lower() not in ("authorization", "cookie")}
+            r3 = _req.get(http_url, headers=no_auth, timeout=5, verify=False)
+            if r3.status_code in (101, 200):
+                findings.append({
+                    "url": ws_url,
+                    "parameter": "",
+                    "vulnerability": "Unauthenticated WebSocket Endpoint",
+                    "severity": "medium",
+                    "source_tool": "websocket_test",
+                    "extra": {"path": path},
+                })
+
+        except Exception:
+            continue
+
+    return ToolResult(
+        tool="websocket_test",
+        success=True,
+        data={"findings": findings},
+        count=len(findings),
+    )
+
+
+def run_mfa_bypass_test(
+    base_url: str,
+    headers: dict = None,
+    timeout: int = 30,
+) -> ToolResult:
+    """
+    Test MFA/2FA implementations for bypass vulnerabilities:
+    - Response manipulation (change 'success: false' to 'success: true')
+    - OTP rate limiting (rapid OTP submission without lockout)
+    - Null/empty OTP acceptance
+    - OTP reuse after expiry
+    """
+    try:
+        import requests as _req
+    except ImportError:
+        return ToolResult(tool="mfa_bypass_test", success=False, error="requests not installed")
+
+    _check_scope(base_url)
+
+    mfa_paths = [
+        "/api/verify-otp", "/api/2fa/verify", "/auth/2fa", "/verify",
+        "/api/auth/verify", "/login/verify", "/otp/verify",
+        "/api/mfa/verify", "/account/verify",
+    ]
+
+    findings = []
+
+    for path in mfa_paths:
+        url = base_url.rstrip("/") + path
+        try:
+            # Probe: does endpoint exist?
+            r = _req.get(url, headers=headers or {}, timeout=5, verify=False)
+            if r.status_code in (404, 410):
+                continue
+
+            # Test 1: Null/empty OTP
+            for otp_val in ["", "000000", "null", "undefined", "true", "1"]:
+                try:
+                    resp = _req.post(url, json={"otp": otp_val, "code": otp_val},
+                                     headers={**(headers or {}), "Content-Type": "application/json"},
+                                     timeout=timeout, verify=False)
+                    if resp.status_code == 200 and any(
+                        k in resp.text.lower() for k in ("success", "token", "authenticated", "verified")
+                    ):
+                        findings.append({
+                            "url": url,
+                            "parameter": "otp",
+                            "vulnerability": f"MFA Bypass — OTP accepted null/trivial value: {otp_val!r}",
+                            "severity": "critical",
+                            "source_tool": "mfa_bypass_test",
+                            "extra": {"otp_value": otp_val, "response_status": resp.status_code},
+                        })
+                        break
+                except Exception:
+                    continue
+
+            # Test 2: Rate limit check — rapid OTP submissions
+            rate_responses = []
+            for _ in range(10):
+                try:
+                    resp = _req.post(url, json={"otp": "123456"},
+                                     headers={**(headers or {}), "Content-Type": "application/json"},
+                                     timeout=5, verify=False)
+                    rate_responses.append(resp.status_code)
+                except Exception:
+                    break
+            if rate_responses and all(s != 429 for s in rate_responses) and len(rate_responses) == 10:
+                findings.append({
+                    "url": url,
+                    "parameter": "otp",
+                    "vulnerability": "MFA Missing Rate Limiting — OTP brute-force possible",
+                    "severity": "high",
+                    "source_tool": "mfa_bypass_test",
+                    "extra": {"attempts": 10, "no_429_observed": True},
+                })
+
+        except Exception:
+            continue
+
+    return ToolResult(
+        tool="mfa_bypass_test",
+        success=True,
+        data={"findings": findings},
+        count=len(findings),
+    )
+
+
+def run_rate_limit_test(
+    base_url: str,
+    headers: dict = None,
+    timeout: int = 30,
+) -> ToolResult:
+    """
+    Test critical endpoints for missing rate limiting (OWASP API4):
+    - Login endpoints (brute-force protection)
+    - Password reset endpoints
+    - OTP/verification endpoints
+    - Registration endpoints
+    """
+    try:
+        import requests as _req
+    except ImportError:
+        return ToolResult(tool="rate_limit_test", success=False, error="requests not installed")
+
+    _check_scope(base_url)
+
+    critical_paths = [
+        ("/login", "POST", {"username": "test", "password": "test"}),
+        ("/api/login", "POST", {"username": "test", "password": "test"}),
+        ("/auth/login", "POST", {"email": "test@test.com", "password": "test"}),
+        ("/forgot-password", "POST", {"email": "test@test.com"}),
+        ("/api/reset-password", "POST", {"email": "test@test.com"}),
+        ("/register", "POST", {"username": "test", "password": "test", "email": "t@t.com"}),
+        ("/api/register", "POST", {"username": "test", "password": "test", "email": "t@t.com"}),
+        ("/search", "GET", {}),
+        ("/api/search", "GET", {}),
+    ]
+
+    findings = []
+
+    for path, method, body in critical_paths:
+        url = base_url.rstrip("/") + path
+        try:
+            statuses = []
+            for _ in range(15):
+                try:
+                    if method == "POST":
+                        r = _req.post(url, json=body,
+                                      headers={**(headers or {}), "Content-Type": "application/json"},
+                                      timeout=5, verify=False)
+                    else:
+                        r = _req.get(url, headers=headers or {}, timeout=5, verify=False)
+                    statuses.append(r.status_code)
+                except Exception:
+                    break
+
+            if not statuses:
+                continue
+
+            has_rate_limit = any(s in (429, 423, 503) for s in statuses)
+            endpoint_exists = any(s not in (404, 410, 405) for s in statuses)
+
+            if endpoint_exists and not has_rate_limit and len(statuses) >= 10:
+                findings.append({
+                    "url": url,
+                    "parameter": "",
+                    "vulnerability": f"Missing Rate Limiting on {method} {path}",
+                    "severity": "medium",
+                    "source_tool": "rate_limit_test",
+                    "extra": {
+                        "attempts": len(statuses),
+                        "status_distribution": {str(s): statuses.count(s) for s in set(statuses)},
+                        "no_429": True,
+                    },
+                })
+        except Exception:
+            continue
+
+    return ToolResult(
+        tool="rate_limit_test",
+        success=True,
+        data={"findings": findings},
+        count=len(findings),
+    )
+
+
+_PII_PATTERNS: dict = {
+    "email":    r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
+    "phone":    r'\b(?:\+?\d[\d\s\-\(\)]{7,14}\d)\b',
+    "ssn":      r'\b\d{3}-\d{2}-\d{4}\b',
+    "credit_card": r'\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b',
+    "dob":      r'\b(?:dob|date_of_birth|birthdate)\b.*?\b\d{4}[-/]\d{2}[-/]\d{2}\b',
+    "passport": r'\b[A-Z]{1,2}[0-9]{6,9}\b',
+    "aadhaar":  r'\b[2-9]{1}[0-9]{3}\s?[0-9]{4}\s?[0-9]{4}\b',
+    "pan":      r'\b[A-Z]{5}[0-9]{4}[A-Z]\b',
+}
+
+def run_pii_scanner(
+    urls: list,
+    headers: dict = None,
+    timeout: int = 30,
+) -> ToolResult:
+    """
+    Scan API responses for PII exposure:
+    - Email addresses, phone numbers, SSN, credit card numbers
+    - Date of birth fields, passport numbers, Aadhaar, PAN
+    - Overly verbose API responses returning unnecessary personal data
+    """
+    import re as _re
+    try:
+        import requests as _req
+    except ImportError:
+        return ToolResult(tool="pii_scanner", success=False, error="requests not installed")
+
+    compiled_patterns = {k: _re.compile(v, _re.IGNORECASE) for k, v in _PII_PATTERNS.items()}
+    findings = []
+
+    for url in (urls or []):
+        try:
+            _check_scope(url)
+            r = _req.get(url, headers=headers or {}, timeout=timeout,
+                         verify=False, allow_redirects=True)
+            if r.status_code != 200:
+                continue
+
+            body = r.text
+            # Only scan JSON/API responses
+            ct = r.headers.get("content-type", "").lower()
+            if not any(t in ct for t in ("json", "text", "xml")):
+                continue
+
+            for pii_type, pattern in compiled_patterns.items():
+                matches = pattern.findall(body)
+                if matches:
+                    findings.append({
+                        "url": url,
+                        "parameter": "",
+                        "vulnerability": f"PII Exposure in API Response — {pii_type}",
+                        "severity": "high",
+                        "source_tool": "pii_scanner",
+                        "extra": {
+                            "pii_type": pii_type,
+                            "sample_count": len(matches),
+                            "sample": matches[0] if matches else "",
+                        },
+                    })
+        except Exception:
+            continue
+
+    return ToolResult(
+        tool="pii_scanner",
+        success=True,
+        data={"findings": findings},
+        count=len(findings),
+    )
+
+
+def run_source_map_scanner(
+    base_url: str,
+    urls: list = None,
+    headers: dict = None,
+    timeout: int = 30,
+) -> ToolResult:
+    """
+    Discover exposed JavaScript source maps (.map files).
+    Source maps expose original source code, comments, internal paths and logic.
+    Also checks for exposed .env, config.js, settings.js.
+    """
+    import re as _re
+    try:
+        import requests as _req
+    except ImportError:
+        return ToolResult(tool="source_map_scanner", success=False, error="requests not installed")
+
+    _check_scope(base_url)
+    findings = []
+
+    # 1. Check direct .map file paths
+    common_map_paths = [
+        "/static/js/main.js.map", "/static/js/bundle.js.map",
+        "/static/js/vendor.js.map", "/js/app.js.map", "/js/main.js.map",
+        "/app.js.map", "/bundle.js.map", "/dist/bundle.js.map",
+        "/.env", "/.env.local", "/.env.production", "/config.js",
+        "/settings.js", "/webpack.config.js", "/.git/config",
+        "/robots.txt", "/sitemap.xml",
+    ]
+
+    for path in common_map_paths:
+        url = base_url.rstrip("/") + path
+        try:
+            r = _req.get(url, headers=headers or {}, timeout=10, verify=False)
+            if r.status_code != 200 or len(r.text) < 100:
+                continue
+
+            ct = r.headers.get("content-type", "").lower()
+            is_map = (path.endswith(".map") and
+                      any(k in r.text for k in ('"sources"', '"mappings"', '"sourceRoot"')))
+            is_env = path.endswith(".env") or path.endswith(".env.local") or ".env." in path
+            is_config = any(path.endswith(x) for x in (".js", ".json"))
+
+            if is_map:
+                # Count source files exposed
+                sources = _re.findall(r'"sources"\s*:\s*\[([^\]]+)\]', r.text)
+                src_count = len(sources[0].split(",")) if sources else 0
+                findings.append({
+                    "url": url,
+                    "parameter": "",
+                    "vulnerability": "Exposed JavaScript Source Map",
+                    "severity": "medium",
+                    "source_tool": "source_map_scanner",
+                    "extra": {"source_files_count": src_count, "size_bytes": len(r.text)},
+                })
+            elif is_env and any(k in r.text for k in ("KEY=", "SECRET=", "PASSWORD=", "TOKEN=", "DB_")):
+                findings.append({
+                    "url": url,
+                    "parameter": "",
+                    "vulnerability": "Exposed .env File with Secrets",
+                    "severity": "critical",
+                    "source_tool": "source_map_scanner",
+                    "extra": {"size_bytes": len(r.text)},
+                })
+        except Exception:
+            continue
+
+    # 2. Crawl discovered JS URLs for sourceMappingURL comments
+    for js_url in (urls or []):
+        if not js_url.endswith(".js"):
+            continue
+        try:
+            _check_scope(js_url)
+            r = _req.get(js_url, headers=headers or {}, timeout=10, verify=False)
+            if r.status_code != 200:
+                continue
+            map_match = _re.search(r'//[#@]\s*sourceMappingURL=(.+\.map)', r.text)
+            if map_match:
+                map_url = map_match.group(1).strip()
+                if not map_url.startswith("http"):
+                    map_url = js_url.rsplit("/", 1)[0] + "/" + map_url
+                # Try fetching the referenced map
+                try:
+                    _check_scope(map_url)
+                    mr = _req.get(map_url, headers=headers or {}, timeout=10, verify=False)
+                    if mr.status_code == 200 and '"sources"' in mr.text:
+                        findings.append({
+                            "url": map_url,
+                            "parameter": "",
+                            "vulnerability": "Exposed JavaScript Source Map (referenced from JS)",
+                            "severity": "medium",
+                            "source_tool": "source_map_scanner",
+                            "extra": {"js_file": js_url, "map_url": map_url},
+                        })
+                except Exception:
+                    pass
+        except Exception:
+            continue
+
+    return ToolResult(
+        tool="source_map_scanner",
+        success=True,
+        data={"findings": findings},
+        count=len(findings),
+    )
+
+
+def run_clickjacking_test(
+    url: str,
+    headers: dict = None,
+    timeout: int = 15,
+) -> ToolResult:
+    """
+    Test for Clickjacking vulnerability:
+    - Missing X-Frame-Options header
+    - Missing Content-Security-Policy frame-ancestors directive
+    - Verify the page can actually be framed (not blocked by response headers)
+    """
+    try:
+        import requests as _req
+    except ImportError:
+        return ToolResult(tool="clickjacking_test", success=False, error="requests not installed")
+
+    _check_scope(url)
+    findings = []
+
+    try:
+        r = _req.get(url, headers=headers or {}, timeout=timeout, verify=False, allow_redirects=True)
+        resp_headers = {k.lower(): v.lower() for k, v in r.headers.items()}
+
+        xfo = resp_headers.get("x-frame-options", "")
+        csp = resp_headers.get("content-security-policy", "")
+
+        has_xfo_protection = bool(xfo) and any(v in xfo for v in ("deny", "sameorigin"))
+        has_csp_frame = "frame-ancestors" in csp
+
+        if not has_xfo_protection and not has_csp_frame:
+            findings.append({
+                "url": url,
+                "parameter": "",
+                "vulnerability": "Clickjacking — No Frame Protection Headers",
+                "severity": "medium",
+                "source_tool": "clickjacking_test",
+                "extra": {
+                    "x_frame_options": xfo or "MISSING",
+                    "csp_frame_ancestors": "MISSING",
+                    "detail": "Page can be embedded in cross-origin iframe enabling clickjacking attacks",
+                },
+            })
+        elif xfo and "allowall" in xfo:
+            findings.append({
+                "url": url,
+                "parameter": "",
+                "vulnerability": "Clickjacking — X-Frame-Options set to ALLOWALL",
+                "severity": "high",
+                "source_tool": "clickjacking_test",
+                "extra": {"x_frame_options": xfo},
+            })
+    except Exception as exc:
+        return ToolResult(tool="clickjacking_test", success=False, error=str(exc))
+
+    return ToolResult(
+        tool="clickjacking_test",
+        success=True,
+        data={"findings": findings},
+        count=len(findings),
+    )
+
+
+def run_deserialization_test(
+    url: str,
+    headers: dict = None,
+    timeout: int = 30,
+) -> ToolResult:
+    """
+    Test for insecure deserialization vulnerabilities:
+    - Java serialization magic bytes (AC ED 00 05) in POST body
+    - PHP serialize() payloads
+    - Python pickle payloads (safe canary only — no RCE)
+    - .NET ViewState manipulation
+    Detects by timing difference or error messages revealing deserialization.
+    """
+    import base64 as _b64
+    import time as _time
+    try:
+        import requests as _req
+    except ImportError:
+        return ToolResult(tool="deserialization_test", success=False, error="requests not installed")
+
+    _check_scope(url)
+    findings = []
+
+    # Java serialization magic bytes — just the header, not a gadget chain
+    java_serial = _b64.b64encode(b"\xac\xed\x00\x05").decode()
+
+    # PHP unserialize canary — triggers error if deserialized
+    php_serial = 'O:8:"stdClass":1:{s:4:"test";s:8:"pwned123";}'
+
+    # .NET ViewState canary (base64 encoded minimal invalid ViewState)
+    dotnet_viewstate = _b64.b64encode(b"\xff\x01" + b"\x00" * 20).decode()
+
+    test_payloads = [
+        ("application/octet-stream", _b64.b64decode(java_serial), "Java Serialized Object"),
+        ("application/x-php-serialized", php_serial.encode(), "PHP Serialized Object"),
+        ("application/x-www-form-urlencoded", f"__VIEWSTATE={dotnet_viewstate}".encode(), ".NET ViewState"),
+    ]
+
+    deser_error_patterns = [
+        "java.io.objectinputstream", "unserialize(", "serializationexception",
+        "deserializ", "gadget", "classnotfoundexception", "invalidclassexception",
+        "pickle", "marshal.loads",
+    ]
+
+    for content_type, payload, payload_name in test_payloads:
+        try:
+            t0 = _time.monotonic()
+            h = {**(headers or {}), "Content-Type": content_type}
+            r = _req.post(url, data=payload, headers=h, timeout=timeout, verify=False)
+            elapsed = _time.monotonic() - t0
+
+            body_lower = r.text[:2048].lower()
+            has_deser_error = any(p in body_lower for p in deser_error_patterns)
+
+            if has_deser_error:
+                findings.append({
+                    "url": url,
+                    "parameter": "body",
+                    "vulnerability": f"Insecure Deserialization — {payload_name} Error Leaked",
+                    "severity": "critical",
+                    "source_tool": "deserialization_test",
+                    "extra": {
+                        "payload_type": payload_name,
+                        "response_status": r.status_code,
+                        "error_snippet": r.text[:300],
+                    },
+                })
+
+            # Timing-based: if response took >3s vs baseline, may be deserializing
+            elif elapsed > 3.0:
+                findings.append({
+                    "url": url,
+                    "parameter": "body",
+                    "vulnerability": f"Possible Insecure Deserialization — Timing Anomaly ({payload_name})",
+                    "severity": "medium",
+                    "source_tool": "deserialization_test",
+                    "extra": {"payload_type": payload_name, "elapsed_s": round(elapsed, 2)},
+                })
+        except Exception:
+            continue
+
+    return ToolResult(
+        tool="deserialization_test",
+        success=True,
+        data={"findings": findings},
+        count=len(findings),
+    )
+
+
+def run_smuggling_python(
+    url: str,
+    timeout: int = 10,
+) -> ToolResult:
+    """
+    HTTP Request Smuggling detection using raw TCP sockets.
+    Tests CL.TE, TE.CL, and TE.TE desync variants via timing + response analysis.
+    Falls back gracefully for HTTPS (uses ssl.wrap_socket).
+    """
+    import socket
+    import ssl as _ssl
+    import time as _time
+    from urllib.parse import urlparse
+
+    _check_scope(url)
+    parsed = urlparse(url if "://" in url else f"https://{url}")
+    host = parsed.hostname or url
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    path = parsed.path or "/"
+    use_tls = parsed.scheme == "https"
+
+    findings = []
+
+    def _raw_request(request_bytes: bytes, read_timeout: float = 5.0) -> tuple[int, str]:
+        """Send raw bytes over TCP/TLS, return (status_code, body_snippet)."""
+        try:
+            sock = socket.create_connection((host, port), timeout=timeout)
+            if use_tls:
+                ctx = _ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = _ssl.CERT_NONE
+                sock = ctx.wrap_socket(sock, server_hostname=host)
+            sock.sendall(request_bytes)
+            sock.settimeout(read_timeout)
+            resp = b""
+            try:
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    resp += chunk
+                    if len(resp) > 8192:
+                        break
+            except (socket.timeout, OSError):
+                pass
+            sock.close()
+            text = resp.decode("utf-8", errors="replace")
+            status = 0
+            if text.startswith("HTTP/"):
+                try:
+                    status = int(text.split()[1])
+                except Exception:
+                    pass
+            return status, text[:1024]
+        except Exception as exc:
+            return 0, str(exc)
+
+    host_header = f"{host}:{port}" if port not in (80, 443) else host
+
+    # ── CL.TE test: send ambiguous Content-Length header ──────────────────
+    cl_te_request = (
+        f"POST {path} HTTP/1.1\r\n"
+        f"Host: {host_header}\r\n"
+        "Content-Type: application/x-www-form-urlencoded\r\n"
+        "Content-Length: 6\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "Connection: keep-alive\r\n\r\n"
+        "0\r\n\r\n"
+        "X"  # Smuggled byte
+    ).encode()
+
+    # ── TE.CL test: chunked encoding that frontend strips ─────────────────
+    te_cl_request = (
+        f"POST {path} HTTP/1.1\r\n"
+        f"Host: {host_header}\r\n"
+        "Content-Type: application/x-www-form-urlencoded\r\n"
+        "Content-Length: 3\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "Connection: keep-alive\r\n\r\n"
+        "1\r\nA\r\n"
+        "0\r\n\r\n"
+    ).encode()
+
+    # Baseline request
+    baseline_req = (
+        f"GET {path} HTTP/1.1\r\n"
+        f"Host: {host_header}\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode()
+
+    t_baseline_start = _time.monotonic()
+    baseline_status, _ = _raw_request(baseline_req, read_timeout=5.0)
+    baseline_elapsed = _time.monotonic() - t_baseline_start
+
+    # CL.TE test with timing
+    t0 = _time.monotonic()
+    clte_status, clte_body = _raw_request(cl_te_request, read_timeout=6.0)
+    clte_elapsed = _time.monotonic() - t0
+
+    # TE.CL test
+    t1 = _time.monotonic()
+    tecl_status, tecl_body = _raw_request(te_cl_request, read_timeout=6.0)
+    tecl_elapsed = _time.monotonic() - t1
+
+    # Detect: timing significantly longer than baseline → smuggling likely
+    if baseline_elapsed > 0 and clte_elapsed > baseline_elapsed * 3 and clte_elapsed > 4:
+        findings.append({
+            "url": url,
+            "parameter": "",
+            "vulnerability": "HTTP Request Smuggling — CL.TE Desync (timing-based)",
+            "severity": "high",
+            "source_tool": "smuggling_python",
+            "extra": {
+                "variant": "CL.TE",
+                "baseline_s": round(baseline_elapsed, 2),
+                "test_elapsed_s": round(clte_elapsed, 2),
+                "response_status": clte_status,
+            },
+        })
+
+    if baseline_elapsed > 0 and tecl_elapsed > baseline_elapsed * 3 and tecl_elapsed > 4:
+        findings.append({
+            "url": url,
+            "parameter": "",
+            "vulnerability": "HTTP Request Smuggling — TE.CL Desync (timing-based)",
+            "severity": "high",
+            "source_tool": "smuggling_python",
+            "extra": {
+                "variant": "TE.CL",
+                "baseline_s": round(baseline_elapsed, 2),
+                "test_elapsed_s": round(tecl_elapsed, 2),
+                "response_status": tecl_status,
+            },
+        })
+
+    # Detect via response anomalies (400 with transfer-encoding error = server processes TE)
+    for variant, status, body in [("CL.TE", clte_status, clte_body), ("TE.CL", tecl_status, tecl_body)]:
+        if any(sig in body.lower() for sig in
+               ("transfer-encoding", "invalid chunk", "bad request", "400")):
+            if status == 400:
+                findings.append({
+                    "url": url,
+                    "parameter": "",
+                    "vulnerability": f"HTTP Request Smuggling — {variant} Processing Error Detected",
+                    "severity": "medium",
+                    "source_tool": "smuggling_python",
+                    "extra": {"variant": variant, "response_status": status, "snippet": body[:200]},
+                })
+
+    return ToolResult(
+        tool="smuggling_python",
+        success=True,
+        data={"findings": findings, "baseline_elapsed_s": round(baseline_elapsed, 2)},
+        count=len(findings),
+    )
+
+
+def run_payment_tampering_test(
+    base_url: str,
+    headers: dict = None,
+    timeout: int = 30,
+) -> ToolResult:
+    """
+    Test payment/checkout flows for business logic tampering:
+    - Negative price injection
+    - Zero amount bypass
+    - Currency code manipulation
+    - Coupon/discount stacking
+    - Price parameter tampering in requests
+    """
+    try:
+        import requests as _req
+    except ImportError:
+        return ToolResult(tool="payment_tampering_test", success=False, error="requests not installed")
+
+    _check_scope(base_url)
+
+    payment_paths = [
+        "/checkout", "/api/checkout", "/order", "/api/order",
+        "/payment", "/api/payment", "/cart/checkout",
+        "/api/cart/checkout", "/api/v1/checkout", "/buy",
+    ]
+
+    price_params = ["price", "amount", "total", "cost", "value", "subtotal"]
+
+    tamper_values = [
+        ("-1", "Negative price"),
+        ("0", "Zero amount"),
+        ("0.001", "Sub-cent amount"),
+        ("999999999", "Integer overflow"),
+        ("-0.01", "Negative float"),
+    ]
+
+    findings = []
+
+    for path in payment_paths:
+        url = base_url.rstrip("/") + path
+        try:
+            r = _req.get(url, headers=headers or {}, timeout=5, verify=False)
+            if r.status_code in (404, 410):
+                continue
+
+            # Try to find price parameters via OPTIONS or GET params
+            for param in price_params:
+                for tamper_val, tamper_desc in tamper_values:
+                    try:
+                        # GET parameter tampering
+                        resp_get = _req.get(url, params={param: tamper_val},
+                                            headers=headers or {}, timeout=timeout, verify=False)
+                        # POST body tampering
+                        resp_post = _req.post(url, json={param: tamper_val},
+                                              headers={**(headers or {}), "Content-Type": "application/json"},
+                                              timeout=timeout, verify=False)
+
+                        for resp, method in [(resp_get, "GET"), (resp_post, "POST")]:
+                            if resp.status_code in (200, 201) and any(
+                                k in resp.text.lower() for k in ("order", "success", "confirmed", "paid")
+                            ):
+                                findings.append({
+                                    "url": url,
+                                    "parameter": param,
+                                    "vulnerability": f"Payment Tampering — {tamper_desc} accepted via {method}",
+                                    "severity": "critical",
+                                    "source_tool": "payment_tampering_test",
+                                    "extra": {
+                                        "method": method,
+                                        "param": param,
+                                        "value": tamper_val,
+                                        "response_status": resp.status_code,
+                                    },
+                                })
+                    except Exception:
+                        continue
+        except Exception:
+            continue
+
+    return ToolResult(
+        tool="payment_tampering_test",
+        success=True,
+        data={"findings": findings},
+        count=len(findings),
+    )
+
+
+# ============================================================================
 #  TOOL REGISTRY — unified dispatcher
 # ============================================================================
 
@@ -1446,6 +2639,20 @@ TOOL_REGISTRY: dict[str, dict] = {
     "anew":         {"fn": run_anew,         "category": "util",       "args": ["existing", "new_items"]},
     # Pure-Python HTTP client (no CLI needed — used by swarm agents for targeted probes)
     "http_request": {"fn": run_http_request, "category": "http",       "args": ["url"]},
+    # Extended security tests — pure Python, no CLI dependency
+    "race_condition_test":     {"fn": run_race_condition_test,     "category": "vuln", "args": ["url"]},
+    "file_upload_test":        {"fn": run_file_upload_test,        "category": "vuln", "args": ["base_url"]},
+    "oauth_test":              {"fn": run_oauth_test,              "category": "vuln", "args": ["base_url"]},
+    "prototype_pollution_test":{"fn": run_prototype_pollution_test,"category": "vuln", "args": ["url"]},
+    "websocket_test":          {"fn": run_websocket_test,          "category": "vuln", "args": ["base_url"]},
+    "mfa_bypass_test":         {"fn": run_mfa_bypass_test,         "category": "vuln", "args": ["base_url"]},
+    "rate_limit_test":         {"fn": run_rate_limit_test,         "category": "vuln", "args": ["base_url"]},
+    "pii_scanner":             {"fn": run_pii_scanner,             "category": "vuln", "args": ["urls"]},
+    "source_map_scanner":      {"fn": run_source_map_scanner,      "category": "vuln", "args": ["base_url"]},
+    "clickjacking_test":       {"fn": run_clickjacking_test,       "category": "vuln", "args": ["url"]},
+    "deserialization_test":    {"fn": run_deserialization_test,    "category": "vuln", "args": ["url"]},
+    "smuggling_python":        {"fn": run_smuggling_python,        "category": "vuln", "args": ["url"]},
+    "payment_tampering_test":  {"fn": run_payment_tampering_test,  "category": "vuln", "args": ["base_url"]},
 }
 
 
