@@ -513,10 +513,67 @@ class CanonicalExecutor:
                 "technologies": list(getattr(intel, "technologies", []) or []),
             }
             (out / "adaptive_recon.json").write_text(json.dumps(data, indent=2, default=str))
-            return []  # Recon produces no vuln findings
         except Exception as exc:
             log.error("deep_recon inline failed: %s", exc)
             raise
+
+        # ── OWASP gap checks: TLS/cert + backup files ─────────────────────
+        gap_findings = []
+        try:
+            from modules.owasp_gap_checks import (
+                check_weak_tls, check_tls_cert, check_backup_files,
+                gap_check_result_to_finding,
+            )
+            from urllib.parse import urlparse as _up2
+            _parsed = _up2(target if "://" in target else f"https://{target}")
+            _host = _parsed.hostname or target
+            _port = _parsed.port or 443
+
+            for _check_fn, _kwargs in [
+                (check_weak_tls, {"host": _host, "port": _port}),
+                (check_tls_cert, {"host": _host, "port": _port}),
+            ]:
+                try:
+                    _r = _check_fn(**_kwargs)
+                    _f = gap_check_result_to_finding(_r, url=f"https://{_host}:{_port}")
+                    if _f:
+                        gap_findings.append(normalize_finding(_f, source_type="owasp_gap"))
+                except Exception as _e:
+                    log.debug("deep_recon gap check %s failed: %s", _check_fn.__name__, _e)
+
+            _known_paths = ["/index.php", "/config.php", "/wp-config.php",
+                            "/application.properties", "/.env", "/settings.py"]
+            try:
+                _recon_path = out / "adaptive_recon.json"
+                if _recon_path.exists():
+                    _rd = json.loads(_recon_path.read_text())
+                    for _u in _rd.get("urls", [])[:30]:
+                        from urllib.parse import urlparse as _up3
+                        _p = _up3(_u).path
+                        if _p and _p not in _known_paths:
+                            _known_paths.append(_p)
+            except Exception:
+                pass
+
+            _base = f"{_parsed.scheme}://{_parsed.netloc}" if _parsed.netloc else f"https://{_host}"
+            for _r in check_backup_files(_base, _known_paths[:20]):
+                _f = gap_check_result_to_finding(_r, url=_base)
+                if _f:
+                    gap_findings.append(normalize_finding(_f, source_type="owasp_gap"))
+        except Exception as _exc:
+            log.warning("deep_recon OWASP gap checks failed: %s", _exc)
+
+        if gap_findings:
+            log.info("deep_recon OWASP gap: %d findings", len(gap_findings))
+            try:
+                _recon_out = out / "adaptive_recon.json"
+                _d = json.loads(_recon_out.read_text()) if _recon_out.exists() else {}
+                _d["gap_findings"] = _d.get("gap_findings", []) + gap_findings
+                _recon_out.write_text(json.dumps(_d, indent=2, default=str))
+            except Exception:
+                pass
+
+        return gap_findings
 
     def _inline_vuln_scan(self, target: str, out: Path, waf: dict) -> List[dict]:
         # Seed-first: load existing findings.json if present (prior scan context).
@@ -532,6 +589,75 @@ class CanonicalExecutor:
                     seeded = raw.get("findings", raw.get("results", []))
             except Exception:
                 pass
+        # ── OWASP gap checks: crypto + client-side passive ─────────────────
+        _gap_vuln = []
+        try:
+            from modules.owasp_gap_checks import (
+                check_weak_encryption_patterns, check_padding_oracle,
+                check_service_worker, check_webrtc_leak, check_grpc_soap,
+                gap_check_result_to_finding,
+            )
+            import urllib.request as _ur4, ssl as _ssl4
+            _ctx4 = _ssl4.create_default_context()
+            _ctx4.check_hostname = False
+            _ctx4.verify_mode = _ssl4.CERT_NONE
+            _probe4 = target if target.startswith("http") else f"https://{target}"
+
+            _pages = [_probe4, _probe4 + "/app.js", _probe4 + "/static/js/main.chunk.js"]
+            _recon4 = out / "adaptive_recon.json"
+            if _recon4.exists():
+                try:
+                    _rd4 = json.loads(_recon4.read_text())
+                    _pages += [_u for _u in _rd4.get("urls", []) if _u.endswith(".js")][:3]
+                except Exception:
+                    pass
+
+            for _page_url in _pages[:6]:
+                try:
+                    _req4 = _ur4.Request(_page_url)
+                    _req4.add_header("User-Agent", "Mozilla/5.0")
+                    with _ur4.urlopen(_req4, timeout=8, context=_ctx4) as _r4:
+                        _body4 = _r4.read(131072).decode("utf-8", errors="replace")
+                        _hdrs4 = dict(_r4.headers)
+                        for _check_fn, _kwargs in [
+                            (check_weak_encryption_patterns, {"url": _page_url, "body": _body4}),
+                            (check_service_worker, {"url": _page_url, "js_body": _body4}),
+                            (check_webrtc_leak, {"url": _page_url, "js_body": _body4}),
+                            (check_grpc_soap, {"base_url": _page_url,
+                                               "response_headers": _hdrs4, "response_body": _body4}),
+                        ]:
+                            try:
+                                _r = _check_fn(**_kwargs)
+                                _f = gap_check_result_to_finding(_r, url=_page_url)
+                                if _f:
+                                    _gap_vuln.append(normalize_finding(_f, source_type="owasp_gap"))
+                            except Exception as _e:
+                                log.debug("vuln_scan gap %s failed: %s", _check_fn.__name__, _e)
+                except Exception:
+                    pass
+
+            try:
+                _req4 = _ur4.Request(_probe4)
+                _req4.add_header("User-Agent", "Mozilla/5.0")
+                with _ur4.urlopen(_req4, timeout=8, context=_ctx4) as _r4:
+                    _sc4 = dict(_r4.headers).get("Set-Cookie", "")
+                    if "=" in _sc4:
+                        _cname = _sc4.split("=")[0].strip()
+                        _cval = _sc4.split("=")[1].split(";")[0].strip()
+                        _r = check_padding_oracle(_probe4, _cname, _cval)
+                        _f = gap_check_result_to_finding(_r, url=_probe4)
+                        if _f:
+                            _gap_vuln.append(normalize_finding(_f, source_type="owasp_gap"))
+            except Exception as _e:
+                log.debug("padding_oracle check failed: %s", _e)
+
+        except Exception as _exc:
+            log.warning("vuln_scan OWASP gap checks failed: %s", _exc)
+
+        if _gap_vuln:
+            log.info("vuln_scan OWASP gap: %d findings", len(_gap_vuln))
+            seeded = _gap_vuln + seeded
+
         if seeded:
             log.info("vuln_scan inline: loaded %d seeded findings from %s", len(seeded), findings_file)
             return seeded
@@ -634,6 +760,84 @@ class CanonicalExecutor:
             except Exception as exc:
                 log.debug("active_testing [%s] failed: %s", test_name, exc)
 
+        # ── OWASP gap checks: injection + client-side ──────────────────────
+        try:
+            from modules.owasp_gap_checks import (
+                check_ldap_injection, check_mail_header_injection, check_code_injection,
+                check_csv_injection, check_postmessage_hijacking, check_web_storage,
+                check_insecure_rng, gap_check_result_to_finding,
+            )
+            import urllib.request as _ur3, ssl as _ssl3
+            _ctx3 = _ssl3.create_default_context()
+            _ctx3.check_hostname = False
+            _ctx3.verify_mode = _ssl3.CERT_NONE
+            _probe3 = target if target.startswith("http") else f"https://{target}"
+
+            _js_bodies = []
+            _recon3 = out / "adaptive_recon.json"
+            if _recon3.exists():
+                try:
+                    _rd3 = json.loads(_recon3.read_text())
+                    for _js_url in [_u for _u in _rd3.get("urls", []) if _u.endswith(".js")][:5]:
+                        try:
+                            _req3 = _ur3.Request(_js_url)
+                            _req3.add_header("User-Agent", "Mozilla/5.0")
+                            with _ur3.urlopen(_req3, timeout=8, context=_ctx3) as _r3:
+                                _js_bodies.append(_r3.read(65536).decode("utf-8", errors="replace"))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            _combined_js = "\n".join(_js_bodies)
+
+            for _check_fn, _kwargs in [
+                (check_ldap_injection, {"url": _probe3, "param": "username"}),
+                (check_mail_header_injection, {"url": _probe3 + "/contact", "param": "email"}),
+                (check_code_injection, {"url": _probe3, "param": "q"}),
+                (check_csv_injection, {"url": _probe3 + "/export", "param": "q"}),
+            ]:
+                try:
+                    _r = _check_fn(**_kwargs)
+                    _f = gap_check_result_to_finding(_r, url=_probe3)
+                    if _f:
+                        findings.append(normalize_finding(_f, source_type="owasp_gap"))
+                except Exception as _e:
+                    log.debug("active_testing gap %s failed: %s", _check_fn.__name__, _e)
+
+            if _combined_js:
+                for _check_fn in [check_postmessage_hijacking, check_web_storage]:
+                    try:
+                        _r = _check_fn(url=_probe3, js_body=_combined_js)
+                        _f = gap_check_result_to_finding(_r, url=_probe3)
+                        if _f:
+                            findings.append(normalize_finding(_f, source_type="owasp_gap"))
+                    except Exception as _e:
+                        log.debug("active_testing gap JS %s failed: %s", _check_fn.__name__, _e)
+
+            try:
+                _tokens = []
+                for _ in range(10):
+                    try:
+                        _req3 = _ur3.Request(_probe3 + "/login")
+                        _req3.add_header("User-Agent", "Mozilla/5.0")
+                        with _ur3.urlopen(_req3, timeout=5, context=_ctx3) as _r3:
+                            _sc = dict(_r3.headers).get("Set-Cookie", "")
+                            if "=" in _sc:
+                                _tokens.append(_sc.split("=")[1].split(";")[0].strip())
+                    except Exception:
+                        pass
+                if len(_tokens) >= 5:
+                    _r = check_insecure_rng(_probe3, _tokens)
+                    _f = gap_check_result_to_finding(_r, url=_probe3)
+                    if _f:
+                        findings.append(normalize_finding(_f, source_type="owasp_gap"))
+            except Exception as _e:
+                log.debug("insecure_rng check failed: %s", _e)
+
+        except Exception as _exc:
+            log.warning("active_testing OWASP gap checks failed: %s", _exc)
+
         (out / "swarm_findings.json").write_text(
             json.dumps({"findings": findings, "validated": len(findings)}, indent=2)
         )
@@ -708,6 +912,70 @@ class CanonicalExecutor:
                     findings.append(f)
         except Exception as exc:
             log.debug("auth_session extended tests failed: %s", exc)
+
+        # ── OWASP gap checks: CSRF, cookie attrs, session fixation, account enum, password policy, SAML
+        try:
+            from modules.owasp_gap_checks import (
+                check_csrf, check_cookie_attributes,
+                check_account_enumeration_timing, check_password_policy,
+                check_saml_assertion, gap_check_result_to_finding,
+            )
+            import urllib.request as _ur, ssl as _ssl, urllib.error as _ue
+            _probe = target if target.startswith("http") else f"https://{target}"
+            _ctx2 = _ssl.create_default_context()
+            _ctx2.check_hostname = False
+            _ctx2.verify_mode = _ssl.CERT_NONE
+
+            for _auth_path in ["/login", "/api/login", "/auth", "/signin", "/register", "/api/users"]:
+                try:
+                    _req = _ur.Request(_probe.rstrip("/") + _auth_path)
+                    _req.add_header("User-Agent", "Mozilla/5.0")
+                    with _ur.urlopen(_req, timeout=6, context=_ctx2) as _resp:
+                        _body2 = _resp.read(16384).decode("utf-8", errors="replace")
+                        _hdrs = dict(_resp.headers)
+                        _method = "POST" if _auth_path in ("/login", "/register", "/api/login",
+                                                            "/api/users", "/auth") else "GET"
+                        _url2 = _probe.rstrip("/") + _auth_path
+
+                        for _check_fn, _kwargs in [
+                            (check_csrf, {"url": _url2, "response_body": _body2,
+                                          "response_headers": _hdrs, "method": _method}),
+                            (check_cookie_attributes, {"url": _url2, "response_headers": _hdrs}),
+                            (check_saml_assertion, {"url": _url2, "response_body": _body2}),
+                        ]:
+                            try:
+                                _r = _check_fn(**_kwargs)
+                                _f = gap_check_result_to_finding(_r, url=_url2)
+                                if _f:
+                                    findings.append(normalize_finding(_f, source_type="owasp_gap"))
+                            except Exception as _e:
+                                log.debug("auth_session gap %s failed: %s", _check_fn.__name__, _e)
+                except Exception:
+                    pass
+
+            for _auth_path in ["/login", "/api/login", "/auth"]:
+                try:
+                    _r = check_account_enumeration_timing(
+                        _probe.rstrip("/") + _auth_path, "admin", "nosuchuser_oi_xyz99")
+                    _f = gap_check_result_to_finding(_r, url=_probe.rstrip("/") + _auth_path)
+                    if _f:
+                        findings.append(normalize_finding(_f, source_type="owasp_gap"))
+                    break
+                except Exception as _e:
+                    log.debug("account_enum check failed: %s", _e)
+
+            for _reg_path in ["/register", "/api/register", "/signup", "/api/users"]:
+                try:
+                    _r = check_password_policy(_probe.rstrip("/") + _reg_path)
+                    _f = gap_check_result_to_finding(_r, url=_probe.rstrip("/") + _reg_path)
+                    if _f:
+                        findings.append(normalize_finding(_f, source_type="owasp_gap"))
+                    break
+                except Exception as _e:
+                    log.debug("password_policy check failed: %s", _e)
+
+        except Exception as _exc:
+            log.warning("auth_session OWASP gap checks failed: %s", _exc)
 
         (out / "auth_findings.json").write_text(
             json.dumps({"findings": findings}, indent=2)
