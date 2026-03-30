@@ -776,19 +776,46 @@ class CanonicalExecutor:
             _ctx3.verify_mode = _ssl3.CERT_NONE
             _probe3 = target if target.startswith("http") else f"https://{target}"
 
-            _js_bodies = []
+            # Collect JS bodies for client-side pattern checks.
+            # Well-known bundle entry points come first so they are always checked
+            # even when deep_recon was skipped (no adaptive_recon.json). Recon
+            # URLs are appended as supplemental coverage.
+            _well_known_js = [
+                _probe3.rstrip("/") + _p
+                for _p in ["/main.js", "/app.js", "/bundle.js",
+                            "/static/js/main.chunk.js", "/assets/index.js"]
+            ]
+            _recon_js: list = []
             _recon3 = out / "adaptive_recon.json"
             if _recon3.exists():
                 try:
                     _rd3 = json.loads(_recon3.read_text())
-                    for _js_url in [_u for _u in _rd3.get("urls", []) if _u.endswith(".js")][:5]:
-                        try:
-                            _req3 = _ur3.Request(_js_url)
-                            _req3.add_header("User-Agent", "Mozilla/5.0")
-                            with _ur3.urlopen(_req3, timeout=8, context=_ctx3) as _r3:
-                                _js_bodies.append(_r3.read(65536).decode("utf-8", errors="replace"))
-                        except Exception:
-                            pass
+                    _recon_js = [_u for _u in _rd3.get("urls", []) if _u.endswith(".js")][:5]
+                except Exception:
+                    pass
+            # Well-known paths first, then recon-discovered chunks (deduped)
+            _js_urls_to_fetch = _well_known_js + [
+                _u for _u in _recon_js if _u not in _well_known_js
+            ]
+
+            _js_bodies = []
+            _seen_js: set = set()
+            _js_total_bytes = 0
+            for _js_url in _js_urls_to_fetch[:10]:
+                if _js_url in _seen_js or _js_total_bytes >= 2097152:
+                    continue
+                _seen_js.add(_js_url)
+                try:
+                    _req3 = _ur3.Request(_js_url)
+                    _req3.add_header("User-Agent", "Mozilla/5.0")
+                    with _ur3.urlopen(_req3, timeout=15, context=_ctx3) as _r3:
+                        # Read up to 2 MB per file — minified Angular/React bundles pack
+                        # localStorage.setItem("token",...) far into the file (>69%).
+                        _chunk = _r3.read(2097152).decode("utf-8", errors="replace")
+                        _js_bodies.append(_chunk)
+                        _js_total_bytes += len(_chunk)
+                        if _js_total_bytes >= 2097152:
+                            break  # Cap total bytes to avoid memory issues
                 except Exception:
                     pass
 
