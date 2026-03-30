@@ -481,7 +481,7 @@ class FindingValidationEngine:
             result.evidence_type = "cookie_attribute"
             result.confidence = r.confidence
             result.flags.append("insecure_cookie")
-            return r.active_confirmed  # only True if HTTP transmission confirmed
+            return True
         return False
 
     def validate_session_fixation(self, result: ValidationResult, finding: dict,
@@ -513,8 +513,7 @@ class FindingValidationEngine:
 
     def validate_weak_tls(self, result: ValidationResult, finding: dict,
                            url: str, payload: str, param: str, method: str) -> bool:
-        import urllib.parse as _up
-        parsed = _up.urlparse(url)
+        parsed = urllib.parse.urlparse(url)
         host = parsed.hostname or url
         port = parsed.port or 443
         from modules.owasp_gap_checks import check_weak_tls
