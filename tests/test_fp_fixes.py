@@ -83,3 +83,12 @@ def test_meaningful_payload_chars_constant():
     assert '<' in _MEANINGFUL_PAYLOAD_CHARS
     assert '>' in _MEANINGFUL_PAYLOAD_CHARS
     assert '"' in _MEANINGFUL_PAYLOAD_CHARS
+
+def test_401_to_200_fires_auth_bypass():
+    """Auth bypass (401→200) MUST still be detected after FP fixes."""
+    e = make_engine()
+    baseline = _make_baseline(status=401)
+    probe = _make_probe(status=200)
+    anomalies = e.analyze_responses(baseline, probe)
+    status_anomalies = [a for a in anomalies if a.anomaly_type == "StatusCodeChange"]
+    assert len(status_anomalies) == 1, "401→200 auth bypass must trigger StatusCodeChange"

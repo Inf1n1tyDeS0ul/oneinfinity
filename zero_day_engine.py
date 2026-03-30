@@ -181,10 +181,12 @@ _INTERESTING_HEADERS: set[str] = {
 }
 
 _TIMING_THRESHOLD_MS  = 6000   # >6s delta above baseline = possible blind injection
+_TIMING_HIGH_CONFIDENCE_MS = 8000  # delta above this → confidence 0.75; below → 0.60
 _SIZE_DEVIATION_PCT   = 0.25   # >25% size change = significant
 _MIN_BODY_SIZE        = 100    # ignore tiny responses for size comparisons
 _CONFIDENCE_FLOOR     = 0.40   # suppress anomalies below this confidence
 _MEANINGFUL_PAYLOAD_CHARS = set('<>"\'{};()')  # chars that make a payload injection-relevant
+_REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 
 
 # ── Zero-Day Engine ───────────────────────────────────────────────────────────
@@ -295,13 +297,10 @@ class ZeroDayEngine:
         """
         anomalies: list[Anomaly] = []
 
-        # 1. Status code change — only flag meaningful security-relevant transitions
-        # Ignore redirects (301/302/303/307/308): they are normal app behaviour
-        _ignore_observed = {301, 302, 303, 307, 308}
-        _require_baseline = {200}  # only flag when baseline was a successful response
+        # 1. Status code change — ignore redirect noise in observed status
+        # _status_change_severity() already filters uninteresting transitions
         if (baseline.status_code != probe.status_code
-                and probe.status_code not in _ignore_observed
-                and baseline.status_code in _require_baseline):
+                and probe.status_code not in _REDIRECT_STATUS_CODES):
             severity = self._status_change_severity(baseline.status_code, probe.status_code)
             if severity:
                 anomalies.append(self._make_anomaly(
@@ -356,7 +355,7 @@ class ZeroDayEngine:
                 baseline_value=f"{baseline.response_time_ms:.0f}ms",
                 observed_value=f"{probe.response_time_ms:.0f}ms",
                 severity="high",
-                confidence=0.75 if _timing_delta > 8000 else 0.60,
+                confidence=0.75 if _timing_delta > _TIMING_HIGH_CONFIDENCE_MS else 0.60,
                 evidence=(
                     f"Response took {probe.response_time_ms:.0f}ms "
                     f"(baseline: {baseline.response_time_ms:.0f}ms, delta: {_timing_delta:.0f}ms) "
