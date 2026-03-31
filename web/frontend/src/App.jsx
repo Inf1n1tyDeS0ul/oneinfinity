@@ -30,6 +30,7 @@ import Learning from './pages/Learning'
 import Simulation from './pages/Simulation'
 import Utilities from './pages/Utilities'
 import Reports from './pages/Reports'
+import ReportPreview from './pages/ReportPreview'
 import Infrastructure from './pages/Infrastructure'
 
 export default function App() {
@@ -95,6 +96,7 @@ export default function App() {
         <Route path="/simulation"      element={<Simulation />} />
         <Route path="/utilities"       element={<Utilities />} />
         <Route path="/reports"         element={<Reports />} />
+        <Route path="/report-preview/:scanId" element={<ReportPreview />} />
         <Route path="/infrastructure"  element={<Infrastructure />} />
 
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
