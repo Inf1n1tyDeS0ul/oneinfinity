@@ -906,8 +906,7 @@ class PublishReportRequest(BaseModel):
 @app.post("/api/reports/publish", dependencies=[Depends(_require_auth)])
 async def publish_report(req: PublishReportRequest):
     """Generate a professional PDF report for a scan and stream it back."""
-    import sys as _sys, os as _os, tempfile as _tmp, shutil as _shutil
-    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)) + "/../..")
+    import tempfile as _tmp, shutil as _shutil
 
     scan_id = req.scan_id.strip()
     if not scan_id:
@@ -968,7 +967,9 @@ async def publish_report(req: PublishReportRequest):
 
     from fastapi.responses import StreamingResponse
     import io as _io
-    filename = f"oneinfinity-report-{scan_id}.pdf"
+    import re as _re
+    safe_id = _re.sub(r'[^a-zA-Z0-9_\-]', '-', scan_id)
+    filename = f"oneinfinity-report-{safe_id}.pdf"
     return StreamingResponse(
         _io.BytesIO(pdf_bytes),
         media_type="application/pdf",
