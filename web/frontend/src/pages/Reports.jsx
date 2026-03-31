@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
-import { FileText, Play, Download, RefreshCw, Eye, Plus, RotateCcw } from 'lucide-react'
+import { FileText, Play, Download, RefreshCw, Eye, Plus, RotateCcw, FileDown, CheckSquare, Square } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
 import clsx from 'clsx'
@@ -17,6 +18,13 @@ export default function Reports() {
   const [replayFile, setReplayFile] = useState('')
   const [replayRun, setReplayRun] = useState(false)
   const [replayResult, setReplayResult] = useState(null)
+  const navigate = useNavigate()
+  const [publishScans, setPublishScans] = useState([])
+  const [publishScanId, setPublishScanId] = useState('')
+  const [publishSections, setPublishSections] = useState(
+    ['exec', 'findings', 'chains', 'meta', 'remediation']
+  )
+  const [publishLoading, setPublishLoading] = useState(false)
 
   const loadReports = async () => {
     setLoading(true)
@@ -27,7 +35,46 @@ export default function Reports() {
     finally { setLoading(false) }
   }
 
-  useEffect(() => { loadReports() }, [])
+  const loadPublishScans = async () => {
+    try {
+      const [scansRes, gmRes] = await Promise.allSettled([
+        endpoints.scans(),
+        endpoints.godModeSessions(),
+      ])
+      const regular = (scansRes.status === 'fulfilled' ? scansRes.value.data : []) || []
+      const gmSessions = (gmRes.status === 'fulfilled' ? gmRes.value.data?.sessions : []) || []
+      const allScans = [
+        ...gmSessions.map(s => ({
+          id: s.scan_id,
+          label: `[GOD MODE] ${s.target || s.scan_id} — ${s.status || 'unknown'} (${s.finding_count ?? 0} findings)`,
+        })),
+        ...regular.map(s => ({
+          id: s.id,
+          label: `[SCAN] ${s.target || s.id} — ${s.status || 'unknown'} (${s.findings_count ?? 0} findings)`,
+        })),
+      ]
+      setPublishScans(allScans)
+    } catch (e) {
+      setPublishScans([])
+    }
+  }
+
+  const toggleSection = (key) => {
+    setPublishSections(prev =>
+      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
+    )
+  }
+
+  const handlePublish = () => {
+    if (!publishScanId) return
+    const params = new URLSearchParams({ sections: publishSections.join(',') })
+    navigate(`/report-preview/${publishScanId}?${params}`)
+  }
+
+  useEffect(() => {
+    loadReports()
+    loadPublishScans()
+  }, [])
 
   const handleGenerate = async () => {
     setGenerating(true)
@@ -71,7 +118,12 @@ export default function Reports() {
       </div>
 
       <div className="tab-bar">
-        {[{ id: 'generate', label: 'Generate Report' }, { id: 'list', label: 'Saved Reports' }, { id: 'replay', label: 'Replay Findings' }].map(t => (
+        {[
+          { id: 'generate', label: 'Generate Report' },
+          { id: 'list', label: 'Saved Reports' },
+          { id: 'replay', label: 'Replay Findings' },
+          { id: 'publish', label: 'Publish Report' },
+        ].map(t => (
           <button key={t.id} onClick={() => setTab(t.id)} className={tab === t.id ? 'tab-active' : 'tab'}>{t.label}</button>
         ))}
       </div>
@@ -165,6 +217,55 @@ export default function Reports() {
               </div>
             )}
           </div>
+        </div>
+      )}
+      {tab === 'publish' && (
+        <div className="card max-w-xl flex flex-col gap-5">
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-gray-400 font-medium uppercase tracking-wide">Select Scan</label>
+            <select
+              className="input"
+              value={publishScanId}
+              onChange={e => setPublishScanId(e.target.value)}
+            >
+              <option value="">— choose a scan —</option>
+              {publishScans.map(s => (
+                <option key={s.id} value={s.id}>{s.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <label className="text-xs text-gray-400 font-medium uppercase tracking-wide">Report Sections</label>
+            {[
+              { key: 'exec',        label: 'Executive Summary' },
+              { key: 'findings',    label: 'Findings Detail' },
+              { key: 'chains',      label: 'Attack Chains' },
+              { key: 'meta',        label: 'Scan Metadata' },
+              { key: 'remediation', label: 'Remediation Summary' },
+            ].map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => toggleSection(key)}
+                className="flex items-center gap-2 text-sm text-gray-300 hover:text-white transition-colors text-left"
+              >
+                {publishSections.includes(key)
+                  ? <CheckSquare size={15} className="text-blue-400 shrink-0" />
+                  : <Square size={15} className="text-gray-600 shrink-0" />
+                }
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <button
+            className="btn-primary flex items-center gap-2"
+            onClick={handlePublish}
+            disabled={!publishScanId || publishLoading}
+          >
+            <FileDown size={14} />
+            {publishLoading ? 'Preparing…' : 'Publish Report'}
+          </button>
         </div>
       )}
     </div>
