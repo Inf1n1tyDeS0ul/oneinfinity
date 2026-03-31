@@ -41,8 +41,8 @@ def _validate_target(domain: str) -> str:
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field, validator
 
 async def _require_auth():
     pass  # Auth disabled — open access for local tool use
@@ -898,9 +898,21 @@ async def list_reports():
     return sorted(reports, key=lambda r: r["created_at"], reverse=True)
 
 
+_VALID_SECTIONS = {"exec", "findings", "chains", "meta", "remediation"}
+
+
 class PublishReportRequest(BaseModel):
-    scan_id: str
+    scan_id: str = Field(..., min_length=1, max_length=128)
     sections: Optional[List[str]] = None   # None = all sections
+
+    @validator("sections")
+    def validate_sections(cls, v):
+        if v is None:
+            return v
+        invalid = set(v) - _VALID_SECTIONS
+        if invalid:
+            raise ValueError(f"Unknown sections: {sorted(invalid)}")
+        return v
 
 
 @app.post("/api/reports/publish", dependencies=[Depends(_require_auth)])
@@ -965,9 +977,7 @@ async def publish_report(req: PublishReportRequest):
     finally:
         _shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    from fastapi.responses import StreamingResponse
     import io as _io
-    import re as _re
     safe_id = _re.sub(r'[^a-zA-Z0-9_\-]', '-', scan_id)
     filename = f"oneinfinity-report-{safe_id}.pdf"
     return StreamingResponse(

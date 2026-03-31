@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom'
 import { X, Download, Loader2, AlertTriangle, RefreshCw } from 'lucide-react'
 import api from '../utils/api'
+import { endpoints } from '../utils/api'
 
 export default function ReportPreview() {
   const { scanId } = useParams()
@@ -26,16 +27,21 @@ export default function ReportPreview() {
       setPdfUrl(null)
     }
     try {
-      const resp = await api.post(
-        '/reports/publish',
-        { scan_id: scanId, sections: sections },
-        { responseType: 'blob', timeout: 120000 }
-      )
+      const resp = await endpoints.publishReport(scanId, sections)
       const url = URL.createObjectURL(resp.data)
       blobRef.current = url
       setPdfUrl(url)
     } catch (err) {
-      setError(err.response?.data?.detail || err.message || 'Failed to generate report')
+      let msg = err.message || 'Failed to generate report'
+      if (err.response?.data instanceof Blob) {
+        try {
+          const text = await err.response.data.text()
+          msg = JSON.parse(text).detail || text || msg
+        } catch { /* ignore parse failures */ }
+      } else if (err.response?.data?.detail) {
+        msg = err.response.data.detail
+      }
+      setError(msg)
     } finally {
       setLoading(false)
     }
