@@ -897,6 +897,85 @@ async def list_reports():
             })
     return sorted(reports, key=lambda r: r["created_at"], reverse=True)
 
+
+class PublishReportRequest(BaseModel):
+    scan_id: str
+    sections: Optional[List[str]] = None   # None = all sections
+
+
+@app.post("/api/reports/publish", dependencies=[Depends(_require_auth)])
+async def publish_report(req: PublishReportRequest):
+    """Generate a professional PDF report for a scan and stream it back."""
+    import sys as _sys, os as _os, tempfile as _tmp, shutil as _shutil
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)) + "/../..")
+
+    scan_id = req.scan_id.strip()
+    if not scan_id:
+        raise HTTPException(status_code=400, detail="scan_id is required")
+
+    # Load findings from ingestion engine (works for both god mode and regular scans)
+    try:
+        from result_ingestion_engine import get_ingestion_engine
+        findings = get_ingestion_engine().get_findings(scan_id=scan_id)
+    except Exception as exc:
+        log.warning("publish_report: could not load findings for %s: %s", scan_id, exc)
+        findings = []
+
+    # Load metadata — try god mode state file first, fall back to SCANS dict
+    meta: dict = {}
+    try:
+        from god_mode_engine import GodModeStateFile
+        state = GodModeStateFile(scan_id).read()
+        if state:
+            meta = {
+                "scan_id": scan_id,
+                "target": state.get("target", ""),
+                "status": state.get("status", "completed"),
+                "scan_duration_s": int(state.get("elapsed_seconds") or 0),
+                "phases_complete": state.get("phases_complete") or [],
+                "finding_count": state.get("finding_count", len(findings)),
+            }
+    except Exception:
+        pass
+
+    if not meta:
+        scan = SCANS.get(scan_id, {})
+        meta = {
+            "scan_id": scan_id,
+            "target": scan.get("target", ""),
+            "status": scan.get("status", "completed"),
+            "scan_duration_s": 0,
+            "phases_complete": [],
+            "finding_count": len(findings),
+        }
+
+    target = meta.get("target") or "Unknown Target"
+
+    tmp_dir = _tmp.mkdtemp(prefix="oi_report_")
+    try:
+        from core.reporter import Reporter
+        reporter = Reporter(output_dir=tmp_dir, target=target, platform="oneinfinity")
+        for f in findings:
+            reporter.add_finding(f)
+        for k, v in meta.items():
+            reporter.set_meta(k, v)
+
+        pdf_bytes = reporter.render_to_buffer(sections=req.sections)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}")
+    finally:
+        _shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    from fastapi.responses import StreamingResponse
+    import io as _io
+    filename = f"oneinfinity-report-{scan_id}.pdf"
+    return StreamingResponse(
+        _io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # Logs
 @app.get("/api/logs")
 async def get_logs(limit: int = 100, scan_id: Optional[str] = None):
@@ -2029,8 +2108,8 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
     target = (data.get("target") or "").strip()
     if not target:
         raise HTTPException(status_code=400, detail="target is required")
-    max_time     = str(data.get("max_time", "2h"))
-    max_findings = int(data.get("max_findings", 100))
+    max_time     = str(data.get("max_time", "0"))
+    max_findings = int(data.get("max_findings", 0))
     no_swarm     = bool(data.get("no_swarm", False))
     no_research  = bool(data.get("no_research", False))
     report_fmt   = str(data.get("report_fmt", "markdown"))

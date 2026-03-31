@@ -63,3 +63,66 @@ def test_render_to_buffer_empty_sections_list(tmp_path):
     r = _make_reporter(str(tmp_path))
     result = r.render_to_buffer(sections=[])
     assert result[:4] == b"%PDF"
+
+
+# ── Endpoint tests ─────────────────────────────────────────────────────────
+
+def test_publish_endpoint_returns_pdf(tmp_path, monkeypatch):
+    """POST /api/reports/publish returns application/pdf bytes."""
+    import sys, os
+    # Add backend and project root to path
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "web", "backend"))
+    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+    # Patch ingestion engine to return a test finding
+    mock_finding = {
+        "scan_id": "test-scan-1",
+        "finding_id": "f001",
+        "vuln_type": "xss",
+        "severity": "high",
+        "url": "https://test.example.com/search",
+        "endpoint": "https://test.example.com/search",
+        "description": "XSS in search",
+        "cvss": 7.5,
+        "confidence": 0.9,
+        "source_type": "tool",
+        "tool": "zap",
+        "target": "test.example.com",
+        "created_at": "2026-03-31T10:00:00",
+        "raw": "{}",
+    }
+
+    class MockIngestion:
+        def get_findings(self, scan_id=None, **kwargs):
+            return [mock_finding]
+
+    import result_ingestion_engine as rie
+    monkeypatch.setattr(rie, "get_ingestion_engine", lambda: MockIngestion())
+
+    # Mock god mode state file
+    import god_mode_engine as gme
+    class MockStateFile:
+        def read(self):
+            return {
+                "scan_id": "test-scan-1",
+                "target": "https://test.example.com",
+                "status": "completed",
+                "elapsed_seconds": 600,
+                "phases_complete": ["deep_recon", "vuln_scan"],
+                "finding_count": 1,
+            }
+    monkeypatch.setattr(gme, "GodModeStateFile", lambda scan_id: MockStateFile())
+
+    from fastapi.testclient import TestClient
+    import main as app_module
+    # Disable auth for test
+    monkeypatch.setattr(app_module, "_require_auth", lambda: None)
+    client = TestClient(app_module.app)
+
+    resp = client.post("/api/reports/publish", json={
+        "scan_id": "test-scan-1",
+        "sections": ["exec", "findings", "meta"],
+    })
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/pdf"
+    assert resp.content[:4] == b"%PDF"
