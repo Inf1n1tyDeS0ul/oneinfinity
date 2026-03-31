@@ -273,8 +273,8 @@ class Reporter:
         None (default) = all sections. Empty list = cover page only.
         """
         import tempfile
-        from pathlib import Path as _Path
-        tmp = _Path(tempfile.mktemp(suffix=".pdf"))
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fh:
+            tmp = Path(fh.name)
         try:
             self._render_pdf(tmp, executive=False, sections=sections)
             return tmp.read_bytes()
@@ -1010,7 +1010,6 @@ class Reporter:
             pdf.set_fill_color(*DARK)
             pdf.set_text_color(*WHITE)
             pdf.set_font("Helvetica", "B", 8)
-            x0 = pdf.get_x()
             for h, w in zip(headers, col_ws):
                 pdf.cell(w, 7, h, border=0, fill=True, new_x=XPos.RIGHT)
             pdf.ln(7)
