@@ -83,6 +83,22 @@ _REMEDIATION_MAP = {
 }
 
 
+def _fmt_duration(seconds: int) -> str:
+    """Format integer seconds as 'Xh Ym Zs'."""
+    if seconds <= 0:
+        return "N/A"
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    parts = []
+    if h:
+        parts.append(f"{h}h")
+    if m:
+        parts.append(f"{m}m")
+    if s or not parts:
+        parts.append(f"{s}s")
+    return " ".join(parts)
+
+
 @dataclass
 class Finding:
     vuln_type: str
@@ -249,6 +265,21 @@ class Reporter:
         except Exception as e:
             log.warning("Executive PDF skipped: %s", e)
             return [html_path]
+
+    def render_to_buffer(self, sections: list | None = None) -> bytes:
+        """Generate PDF and return raw bytes. `sections` controls which sections appear.
+
+        Section keys: 'exec', 'findings', 'chains', 'meta', 'remediation'.
+        None (default) = all sections. Empty list = cover page only.
+        """
+        import tempfile
+        from pathlib import Path as _Path
+        tmp = _Path(tempfile.mktemp(suffix=".pdf"))
+        try:
+            self._render_pdf(tmp, executive=False, sections=sections)
+            return tmp.read_bytes()
+        finally:
+            tmp.unlink(missing_ok=True)
 
     # ------------------------------------------------------------------ #
     #  High-Quality HTML Report
@@ -776,7 +807,7 @@ class Reporter:
         log.info("Executive PDF written: %s", path)
         return path
 
-    def _render_pdf(self, path: Path, executive: bool = False) -> None:
+    def _render_pdf(self, path: Path, executive: bool = False, sections: list | None = None) -> None:
         from fpdf import FPDF, XPos, YPos
 
         findings = self.sorted_findings()
@@ -836,6 +867,23 @@ class Reporter:
         pdf.set_auto_page_break(auto=True, margin=18)
         pdf.set_margins(18, 14, 18)
         pdf.set_font("Helvetica", "", 10)
+
+        # Section gating: None = all sections enabled
+        _all_sections = {"exec", "findings", "chains", "meta", "remediation"}
+        _active = _all_sections if sections is None else set(sections)
+
+        def _has(key: str) -> bool:
+            return key in _active
+
+        def section_header(text: str):
+            pdf.set_font("Helvetica", "B", 9)
+            pdf.set_text_color(*GRAY)
+            pdf.cell(0, 5, text.upper(), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.set_draw_color(226, 232, 240)
+            pdf.set_line_width(0.3)
+            pdf.line(pdf.get_x(), pdf.get_y(), 192, pdf.get_y())
+            pdf.ln(4)
+            pdf.set_text_color(*DARK)
 
         # ── Cover Page ──
         pdf.add_page()
@@ -928,76 +976,67 @@ class Reporter:
             pdf.cell(32, 7, label, new_x=XPos.RIGHT)
             legend_x += 32
 
-        # ── Summary Page ──
-        pdf.add_page()
-        pdf.set_text_color(*DARK)
-
-        def section_header(text: str):
-            pdf.set_font("Helvetica", "B", 9)
-            pdf.set_text_color(*GRAY)
-            pdf.cell(0, 5, text.upper(), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-            pdf.set_draw_color(226, 232, 240)
-            pdf.set_line_width(0.3)
-            pdf.line(pdf.get_x(), pdf.get_y(), 192, pdf.get_y())
-            pdf.ln(4)
+        if _has("exec"):
+            # ── Summary Page ──
+            pdf.add_page()
             pdf.set_text_color(*DARK)
 
-        section_header("Executive Summary")
+            section_header("Executive Summary")
 
-        # Risk overview box
-        r_rgb = SEV_RGB.get(risk.lower(), (107, 114, 128))
-        pdf.set_fill_color(r_rgb[0], r_rgb[1], r_rgb[2])
-        box_y = pdf.get_y()
-        pdf.rect(18, box_y, 174, 18, "F")
-        pdf.set_font("Helvetica", "B", 12)
-        pdf.set_text_color(*WHITE)
-        pdf.set_y(box_y + 4)
-        pdf.cell(0, 10, f"Overall Risk Level: {risk}  |  {len(findings)} Vulnerabilities Found", align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.ln(6)
-        pdf.set_text_color(*DARK)
-
-        # Severity table
-        section_header("Severity Breakdown")
-        headers = ["Severity", "Count", "Business Exposure", "Timeframe"]
-        col_ws = [30, 18, 100, 30]
-        exposure_map = {
-            "critical": ("Immediate breach risk — urgent remediation required", "24–48 hrs"),
-            "high":     ("Significant exposure — remediate soon",               "7 days"),
-            "medium":   ("Moderate risk — schedule remediation",                "30 days"),
-            "low":      ("Limited exposure — next planned sprint",              "Next sprint"),
-            "info":     ("Informational — no direct risk",                      "Backlog"),
-        }
-
-        pdf.set_fill_color(*DARK)
-        pdf.set_text_color(*WHITE)
-        pdf.set_font("Helvetica", "B", 8)
-        x0 = pdf.get_x()
-        for h, w in zip(headers, col_ws):
-            pdf.cell(w, 7, h, border=0, fill=True, new_x=XPos.RIGHT)
-        pdf.ln(7)
-
-        pdf.set_font("Helvetica", "", 8)
-        for sev in ["critical", "high", "medium", "low", "info"]:
-            cnt = counts.get(sev, 0)
-            if cnt == 0:
-                continue
-            rgb = SEV_RGB.get(sev, (107, 114, 128))
-            exp, tf = exposure_map.get(sev, ("", ""))
-            row_y = pdf.get_y()
-            pdf.set_fill_color(245, 247, 250)
-            pdf.rect(18, row_y, 174, 7, "F")
-            pdf.set_text_color(*rgb)
-            pdf.set_font("Helvetica", "B", 8)
-            pdf.cell(col_ws[0], 7, sev.capitalize(), new_x=XPos.RIGHT)
+            # Risk overview box
+            r_rgb = SEV_RGB.get(risk.lower(), (107, 114, 128))
+            pdf.set_fill_color(r_rgb[0], r_rgb[1], r_rgb[2])
+            box_y = pdf.get_y()
+            pdf.rect(18, box_y, 174, 18, "F")
+            pdf.set_font("Helvetica", "B", 12)
+            pdf.set_text_color(*WHITE)
+            pdf.set_y(box_y + 4)
+            pdf.cell(0, 10, f"Overall Risk Level: {risk}  |  {len(findings)} Vulnerabilities Found", align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.ln(6)
             pdf.set_text_color(*DARK)
+
+            # Severity table
+            section_header("Severity Breakdown")
+            headers = ["Severity", "Count", "Business Exposure", "Timeframe"]
+            col_ws = [30, 18, 100, 30]
+            exposure_map = {
+                "critical": ("Immediate breach risk — urgent remediation required", "24–48 hrs"),
+                "high":     ("Significant exposure — remediate soon",               "7 days"),
+                "medium":   ("Moderate risk — schedule remediation",                "30 days"),
+                "low":      ("Limited exposure — next planned sprint",              "Next sprint"),
+                "info":     ("Informational — no direct risk",                      "Backlog"),
+            }
+
+            pdf.set_fill_color(*DARK)
+            pdf.set_text_color(*WHITE)
             pdf.set_font("Helvetica", "B", 8)
-            pdf.cell(col_ws[1], 7, str(cnt), new_x=XPos.RIGHT)
+            x0 = pdf.get_x()
+            for h, w in zip(headers, col_ws):
+                pdf.cell(w, 7, h, border=0, fill=True, new_x=XPos.RIGHT)
+            pdf.ln(7)
+
             pdf.set_font("Helvetica", "", 8)
-            pdf.cell(col_ws[2], 7, exp, new_x=XPos.RIGHT)
-            pdf.cell(col_ws[3], 7, tf, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.ln(8)
+            for sev in ["critical", "high", "medium", "low", "info"]:
+                cnt = counts.get(sev, 0)
+                if cnt == 0:
+                    continue
+                rgb = SEV_RGB.get(sev, (107, 114, 128))
+                exp, tf = exposure_map.get(sev, ("", ""))
+                row_y = pdf.get_y()
+                pdf.set_fill_color(245, 247, 250)
+                pdf.rect(18, row_y, 174, 7, "F")
+                pdf.set_text_color(*rgb)
+                pdf.set_font("Helvetica", "B", 8)
+                pdf.cell(col_ws[0], 7, sev.capitalize(), new_x=XPos.RIGHT)
+                pdf.set_text_color(*DARK)
+                pdf.set_font("Helvetica", "B", 8)
+                pdf.cell(col_ws[1], 7, str(cnt), new_x=XPos.RIGHT)
+                pdf.set_font("Helvetica", "", 8)
+                pdf.cell(col_ws[2], 7, exp, new_x=XPos.RIGHT)
+                pdf.cell(col_ws[3], 7, tf, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.ln(8)
 
-        if not executive:
+        if not executive and _has("findings"):
             # ── Findings Pages ──
             for i, f in enumerate(findings, 1):
                 sev  = f.severity.lower()
@@ -1089,6 +1128,105 @@ class Reporter:
                 pdf.set_line_width(0.2)
                 pdf.line(18, pdf.get_y(), 192, pdf.get_y())
                 pdf.ln(6)
+
+        # ── Attack Chains Section ──
+        if _has("chains"):
+            chains_data = self._meta.get("attack_chains") or []
+            if chains_data:
+                pdf.add_page()
+                section_header("Attack Chains")
+                for chain in chains_data:
+                    chain_text = chain.get("chain", "")
+                    uplift = chain.get("cvss_uplift", "")
+                    desc = chain.get("description", "")
+                    if pdf.get_y() > 240:
+                        pdf.add_page()
+                    # Chain header band
+                    band_y = pdf.get_y()
+                    pdf.set_fill_color(*DARK)
+                    pdf.rect(18, band_y, 174, 9, "F")
+                    pdf.set_font("Helvetica", "B", 8.5)
+                    pdf.set_text_color(*WHITE)
+                    pdf.set_y(band_y + 2)
+                    pdf.cell(0, 6, safe(chain_text, 100), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.set_text_color(*DARK)
+                    pdf.ln(2)
+                    if uplift:
+                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_text_color(*GRAY)
+                        pdf.cell(30, 5, "CVSS Uplift:", new_x=XPos.RIGHT)
+                        pdf.set_font("Helvetica", "B", 8)
+                        pdf.set_text_color(220, 38, 38)
+                        pdf.cell(0, 5, safe(uplift, 60), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        pdf.set_text_color(*DARK)
+                    if desc:
+                        pdf.set_font("Helvetica", "", 8)
+                        pdf.multi_cell(174, 4.5, safe(desc, 400), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(5)
+                    pdf.set_draw_color(226, 232, 240)
+                    pdf.line(18, pdf.get_y(), 192, pdf.get_y())
+                    pdf.ln(5)
+
+        # ── Scan Metadata Section ──
+        if _has("meta"):
+            pdf.add_page()
+            section_header("Scan Metadata")
+            meta_rows = [
+                ("Scan ID",     safe(str(self._meta.get("scan_id", "N/A")), 60)),
+                ("Target",      safe(str(self._meta.get("target", target)), 80)),
+                ("Status",      safe(str(self._meta.get("status", "completed")), 40)),
+                ("Duration",    _fmt_duration(int(self._meta.get("scan_duration_s") or 0))),
+                ("Generated",   now),
+            ]
+            phases = self._meta.get("phases_complete") or []
+            if phases:
+                meta_rows.append(("Phases Run", safe(", ".join(phases), 200)))
+            for label, value in meta_rows:
+                if pdf.get_y() > 250:
+                    pdf.add_page()
+                row_y = pdf.get_y()
+                pdf.set_fill_color(245, 247, 250)
+                pdf.rect(18, row_y, 174, 8, "F")
+                pdf.set_font("Helvetica", "B", 8)
+                pdf.set_text_color(*GRAY)
+                pdf.cell(45, 8, label, new_x=XPos.RIGHT)
+                pdf.set_font("Helvetica", "", 8)
+                pdf.set_text_color(*DARK)
+                pdf.multi_cell(129, 8, value, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.ln(4)
+
+        # ── Remediation Summary Section ──
+        if _has("remediation"):
+            pdf.add_page()
+            section_header("Remediation Summary")
+            seen_remediations: set = set()
+            for sev in ["critical", "high", "medium", "low", "info"]:
+                sev_findings = [f for f in findings if f.severity.lower() == sev]
+                if not sev_findings:
+                    continue
+                rgb = SEV_RGB.get(sev, (107, 114, 128))
+                pdf.set_font("Helvetica", "B", 8.5)
+                pdf.set_text_color(*rgb)
+                pdf.cell(0, 6, f"{sev.upper()} PRIORITY", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.set_text_color(*DARK)
+                for f in sev_findings:
+                    rem = f.effective_remediation()
+                    if rem in seen_remediations:
+                        continue
+                    seen_remediations.add(rem)
+                    if pdf.get_y() > 245:
+                        pdf.add_page()
+                    pdf.set_fill_color(*GREEN_BG)
+                    box_start = pdf.get_y()
+                    txt_h = max(10, (len(rem) // 65 + 1) * 4 + 6)
+                    pdf.rect(18, box_start, 174, txt_h, "F")
+                    pdf.set_y(box_start + 2)
+                    pdf.set_font("Helvetica", "", 8)
+                    pdf.set_text_color(*GREEN_FG)
+                    pdf.multi_cell(174, 4.5, safe(rem, 500), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.set_text_color(*DARK)
+                    pdf.ln(3)
+                pdf.ln(4)
 
         pdf.output(str(path))
 
