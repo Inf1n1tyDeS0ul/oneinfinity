@@ -55,6 +55,10 @@ export const endpoints = {
   testPrompt:      (data) => api.post('/ai-prompt-test', data),
   attackGraph:     (target) => api.get('/attack-graph', { params: target ? { target } : {} }),
   reports:         () => api.get('/reports'),
+  publishReport:   (scanId, sections) => api.post('/reports/publish',
+    { scan_id: scanId, sections: sections || null },
+    { responseType: 'blob', timeout: 120000 }
+  ),
   logs:            (params) => api.get('/logs', { params }),
 
   // Traffic
