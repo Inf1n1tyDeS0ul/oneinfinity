@@ -24,7 +24,6 @@ export default function Reports() {
   const [publishSections, setPublishSections] = useState(
     ['exec', 'findings', 'chains', 'meta', 'remediation']
   )
-  const [publishLoading, setPublishLoading] = useState(false)
 
   const loadReports = async () => {
     setLoading(true)
@@ -261,10 +260,10 @@ export default function Reports() {
           <button
             className="btn-primary flex items-center gap-2"
             onClick={handlePublish}
-            disabled={!publishScanId || publishLoading}
+            disabled={!publishScanId}
           >
             <FileDown size={14} />
-            {publishLoading ? 'Preparing…' : 'Publish Report'}
+            Publish Report
           </button>
         </div>
       )}

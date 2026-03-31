@@ -31,8 +31,7 @@ export default function ReportPreview() {
         { scan_id: scanId, sections: sections },
         { responseType: 'blob', timeout: 120000 }
       )
-      const blob = new Blob([resp.data], { type: 'application/pdf' })
-      const url = URL.createObjectURL(blob)
+      const url = URL.createObjectURL(resp.data)
       blobRef.current = url
       setPdfUrl(url)
     } catch (err) {
