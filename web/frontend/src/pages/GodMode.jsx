@@ -267,12 +267,34 @@ export default function GodMode() {
   // ── Launch ────────────────────────────────────────────────────────────────
   const handleLaunch = async () => {
     if (!target.trim()) return
+    if (preset === 'custom') {
+      const hasAny = Object.values(customModules).some(c => c.enabled)
+      if (!hasAny) {
+        addNotification('Select at least one module before launching', 'warn')
+        return
+      }
+    }
     setLaunching(true)
     try {
       const authPayload = {}
       if (authType === 'cookie' && authValue.trim())  authPayload.session_cookie = authValue.trim()
       if (authType === 'bearer' && authValue.trim())  authPayload.bearer_token   = authValue.trim()
       if (authType === 'header' && authValue.trim())  authPayload.auth_header    = authValue.trim()
+
+      const isCustom = preset === 'custom'
+      const enabledModules = isCustom
+        ? Object.entries(customModules).filter(([, c]) => c.enabled).map(([id]) => id)
+        : []
+      const moduleIntensities = isCustom
+        ? Object.fromEntries(
+            Object.entries(customModules)
+              .filter(([, c]) => c.enabled)
+              .map(([id, c]) => [id, c.intensity])
+          )
+        : {}
+      const launchLabel = isCustom
+        ? `Custom (${enabledModules.length} modules)`
+        : activePreset.label
 
       await endpoints.godModeRun({
         target:       target.trim(),
@@ -281,9 +303,13 @@ export default function GodMode() {
         no_swarm:     activePreset.no_swarm,
         no_research:  activePreset.no_research,
         report_fmt:   reportFmt,
+        ...(isCustom && enabledModules.length > 0 && {
+          modules:     enabledModules,
+          intensities: moduleIntensities,
+        }),
         ...authPayload,
       })
-      addNotification(`GOD MODE launched (${activePreset.label}) — Foundation starting`, 'success')
+      addNotification(`GOD MODE launched (${launchLabel}) — Foundation starting`, 'success')
       setSession(null)
       setTimeout(() => { refresh(); refreshSessions() }, 1500)
     } catch (e) {
