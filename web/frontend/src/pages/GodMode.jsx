@@ -143,6 +143,13 @@ const TYPE_TO_PRESET = {
   web:    'deep',
 }
 
+const INTENSITY_COLORS = {
+  low:        'border-blue-500/40 text-blue-300',
+  medium:     'border-cyan-500/40 text-cyan-300',
+  high:       'border-orange-500/40 text-orange-300',
+  aggressive: 'border-red-500/40 text-red-300',
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function GodMode() {
@@ -426,42 +433,129 @@ export default function GodMode() {
                       onClick={() => { setPreset(p.id); setUserPickedPreset(true) }}
                       className={clsx(
                         'flex flex-col items-start gap-0.5 p-3 rounded-xl border text-left transition-all',
+                        p.id === 'custom' && 'col-span-2',
                         preset === p.id ? p.activeColor : p.color + ' opacity-70 hover:opacity-100'
                       )}
                     >
-                      <span className="text-xs font-semibold">{p.label}</span>
+                      <div className="flex items-center gap-2 w-full">
+                        <span className="text-xs font-semibold">{p.label}</span>
+                        {p.id === 'custom' && preset === 'custom' && (() => {
+                          const enabled = Object.values(customModules).filter(c => c.enabled)
+                          const intensitySet = [...new Set(enabled.map(c => c.intensity))]
+                          const summary = enabled.length === 0
+                            ? 'no modules selected'
+                            : `${enabled.length} module${enabled.length > 1 ? 's' : ''} · ${intensitySet.length > 1 ? 'Mixed intensity' : (intensitySet[0] ?? 'medium')}`
+                          return (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-violet-500/20 border border-violet-500/30 text-violet-300">
+                              {summary}
+                            </span>
+                          )
+                        })()}
+                      </div>
                       <span className="text-[10px] opacity-70 leading-tight">{p.desc}</span>
                     </button>
                   ))}
                 </div>
               </div>
 
-              {/* Module badges — shows what the selected preset runs */}
+              {/* Modules — badges for presets, interactive rows for Custom */}
               <div>
-                <label className="label">Modules</label>
-                <div className="flex flex-wrap gap-1.5">
-                  {ALL_MODULES.map(m => {
-                    const included = activePreset.modules.includes(m.id)
-                    return (
-                      <div
-                        key={m.id}
-                        title={m.desc}
-                        className={clsx(
-                          'flex items-center gap-1 px-2 py-1 rounded-lg border text-[10px] font-medium transition-all',
-                          m.comingSoon
-                            ? 'border-slate-700 text-slate-600 bg-transparent'
-                            : included
-                            ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'
-                            : 'border-slate-700 text-slate-600 bg-transparent line-through'
-                        )}
-                      >
-                        <m.icon size={9} />
-                        {m.label}
-                        {m.comingSoon && <span className="text-[8px] text-slate-600 ml-0.5">soon</span>}
-                      </div>
-                    )
-                  })}
-                </div>
+                <label className="label">
+                  Modules
+                  {preset === 'custom' && (
+                    <span className="ml-2 text-[9px] text-slate-500 normal-case tracking-normal">
+                      check to enable · set intensity per module
+                    </span>
+                  )}
+                </label>
+
+                {preset !== 'custom' ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {ALL_MODULES.map(m => {
+                      const included = activePreset.modules.includes(m.id)
+                      return (
+                        <div
+                          key={m.id}
+                          title={m.desc}
+                          className={clsx(
+                            'flex items-center gap-1 px-2 py-1 rounded-lg border text-[10px] font-medium transition-all',
+                            m.comingSoon
+                              ? 'border-slate-700 text-slate-600 bg-transparent'
+                              : included
+                              ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'
+                              : 'border-slate-700 text-slate-600 bg-transparent line-through'
+                          )}
+                        >
+                          <m.icon size={9} />
+                          {m.label}
+                          {m.comingSoon && <span className="text-[8px] text-slate-600 ml-0.5">soon</span>}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-1.5">
+                    {ALL_MODULES.filter(m => !m.comingSoon).map(m => {
+                      const cfg = customModules[m.id]
+                      const enabled = cfg?.enabled ?? false
+                      const intensity = cfg?.intensity ?? 'medium'
+                      return (
+                        <div
+                          key={m.id}
+                          className={clsx(
+                            'flex items-center gap-2.5 px-3 py-2 rounded-lg border transition-all',
+                            enabled
+                              ? 'border-cyan-500/20 bg-cyan-500/[0.04]'
+                              : 'border-slate-700/60 bg-bg-secondary opacity-50'
+                          )}
+                        >
+                          {/* Checkbox */}
+                          <button
+                            onClick={() => setCustomModules(prev => ({
+                              ...prev,
+                              [m.id]: { ...prev[m.id], enabled: !enabled }
+                            }))}
+                            className={clsx(
+                              'w-4 h-4 rounded flex-shrink-0 flex items-center justify-center border transition-all',
+                              enabled
+                                ? 'bg-cyan-400 border-cyan-400 text-black'
+                                : 'border-slate-600 bg-transparent'
+                            )}
+                          >
+                            {enabled && <span className="text-[9px] font-black leading-none">✓</span>}
+                          </button>
+
+                          {/* Info */}
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[11px] font-semibold text-slate-200">{m.label}</div>
+                            <div className="text-[9px] text-slate-500 truncate">{m.desc}</div>
+                          </div>
+
+                          {/* Intensity selector */}
+                          <select
+                            disabled={!enabled}
+                            value={intensity}
+                            onChange={e => setCustomModules(prev => ({
+                              ...prev,
+                              [m.id]: { ...prev[m.id], intensity: e.target.value }
+                            }))}
+                            className={clsx(
+                              'text-[10px] bg-bg-elevated border rounded-md px-1.5 py-1 flex-shrink-0 transition-all',
+                              enabled
+                                ? INTENSITY_COLORS[intensity]
+                                : 'border-slate-700 text-slate-600'
+                            )}
+                          >
+                            <option value="low">Low</option>
+                            <option value="medium">Medium</option>
+                            <option value="high">High</option>
+                            <option value="aggressive">Aggressive</option>
+                          </select>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
 
               {/* Report Format */}
