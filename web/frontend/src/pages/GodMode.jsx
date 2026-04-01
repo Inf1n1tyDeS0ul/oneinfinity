@@ -282,13 +282,16 @@ export default function GodMode() {
       if (authType === 'header' && authValue.trim())  authPayload.auth_header    = authValue.trim()
 
       const isCustom = preset === 'custom'
+      const comingSoonIds = new Set(ALL_MODULES.filter(m => m.comingSoon).map(m => m.id))
       const enabledModules = isCustom
-        ? Object.entries(customModules).filter(([, c]) => c.enabled).map(([id]) => id)
+        ? Object.entries(customModules)
+            .filter(([id, c]) => c.enabled && !comingSoonIds.has(id))
+            .map(([id]) => id)
         : []
       const moduleIntensities = isCustom
         ? Object.fromEntries(
             Object.entries(customModules)
-              .filter(([, c]) => c.enabled)
+              .filter(([id, c]) => c.enabled && !comingSoonIds.has(id))
               .map(([id, c]) => [id, c.intensity])
           )
         : {}
