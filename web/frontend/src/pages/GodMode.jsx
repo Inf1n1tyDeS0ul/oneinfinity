@@ -3,12 +3,15 @@ import { useNavigate } from 'react-router-dom'
 import {
   Zap, Play, Square, RefreshCw, Terminal, Clock,
   ShieldAlert, Target, CheckCircle2, AlertTriangle,
-  ChevronDown, ChevronRight, Settings2, Activity,
-  Flame, Brain, Users, Search, FileText, Trash2, ExternalLink
+  ChevronDown, ChevronRight, Activity, Flame, Brain,
+  Users, Search, FileText, Trash2, ExternalLink,
+  Shield, Eye, GitMerge, Cpu, Lock, Bot, Radar
 } from 'lucide-react'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
 import clsx from 'clsx'
+
+// ── Constants ────────────────────────────────────────────────────────────────
 
 const MISSION_ICONS = {
   foundation: Search,
@@ -29,11 +32,11 @@ const MISSION_DISPLAY_NAMES = {
 }
 
 const MISSION_STATUS_STYLE = {
-  running:   'text-cyan-400 badge-running',
-  done:      'text-emerald-400 badge-completed',
-  failed:    'text-red-400 badge-failed',
-  pending:   'text-slate-500 badge-queued',
-  skipped:   'text-slate-600 badge-info',
+  running: 'text-cyan-400 badge-running',
+  done:    'text-emerald-400 badge-completed',
+  failed:  'text-red-400 badge-failed',
+  pending: 'text-slate-500 badge-queued',
+  skipped: 'text-slate-600 badge-info',
 }
 
 const TERM_REASONS = {
@@ -45,6 +48,73 @@ const TERM_REASONS = {
   all_done:    { label: 'All Done',    color: 'text-emerald-400', icon: CheckCircle2 },
 }
 
+// Modules — what God Mode runs. Swarm and Research are the two toggleable ones.
+const ALL_MODULES = [
+  { id: 'recon',          label: 'Recon',           icon: Radar,     desc: 'Subdomain enum, port scan, crawling, fingerprinting',           always: true },
+  { id: 'vuln_scan',      label: 'Vuln Scan',       icon: ShieldAlert, desc: 'Nuclei, dalfox, sqlmap, CRLFUZZ, KXSS',                       always: true },
+  { id: 'active_testing', label: 'Active Testing',  icon: Zap,       desc: 'Swarm agents: XSS, SQLi, SSRF, IDOR, CORS, JWT, Auth, IDOR',   key: 'swarm' },
+  { id: 'auth',           label: 'Auth & Sessions', icon: Lock,      desc: 'Default creds, session reuse, CSRF, cookie checks',             always: true },
+  { id: 'business_logic', label: 'Business Logic',  icon: GitMerge,  desc: 'Race conditions, price manipulation, workflow skips',            always: true },
+  { id: 'chains',         label: 'Exploit Chains',  icon: GitMerge,  desc: 'Cross-finding chains: SSRF→RCE, XSS→ATO, SQLi→bypass',         always: true },
+  { id: 'ai_hypothesis',  label: 'AI Hypothesis',   icon: Brain,     desc: 'AI-driven iterative hypothesis testing on uncovered classes',    key: 'research' },
+  { id: 'ai_llm',         label: 'AI/LLM Testing',  icon: Bot,       desc: 'Prompt injection, jailbreaks, model attacks (AI product targets)', key: 'ai_llm', comingSoon: true },
+]
+
+// Presets — map to backend no_swarm / no_research flags
+const PRESETS = [
+  {
+    id: 'quick',
+    label: 'Quick',
+    desc: 'Fast sweep, high/critical only',
+    color: 'border-blue-500/40 bg-blue-500/10 text-blue-300',
+    activeColor: 'border-blue-400 bg-blue-500/20 text-blue-200',
+    no_swarm: true,
+    no_research: true,
+    modules: ['recon', 'vuln_scan', 'auth', 'business_logic', 'chains'],
+  },
+  {
+    id: 'standard',
+    label: 'Standard',
+    desc: 'Full pipeline + swarm + AI research',
+    color: 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300',
+    activeColor: 'border-cyan-400 bg-cyan-500/20 text-cyan-200',
+    no_swarm: false,
+    no_research: false,
+    modules: ['recon', 'vuln_scan', 'active_testing', 'auth', 'business_logic', 'chains', 'ai_hypothesis'],
+  },
+  {
+    id: 'deep',
+    label: 'Deep',
+    desc: 'Everything — swarm + AI research',
+    color: 'border-orange-500/40 bg-orange-500/10 text-orange-300',
+    activeColor: 'border-orange-400 bg-orange-500/20 text-orange-200',
+    no_swarm: false,
+    no_research: false,
+    modules: ['recon', 'vuln_scan', 'active_testing', 'auth', 'business_logic', 'chains', 'ai_hypothesis'],
+  },
+  {
+    id: 'stealth',
+    label: 'Stealth',
+    desc: 'Passive recon only, zero active probes',
+    color: 'border-slate-500/40 bg-slate-500/10 text-slate-300',
+    activeColor: 'border-slate-400 bg-slate-500/20 text-slate-200',
+    no_swarm: true,
+    no_research: true,
+    stealth: true,
+    modules: ['recon'],
+  },
+  {
+    id: 'custom',
+    label: 'Custom',
+    desc: 'Pick modules + intensity yourself',
+    color: 'border-violet-500/40 bg-violet-500/10 text-violet-300',
+    activeColor: 'border-violet-400 bg-violet-500/20 text-violet-200',
+    no_swarm: false,
+    no_research: false,
+    modules: [],
+  },
+]
+
 function formatDuration(secs) {
   if (!secs && secs !== 0) return '—'
   const h = Math.floor(secs / 3600)
@@ -55,37 +125,51 @@ function formatDuration(secs) {
   return `${s}s`
 }
 
+// ── Component ────────────────────────────────────────────────────────────────
+
 export default function GodMode() {
   const { addNotification } = useStore()
   const navigate = useNavigate()
 
-  // Launch form
-  const [target, setTarget]           = useState('')
-  const [maxTime, setMaxTime]         = useState('2h')
-  const [maxFindings, setMaxFindings] = useState(100)
-  const [noSwarm, setNoSwarm]         = useState(false)
-  const [noResearch, setNoResearch]   = useState(false)
-  const [reportFmt, setReportFmt]     = useState('markdown')
-  const [showAdvanced, setShowAdvanced] = useState(false)
-  const [launching, setLaunching]     = useState(false)
-  // Authenticated scanning
-  const [showAuth, setShowAuth]       = useState(false)
-  const [authType, setAuthType]       = useState('none')   // none | cookie | bearer | header
-  const [authValue, setAuthValue]     = useState('')
+  // Launch form state
+  const [target, setTarget]       = useState('')
+  const [preset, setPreset]       = useState('deep')
+  const [reportFmt, setReportFmt] = useState('markdown')
+  const [launching, setLaunching] = useState(false)
+  const [showAuth, setShowAuth]   = useState(false)
+  const [authType, setAuthType]   = useState('none')
+  const [authValue, setAuthValue] = useState('')
 
-  // Active session
-  const [session, setSession]         = useState(null)
-  const [sessions, setSessions]       = useState([])
-  const [logs, setLogs]               = useState([])
-  const [logsLoading, setLogsLoading] = useState(false)
+  // Auto-detection state
+  const [detectedType, setDetectedType]         = useState(null)   // 'web'|'api'|'mobile'|'ai'|null
+  const [userPickedPreset, setUserPickedPreset] = useState(false)
+
+  // Custom preset module configuration
+  const [customModules, setCustomModules] = useState({
+    recon:          { enabled: true,  intensity: 'medium' },
+    vuln_scan:      { enabled: true,  intensity: 'medium' },
+    active_testing: { enabled: false, intensity: 'medium' },
+    auth:           { enabled: true,  intensity: 'medium' },
+    business_logic: { enabled: false, intensity: 'medium' },
+    chains:         { enabled: false, intensity: 'medium' },
+    ai_hypothesis:  { enabled: false, intensity: 'medium' },
+  })
+
+  // Session state
+  const [session, setSession]               = useState(null)
+  const [sessions, setSessions]             = useState([])
+  const [logs, setLogs]                     = useState([])
+  const [logsLoading, setLogsLoading]       = useState(false)
   const [selectedSessionId, setSelectedSessionId] = useState(null)
-  const [stopping, setStopping]       = useState(false)
-  const [tab, setTab]                 = useState('status')
+  const [stopping, setStopping]             = useState(false)
+  const [tab, setTab]                       = useState('status')
 
   const logBottomRef = useRef(null)
   const pollRef      = useRef(null)
 
-  // ── Poll active session status every 5s ─────────────────────────────────────
+  const activePreset = PRESETS.find(p => p.id === preset) || PRESETS[2]
+
+  // ── Data refresh ──────────────────────────────────────────────────────────
   const refresh = async (scanId) => {
     try {
       const r = await endpoints.godModeStatus(scanId || selectedSessionId || undefined)
@@ -115,13 +199,8 @@ export default function GodMode() {
     finally { setLogsLoading(false) }
   }
 
-  // On mount: load latest session + session list
-  useEffect(() => {
-    refresh()
-    refreshSessions()
-  }, [])
+  useEffect(() => { refresh(); refreshSessions() }, [])
 
-  // Status polling: runs every 5s while a session is active, clears when done
   useEffect(() => {
     clearInterval(pollRef.current)
     if (session && !session.terminated_by) {
@@ -130,7 +209,6 @@ export default function GodMode() {
     return () => clearInterval(pollRef.current)
   }, [session?.terminated_by, selectedSessionId])
 
-  // Log refresh: on tab switch + auto-refresh every 8s when scan is running
   useEffect(() => {
     if (tab === 'logs' && selectedSessionId) refreshLogs(selectedSessionId)
   }, [tab, selectedSessionId])
@@ -146,29 +224,26 @@ export default function GodMode() {
     logBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [logs])
 
-  // ── Launch ───────────────────────────────────────────────────────────────────
+  // ── Launch ────────────────────────────────────────────────────────────────
   const handleLaunch = async () => {
     if (!target.trim()) return
     setLaunching(true)
     try {
       const authPayload = {}
-      if (authType === 'cookie' && authValue.trim()) {
-        authPayload.session_cookie = authValue.trim()
-      } else if (authType === 'bearer' && authValue.trim()) {
-        authPayload.bearer_token = authValue.trim()
-      } else if (authType === 'header' && authValue.trim()) {
-        authPayload.auth_header = authValue.trim()
-      }
-      const r = await endpoints.godModeRun({
-        target: target.trim(),
-        max_time: maxTime,
-        max_findings: maxFindings,
-        no_swarm: noSwarm,
-        no_research: noResearch,
-        report_fmt: reportFmt,
+      if (authType === 'cookie' && authValue.trim())  authPayload.session_cookie = authValue.trim()
+      if (authType === 'bearer' && authValue.trim())  authPayload.bearer_token   = authValue.trim()
+      if (authType === 'header' && authValue.trim())  authPayload.auth_header    = authValue.trim()
+
+      await endpoints.godModeRun({
+        target:       target.trim(),
+        max_time:     '0',
+        max_findings: 0,
+        no_swarm:     activePreset.no_swarm,
+        no_research:  activePreset.no_research,
+        report_fmt:   reportFmt,
         ...authPayload,
       })
-      addNotification('GOD MODE launched — Stage 1 starting', 'success')
+      addNotification(`GOD MODE launched (${activePreset.label}) — Foundation starting`, 'success')
       setSession(null)
       setTimeout(() => { refresh(); refreshSessions() }, 1500)
     } catch (e) {
@@ -178,7 +253,7 @@ export default function GodMode() {
     }
   }
 
-  // ── Stop ─────────────────────────────────────────────────────────────────────
+  // ── Stop / Delete ─────────────────────────────────────────────────────────
   const handleStop = async () => {
     setStopping(true)
     try {
@@ -191,8 +266,7 @@ export default function GodMode() {
       }
     } catch (e) {
       addNotification('Stop failed: ' + e.message, 'error')
-    } finally {
-      setStopping(false) }
+    } finally { setStopping(false) }
   }
 
   const handleDelete = async (scanId, e) => {
@@ -201,36 +275,30 @@ export default function GodMode() {
     try {
       await endpoints.godModeDelete(scanId)
       addNotification('Session deleted', 'success')
-      if (selectedSessionId === scanId) {
-        setSession(null)
-        setSelectedSessionId(null)
-      }
+      if (selectedSessionId === scanId) { setSession(null); setSelectedSessionId(null) }
       refreshSessions()
     } catch (e) {
       addNotification('Delete failed: ' + e.message, 'error')
     }
   }
 
-  // ── Derived ──────────────────────────────────────────────────────────────────
+  // ── Derived ───────────────────────────────────────────────────────────────
   const isRunning  = session && !session.terminated_by
   const missions   = Object.entries(session?.missions || {})
   const elapsed    = session?.elapsed_seconds ?? 0
-  const maxSec     = session?.max_time_sec ?? 7200
-  // Show 100% progress when scan is done, actual % while running
-  const progress   = session?.terminated_by ? 100 : Math.min(100, (elapsed / maxSec) * 100)
   const termReason = session?.terminated_by ? TERM_REASONS[session.terminated_by] : null
 
   const logLevelColor = (line) => {
     if (/ERROR|CRITICAL|\[-\]/i.test(line)) return 'text-red-400'
     if (/WARNING|\[!\]/i.test(line)) return 'text-yellow-400'
-    if (/\[GOD MODE\]|\[+\]/i.test(line)) return 'text-cyan-400'
+    if (/\[GOD MODE\]|\[\+\]/i.test(line)) return 'text-cyan-400'
     if (/\[Stage|Mission|converge|unlock/i.test(line)) return 'text-purple-400'
     return 'text-slate-400'
   }
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Page header */}
+      {/* Header */}
       <div className="section-header">
         <div>
           <div className="section-title flex items-center gap-2.5">
@@ -240,7 +308,7 @@ export default function GodMode() {
             </span>
           </div>
           <div className="text-xs text-slate-500">
-            Full adaptive cascade — every capability, zero skip. Foundation → Scan → Research → Swarm → Chains → Report
+            Adaptive autonomous scanner — configure scope and modules, then launch
           </div>
         </div>
         <button className="btn-secondary" onClick={() => { refresh(); refreshSessions() }}>
@@ -255,23 +323,19 @@ export default function GodMode() {
           <div className="flex-1 min-w-0">
             <div className="text-sm font-semibold text-orange-300">GOD MODE ACTIVE — {session.target}</div>
             <div className="text-xs text-orange-400/70 mt-0.5">
-              Session: <span className="font-mono">{session.scan_id}</span> · Elapsed: {formatDuration(elapsed)} / {formatDuration(maxSec)} · Findings: {session.finding_count}
+              Session: <span className="font-mono">{session.scan_id}</span> · Elapsed: {formatDuration(elapsed)} · Findings: {session.finding_count}
             </div>
             <div className="progress-bar mt-2" style={{ background: 'rgba(249,115,22,0.15)' }}>
-              <div className="progress-fill" style={{ width: `${progress}%`, background: 'linear-gradient(90deg,#ff4444,#f97316)' }} />
+              <div className="progress-fill animate-pulse" style={{ width: '100%', background: 'linear-gradient(90deg,#ff4444,#f97316)' }} />
             </div>
           </div>
-          <button
-            className="btn-danger flex-shrink-0"
-            onClick={handleStop}
-            disabled={stopping}
-          >
+          <button className="btn-danger flex-shrink-0" onClick={handleStop} disabled={stopping}>
             <Square size={12} />{stopping ? 'Stopping...' : 'Stop'}
           </button>
         </div>
       )}
 
-      {/* Terminated banner */}
+      {/* Completed banner */}
       {session?.terminated_by && termReason && (
         <div className="card border-emerald-500/20 bg-emerald-500/5 p-4 flex items-center gap-3">
           <termReason.icon size={16} className={termReason.color} />
@@ -283,130 +347,147 @@ export default function GodMode() {
               {session.target} · Completed in {formatDuration(elapsed)} · {session.finding_count} findings
             </div>
           </div>
-          <button
-            className="btn-secondary flex-shrink-0"
-            onClick={() => navigate('/results')}
-          >
+          <button className="btn-secondary flex-shrink-0" onClick={() => navigate('/results')}>
             <ExternalLink size={12} />View Findings
           </button>
         </div>
       )}
 
       <div className="grid grid-cols-5 gap-4">
-        {/* Left: Launch form */}
+        {/* ── Left: Launch Form ─────────────────────────────────────────────── */}
         <div className="col-span-2 flex flex-col gap-4">
           <div className="card">
             <div className="card-header">
               <span className="card-title">
                 <Flame size={14} className="text-red-400" />
-                Launch GOD MODE
+                Launch Scan
               </span>
             </div>
-            <div className="card-body flex flex-col gap-4">
+            <div className="card-body flex flex-col gap-5">
+
+              {/* Target */}
               <div>
                 <label className="label">Target</label>
                 <input
                   className="input"
-                  placeholder="target.com"
+                  placeholder="https://target.com"
                   value={target}
                   onChange={e => setTarget(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && !isRunning && !launching && target.trim() && handleLaunch()}
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="label">Max Time</label>
-                  <select className="select" value={maxTime} onChange={e => setMaxTime(e.target.value)}>
-                    {['30m','1h','2h','4h','6h','12h'].map(t => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="label">Max Findings</label>
-                  <input className="input" type="number" min={1} max={500} value={maxFindings} onChange={e => setMaxFindings(+e.target.value)} />
+              {/* Scope Presets */}
+              <div>
+                <label className="label">Scope</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {PRESETS.map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => { setPreset(p.id); setUserPickedPreset(true) }}
+                      className={clsx(
+                        'flex flex-col items-start gap-0.5 p-3 rounded-xl border text-left transition-all',
+                        preset === p.id ? p.activeColor : p.color + ' opacity-70 hover:opacity-100'
+                      )}
+                    >
+                      <span className="text-xs font-semibold">{p.label}</span>
+                      <span className="text-[10px] opacity-70 leading-tight">{p.desc}</span>
+                    </button>
+                  ))}
                 </div>
               </div>
 
+              {/* Module badges — shows what the selected preset runs */}
+              <div>
+                <label className="label">Modules</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {ALL_MODULES.map(m => {
+                    const included = activePreset.modules.includes(m.id)
+                    return (
+                      <div
+                        key={m.id}
+                        title={m.desc}
+                        className={clsx(
+                          'flex items-center gap-1 px-2 py-1 rounded-lg border text-[10px] font-medium transition-all',
+                          m.comingSoon
+                            ? 'border-slate-700 text-slate-600 bg-transparent'
+                            : included
+                            ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'
+                            : 'border-slate-700 text-slate-600 bg-transparent line-through'
+                        )}
+                      >
+                        <m.icon size={9} />
+                        {m.label}
+                        {m.comingSoon && <span className="text-[8px] text-slate-600 ml-0.5">soon</span>}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* Report Format */}
               <div>
                 <label className="label">Report Format</label>
                 <select className="select" value={reportFmt} onChange={e => setReportFmt(e.target.value)}>
-                  {['markdown','html','json'].map(f => <option key={f} value={f}>{f}</option>)}
+                  {['markdown', 'html', 'json', 'pdf'].map(f => <option key={f} value={f}>{f}</option>)}
                 </select>
               </div>
 
-              {/* Advanced toggle */}
-              <button
-                className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors"
-                onClick={() => setShowAdvanced(!showAdvanced)}
-              >
-                <Settings2 size={12} />
-                Advanced options
-                {showAdvanced ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              </button>
+              {/* Authentication */}
+              <div>
+                <button
+                  className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors w-full"
+                  onClick={() => setShowAuth(!showAuth)}
+                >
+                  <Shield size={12} />
+                  Authentication
+                  <span className="text-slate-600 text-[10px]">(optional — deeper coverage)</span>
+                  <span className="ml-auto">{showAuth ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
+                </button>
 
-              {showAdvanced && (
-                <div className="flex flex-col gap-2 p-3 rounded-lg bg-bg-secondary border border-bg-border">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={noSwarm} onChange={e => setNoSwarm(e.target.checked)} className="rounded" />
-                    <span className="text-sm text-slate-300">--no-swarm <span className="text-slate-600 text-xs">(lighter mode)</span></span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={noResearch} onChange={e => setNoResearch(e.target.checked)} className="rounded" />
-                    <span className="text-sm text-slate-300">--no-research <span className="text-slate-600 text-xs">(faster mode)</span></span>
-                  </label>
-                </div>
-              )}
-
-              {/* Authentication — optional; unlocks authenticated scan coverage */}
-              <button
-                className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors"
-                onClick={() => setShowAuth(!showAuth)}
-              >
-                <ShieldAlert size={12} />
-                Authentication <span className="text-slate-600">(optional — for deeper coverage)</span>
-                {showAuth ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              </button>
-
-              {showAuth && (
-                <div className="flex flex-col gap-3 p-3 rounded-lg bg-bg-secondary border border-cyan-500/20">
-                  <div className="text-xs text-cyan-400/80">
-                    Providing credentials enables authenticated scanning: IDOR, privilege escalation, post-login business logic, and PII exposure in authenticated API responses.
-                  </div>
-                  <div>
-                    <label className="label">Auth Type</label>
-                    <select className="select" value={authType} onChange={e => { setAuthType(e.target.value); setAuthValue('') }}>
-                      <option value="none">None (unauthenticated scan)</option>
-                      <option value="cookie">Session Cookie</option>
-                      <option value="bearer">Bearer Token (JWT)</option>
-                      <option value="header">Raw Auth Header</option>
-                    </select>
-                  </div>
-                  {authType !== 'none' && (
-                    <div>
-                      <label className="label">
-                        {authType === 'cookie'  && 'Cookie Value (e.g. session=abc123; csrf=xyz)'}
-                        {authType === 'bearer'  && 'Bearer Token (JWT — paste token only, no "Bearer" prefix)'}
-                        {authType === 'header'  && 'Raw Header Value (e.g. Bearer eyJ... or Token abc123)'}
-                      </label>
-                      <input
-                        className="input font-mono text-xs"
-                        placeholder={
-                          authType === 'cookie' ? 'session=abc123; _csrf=xyz789' :
-                          authType === 'bearer' ? 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...' :
-                          'Bearer eyJhbGciOiJIUzI1NiJ9...'
-                        }
-                        value={authValue}
-                        onChange={e => setAuthValue(e.target.value)}
-                      />
-                      {authValue && (
-                        <div className="text-xs text-emerald-400 mt-1 flex items-center gap-1">
-                          <CheckCircle2 size={10} /> Authenticated scanning enabled — IDOR, post-auth business logic, and PII checks will run with these credentials.
-                        </div>
-                      )}
+                {showAuth && (
+                  <div className="flex flex-col gap-3 mt-3 p-3 rounded-lg bg-bg-secondary border border-cyan-500/20">
+                    <div className="text-[10px] text-cyan-400/80 leading-relaxed">
+                      Enables authenticated scanning: IDOR, privilege escalation, post-login business logic, PII exposure.
                     </div>
-                  )}
-                </div>
-              )}
+                    <div>
+                      <label className="label">Auth Type</label>
+                      <select className="select" value={authType} onChange={e => { setAuthType(e.target.value); setAuthValue('') }}>
+                        <option value="none">None (unauthenticated)</option>
+                        <option value="cookie">Session Cookie</option>
+                        <option value="bearer">Bearer Token (JWT)</option>
+                        <option value="header">Raw Auth Header</option>
+                      </select>
+                    </div>
+                    {authType !== 'none' && (
+                      <div>
+                        <label className="label">
+                          {authType === 'cookie' && 'Cookie Value'}
+                          {authType === 'bearer' && 'Bearer Token'}
+                          {authType === 'header' && 'Raw Header Value'}
+                        </label>
+                        <input
+                          className="input font-mono text-xs"
+                          placeholder={
+                            authType === 'cookie' ? 'session=abc123; _csrf=xyz789' :
+                            authType === 'bearer' ? 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...' :
+                            'Bearer eyJhbGciOiJIUzI1NiJ9...'
+                          }
+                          value={authValue}
+                          onChange={e => setAuthValue(e.target.value)}
+                        />
+                        {authValue && (
+                          <div className="text-[10px] text-emerald-400 mt-1 flex items-center gap-1">
+                            <CheckCircle2 size={9} /> Authenticated scanning enabled
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
 
+              {/* Launch button */}
               <button
                 className={clsx(
                   'btn-lg justify-center rounded-xl font-semibold transition-all',
@@ -422,7 +503,7 @@ export default function GodMode() {
                 ) : launching ? (
                   <><RefreshCw size={14} className="animate-spin" />Launching...</>
                 ) : (
-                  <><Flame size={14} />Activate GOD MODE</>
+                  <><Flame size={14} />Launch GOD MODE</>
                 )}
               </button>
             </div>
@@ -456,7 +537,7 @@ export default function GodMode() {
                     </div>
                     <button
                       className="btn-icon text-slate-600 hover:text-red-400 p-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                      onClick={(e) => handleDelete(s.scan_id, e)}
+                      onClick={e => handleDelete(s.scan_id, e)}
                       title="Delete session"
                     >
                       <Trash2 size={12} />
@@ -468,7 +549,7 @@ export default function GodMode() {
           )}
         </div>
 
-        {/* Right: Status / Logs */}
+        {/* ── Right: Status / Logs ──────────────────────────────────────────── */}
         <div className="col-span-3 flex flex-col gap-4">
           <div className="tab-bar">
             {[{ id: 'status', label: 'Mission Status' }, { id: 'logs', label: 'Live Logs' }].map(t => (
@@ -488,43 +569,18 @@ export default function GodMode() {
                   {/* Session meta */}
                   <div className="grid grid-cols-3 gap-3">
                     {[
-                      { label: 'Target', value: session.target, mono: true },
-                      { label: 'Session ID', value: session.scan_id, mono: true },
-                      { label: 'Elapsed', value: formatDuration(session.elapsed_seconds) },
-                      { label: 'Findings', value: `${session.finding_count ?? 0} / ${session.max_findings}` },
-                      { label: 'Max Time', value: formatDuration(session.max_time_sec) },
-                      { label: 'Status', value: session.terminated_by ? TERM_REASONS[session.terminated_by]?.label : 'Running' },
+                      { label: 'Target',       value: session.target,                         mono: true },
+                      { label: 'Session ID',   value: session.scan_id,                        mono: true },
+                      { label: 'Elapsed',      value: formatDuration(session.elapsed_seconds) },
+                      { label: 'Findings',     value: `${session.finding_count ?? 0}` },
+                      { label: 'Phases Done',  value: `${(session.phases_complete || []).length}` },
+                      { label: 'Status',       value: session.terminated_by ? TERM_REASONS[session.terminated_by]?.label : 'Running' },
                     ].map(item => (
                       <div key={item.label} className="p-3 rounded-xl bg-bg-secondary border border-bg-border">
                         <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">{item.label}</div>
                         <div className={clsx('text-sm font-medium text-slate-200 truncate', item.mono && 'font-mono text-xs')}>{item.value}</div>
                       </div>
                     ))}
-                  </div>
-
-                  {/* Time progress */}
-                  <div>
-                    <div className="flex justify-between text-xs text-slate-500 mb-1.5">
-                      <span>Time Progress</span>
-                      <span>
-                        {session?.terminated_by
-                          ? `Completed in ${formatDuration(elapsed)}`
-                          : `${formatDuration(elapsed)} / ${formatDuration(maxSec)}`}
-                      </span>
-                    </div>
-                    <div className="h-2 bg-bg-muted rounded-full overflow-hidden">
-                      <div
-                        className="h-full rounded-full transition-all duration-1000"
-                        style={{
-                          width: `${progress}%`,
-                          background: session?.terminated_by
-                            ? 'linear-gradient(90deg,#10b981,#34d399)'
-                            : progress > 80
-                            ? 'linear-gradient(90deg,#f97316,#ef4444)'
-                            : 'linear-gradient(90deg,#00d9ff,#6366f1)'
-                        }}
-                      />
-                    </div>
                   </div>
 
                   {/* Mission pipeline */}
@@ -542,20 +598,16 @@ export default function GodMode() {
                               key={name}
                               className={clsx(
                                 'flex items-center gap-3 p-3 rounded-xl border transition-all',
-                                isActive
-                                  ? 'border-cyan-500/30 bg-cyan-500/5'
-                                  : isDone
-                                  ? 'border-emerald-500/20 bg-emerald-500/5'
-                                  : status === 'failed'
-                                  ? 'border-red-500/20 bg-red-500/5'
-                                  : 'border-bg-border bg-bg-secondary'
+                                isActive  ? 'border-cyan-500/30 bg-cyan-500/5' :
+                                isDone    ? 'border-emerald-500/20 bg-emerald-500/5' :
+                                status === 'failed' ? 'border-red-500/20 bg-red-500/5' :
+                                'border-bg-border bg-bg-secondary'
                               )}
                             >
-                              {/* Step number */}
                               <div className={clsx(
                                 'w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0',
                                 isActive ? 'bg-cyan-500/20 text-cyan-400' :
-                                isDone ? 'bg-emerald-500/20 text-emerald-400' :
+                                isDone   ? 'bg-emerald-500/20 text-emerald-400' :
                                 'bg-bg-elevated text-slate-600'
                               )}>{i + 1}</div>
                               <Icon size={13} className={isActive ? 'text-cyan-400' : isDone ? 'text-emerald-400' : 'text-slate-600'} />
@@ -577,11 +629,9 @@ export default function GodMode() {
                 </div>
               ) : (
                 <div className="empty-state">
-                  <div className="empty-icon">
-                    <Flame size={20} className="text-slate-600" />
-                  </div>
-                  <div className="empty-title">No GOD MODE session</div>
-                  <div className="empty-sub">Launch a session to see the mission pipeline status</div>
+                  <div className="empty-icon"><Flame size={20} className="text-slate-600" /></div>
+                  <div className="empty-title">No active session</div>
+                  <div className="empty-sub">Configure scope and launch a scan to see the mission pipeline</div>
                 </div>
               )}
             </div>
