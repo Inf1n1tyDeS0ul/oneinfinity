@@ -153,7 +153,7 @@ const INTENSITY_COLORS = {
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function GodMode() {
-  const { addNotification } = useStore()
+  const { addNotification, setVulnerabilities } = useStore()
   const navigate = useNavigate()
 
   // Launch form state
@@ -201,8 +201,16 @@ export default function GodMode() {
       const r = await endpoints.godModeStatus(scanId || selectedSessionId || undefined)
       const data = r.data
       if (data?.status !== 'no_session' && data?.status !== 'error') {
+        const prev = session
         setSession(data)
-        if (!selectedSessionId && data?.scan_id) setSelectedSessionId(data.scan_id)
+        // Sync findings when a scan transitions to completed/terminated
+        if (prev && !prev.terminated_by && data?.terminated_by) {
+          try {
+            const vr = await endpoints.vulnerabilities()
+            setVulnerabilities(vr.data || [])
+          } catch (_) { /* findings sync failed silently */ }
+          refreshSessions()
+        }
       }
     } catch (e) { /* backend not ready */ }
   }
@@ -675,7 +683,7 @@ export default function GodMode() {
           {sessions.length > 0 && (
             <div className="card">
               <div className="card-header">
-                <span className="card-title"><Clock size={13} className="text-slate-400" />Session History</span>
+                <span className="card-title"><Clock size={13} className="text-slate-400" />Scan History</span>
               </div>
               <div className="divide-y divide-bg-border">
                 {sessions.slice(0, 8).map((s, i) => (
