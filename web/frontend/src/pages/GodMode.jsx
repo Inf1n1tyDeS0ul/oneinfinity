@@ -336,6 +336,13 @@ export default function GodMode() {
     return 'text-slate-400'
   }
 
+  // Summary for Custom preset card
+  const customEnabledModules = Object.values(customModules).filter(c => c.enabled)
+  const customIntensitySet   = [...new Set(customEnabledModules.map(c => c.intensity))]
+  const customSummary = customEnabledModules.length === 0
+    ? 'no modules selected'
+    : `${customEnabledModules.length} module${customEnabledModules.length > 1 ? 's' : ''} · ${customIntensitySet.length > 1 ? 'Mixed intensity' : (customIntensitySet[0] ?? 'medium')}`
+
   return (
     <div className="flex flex-col gap-5">
       {/* Header */}
@@ -439,18 +446,11 @@ export default function GodMode() {
                     >
                       <div className="flex items-center gap-2 w-full">
                         <span className="text-xs font-semibold">{p.label}</span>
-                        {p.id === 'custom' && preset === 'custom' && (() => {
-                          const enabled = Object.values(customModules).filter(c => c.enabled)
-                          const intensitySet = [...new Set(enabled.map(c => c.intensity))]
-                          const summary = enabled.length === 0
-                            ? 'no modules selected'
-                            : `${enabled.length} module${enabled.length > 1 ? 's' : ''} · ${intensitySet.length > 1 ? 'Mixed intensity' : (intensitySet[0] ?? 'medium')}`
-                          return (
-                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-violet-500/20 border border-violet-500/30 text-violet-300">
-                              {summary}
-                            </span>
-                          )
-                        })()}
+                        {p.id === 'custom' && preset === 'custom' && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-violet-500/20 border border-violet-500/30 text-violet-300">
+                            {customSummary}
+                          </span>
+                        )}
                       </div>
                       <span className="text-[10px] opacity-70 leading-tight">{p.desc}</span>
                     </button>
@@ -542,7 +542,7 @@ export default function GodMode() {
                             className={clsx(
                               'text-[10px] bg-bg-elevated border rounded-md px-1.5 py-1 flex-shrink-0 transition-all',
                               enabled
-                                ? INTENSITY_COLORS[intensity]
+                                ? (INTENSITY_COLORS[intensity] ?? INTENSITY_COLORS.medium)
                                 : 'border-slate-700 text-slate-600'
                             )}
                           >
