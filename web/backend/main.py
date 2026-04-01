@@ -2318,6 +2318,10 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
     report_fmt   = str(data.get("report_fmt", "markdown"))
     modules      = data.get("modules") or []        # list[str], empty = preset defaults
     intensities  = data.get("intensities") or {}    # dict[str,str]
+    if not isinstance(modules, list):
+        modules = []
+    if not isinstance(intensities, dict):
+        intensities = {}
 
     # When a custom module list is provided, derive flags from it
     if modules:
@@ -2342,7 +2346,8 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
         "started_at": datetime.utcnow().isoformat(),
         "completed_at": None, "progress": 0, "findings_count": 0,
         "log_lines": [], "pid": None, "phase": "starting",
-        "modules": modules, "intensities": intensities,
+        "modules": modules,       # in-memory only — not persisted to ScanDB
+        "intensities": intensities,  # in-memory only — not persisted to ScanDB
     }
     SCANS[gm_scan_id] = _gm_scan_entry
     _scan_db.upsert(_gm_scan_entry)
