@@ -132,7 +132,7 @@ function detectTargetType(url) {
   if (u.endsWith('.apk') || u.endsWith('.ipa')) return 'mobile'
   if (u.includes('/api/') || u.includes('/graphql') ||
       u.match(/^https?:\/\/api\./) || u.match(/^https?:\/\/graphql\./)) return 'api'
-  if (/chat|llm|gpt|bot/.test(u) || u.match(/^https?:\/\/ai\./)) return 'ai'
+  if (/\b(chat|llm|gpt|bot)\b/.test(u) || u.match(/^https?:\/\/ai\./)) return 'ai'
   return 'web'
 }
 
@@ -251,10 +251,8 @@ export default function GodMode() {
     }
     const timer = setTimeout(() => {
       const type = detectTargetType(target.trim())
-      if (type) {
-        setDetectedType(type)
-        setPreset(TYPE_TO_PRESET[type])
-      }
+      setDetectedType(type)
+      if (type) setPreset(TYPE_TO_PRESET[type])
     }, 400)
     return () => clearTimeout(timer)
   }, [target, userPickedPreset])
@@ -410,7 +408,7 @@ export default function GodMode() {
                   onChange={e => { setTarget(e.target.value); setUserPickedPreset(false) }}
                   onKeyDown={e => e.key === 'Enter' && !isRunning && !launching && target.trim() && handleLaunch()}
                 />
-                {detectedType && !userPickedPreset && (
+                {detectedType && !userPickedPreset && target.trim() && (
                   <div className="flex items-center gap-1.5 mt-1.5 text-[10px] text-cyan-400">
                     <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse flex-shrink-0" />
                     Detected: {detectedType.toUpperCase()} target — switched to {TYPE_TO_PRESET[detectedType]}
