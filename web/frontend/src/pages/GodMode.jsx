@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Zap, Play, Square, RefreshCw, Terminal, Clock,
-  ShieldAlert, Target, CheckCircle2, AlertTriangle,
+  Zap, Square, RefreshCw, Terminal, Clock,
+  ShieldAlert, CheckCircle2, AlertTriangle,
   ChevronDown, ChevronRight, Activity, Flame, Brain,
   Users, Search, FileText, Trash2, ExternalLink,
-  Shield, Eye, GitMerge, Cpu, Lock, Bot, Radar
+  Shield, GitMerge, Lock, Bot, Radar
 } from 'lucide-react'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
@@ -82,6 +82,7 @@ const PRESETS = [
     no_research: false,
     modules: ['recon', 'vuln_scan', 'active_testing', 'auth', 'business_logic', 'chains', 'ai_hypothesis'],
   },
+  // Deep runs the same modules as Standard; the distinction is depth/intensity enforced by the engine
   {
     id: 'deep',
     label: 'Deep',
@@ -153,6 +154,7 @@ export default function GodMode() {
     business_logic: { enabled: false, intensity: 'medium' },
     chains:         { enabled: false, intensity: 'medium' },
     ai_hypothesis:  { enabled: false, intensity: 'medium' },
+    ai_llm:        { enabled: false, intensity: 'medium' },
   })
 
   // Session state
@@ -167,7 +169,7 @@ export default function GodMode() {
   const logBottomRef = useRef(null)
   const pollRef      = useRef(null)
 
-  const activePreset = PRESETS.find(p => p.id === preset) || PRESETS[2]
+  const activePreset = PRESETS.find(p => p.id === preset) || PRESETS.find(p => p.id === 'deep')
 
   // ── Data refresh ──────────────────────────────────────────────────────────
   const refresh = async (scanId) => {
