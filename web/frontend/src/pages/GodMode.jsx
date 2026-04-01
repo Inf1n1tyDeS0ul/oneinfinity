@@ -126,6 +126,23 @@ function formatDuration(secs) {
   return `${s}s`
 }
 
+function detectTargetType(url) {
+  if (!url || !url.includes('.')) return null
+  const u = url.toLowerCase()
+  if (u.endsWith('.apk') || u.endsWith('.ipa')) return 'mobile'
+  if (u.includes('/api/') || u.includes('/graphql') ||
+      u.match(/^https?:\/\/api\./) || u.match(/^https?:\/\/graphql\./)) return 'api'
+  if (/chat|llm|gpt|bot/.test(u) || u.match(/^https?:\/\/ai\./)) return 'ai'
+  return 'web'
+}
+
+const TYPE_TO_PRESET = {
+  mobile: 'quick',
+  api:    'standard',
+  ai:     'standard',
+  web:    'deep',
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function GodMode() {
@@ -225,6 +242,22 @@ export default function GodMode() {
   useEffect(() => {
     logBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [logs])
+
+  // URL auto-detection — runs 400ms after target changes
+  useEffect(() => {
+    if (!target.trim() || userPickedPreset) {
+      if (!target.trim()) setDetectedType(null)
+      return
+    }
+    const timer = setTimeout(() => {
+      const type = detectTargetType(target.trim())
+      if (type) {
+        setDetectedType(type)
+        setPreset(TYPE_TO_PRESET[type])
+      }
+    }, 400)
+    return () => clearTimeout(timer)
+  }, [target, userPickedPreset])
 
   // ── Launch ────────────────────────────────────────────────────────────────
   const handleLaunch = async () => {
@@ -371,12 +404,18 @@ export default function GodMode() {
               <div>
                 <label className="label">Target</label>
                 <input
-                  className="input"
+                  className={clsx('input', detectedType && !userPickedPreset && 'border-cyan-500/40 shadow-[0_0_0_2px_rgba(0,217,255,0.08)]')}
                   placeholder="https://target.com"
                   value={target}
-                  onChange={e => setTarget(e.target.value)}
+                  onChange={e => { setTarget(e.target.value); setUserPickedPreset(false) }}
                   onKeyDown={e => e.key === 'Enter' && !isRunning && !launching && target.trim() && handleLaunch()}
                 />
+                {detectedType && !userPickedPreset && (
+                  <div className="flex items-center gap-1.5 mt-1.5 text-[10px] text-cyan-400">
+                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse flex-shrink-0" />
+                    Detected: {detectedType.toUpperCase()} target — switched to {TYPE_TO_PRESET[detectedType]}
+                  </div>
+                )}
               </div>
 
               {/* Scope Presets */}
