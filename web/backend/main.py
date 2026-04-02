@@ -163,6 +163,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── SQLite helpers ───────────────────────────────────────────────────────────
+
+def _db_connect(db_path) -> sqlite3.Connection:
+    """Open a SQLite connection with WAL mode and busy_timeout to prevent
+    'database is locked' errors under concurrent writes."""
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=10000")  # wait 10s before raising locked
+    return conn
+
 # ── SQLite-backed target store ────────────────────────────────────────────────
 
 class TargetDB:
@@ -173,7 +184,7 @@ class TargetDB:
         self._init()
 
     def _init(self):
-        with sqlite3.connect(self._db) as conn:
+        with _db_connect(self._db) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS targets (
                     target_id TEXT PRIMARY KEY,
@@ -193,7 +204,7 @@ class TargetDB:
 
     def add(self, target_id: str, target_value: str, name: str = "", platform: str = "hackerone", target_type: str = "web") -> dict:
         now = datetime.utcnow().isoformat()
-        with sqlite3.connect(self._db) as conn:
+        with _db_connect(self._db) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO targets VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (target_id, target_value, target_type, name or target_value,
@@ -203,23 +214,23 @@ class TargetDB:
         return self.get(target_id)
 
     def get(self, target_id: str) -> Optional[dict]:
-        with sqlite3.connect(self._db) as conn:
+        with _db_connect(self._db) as conn:
             row = conn.execute("SELECT * FROM targets WHERE target_id=?", (target_id,)).fetchone()
         return self._row_to_dict(row) if row else None
 
     def list_all(self) -> List[dict]:
-        with sqlite3.connect(self._db) as conn:
+        with _db_connect(self._db) as conn:
             rows = conn.execute("SELECT * FROM targets ORDER BY created_at DESC").fetchall()
         return [self._row_to_dict(r) for r in rows]
 
     def delete(self, target_id: str) -> bool:
-        with sqlite3.connect(self._db) as conn:
+        with _db_connect(self._db) as conn:
             conn.execute("DELETE FROM targets WHERE target_id=?", (target_id,))
             conn.commit()
         return True
 
     def update_status(self, target_id: str, status: str, last_scan_time: str = None):
-        with sqlite3.connect(self._db) as conn:
+        with _db_connect(self._db) as conn:
             conn.execute("UPDATE targets SET status=?, last_scan_time=? WHERE target_id=?",
                         (status, last_scan_time or datetime.utcnow().isoformat(), target_id))
             conn.commit()
@@ -248,7 +259,7 @@ class ScanDB:
 
     def __init__(self, db_path: Path):
         self._db = db_path
-        with sqlite3.connect(str(self._db)) as conn:
+        with _db_connect(self._db) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS scan_history (
                     scan_id      TEXT PRIMARY KEY,
@@ -270,7 +281,7 @@ class ScanDB:
         if not sid:
             return
         try:
-            with sqlite3.connect(str(self._db)) as conn:
+            with _db_connect(self._db) as conn:
                 conn.execute("""
                     INSERT INTO scan_history
                         (scan_id, target, scan_type, profile, status,
@@ -301,14 +312,14 @@ class ScanDB:
 
     def delete(self, scan_id: str) -> None:
         try:
-            with sqlite3.connect(str(self._db)) as conn:
+            with _db_connect(self._db) as conn:
                 conn.execute("DELETE FROM scan_history WHERE scan_id=?", (scan_id,))
         except Exception as exc:
             log.warning("ScanDB.delete error: %s", exc)
 
     def load_all(self) -> List[dict]:
         try:
-            with sqlite3.connect(str(self._db)) as conn:
+            with _db_connect(self._db) as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
                     "SELECT * FROM scan_history ORDER BY started_at DESC"
@@ -1324,7 +1335,7 @@ async def _run_scan_via_engine(scan_id: str, target: str, scan_type: str, auth_c
             if existing:
                 tid = existing[0]["target_id"]
                 _target_db.update_status(tid, scan["status"], datetime.utcnow().isoformat())
-                with sqlite3.connect(_db_path("metadata.db")) as conn:
+                with _db_connect(_db_path("metadata.db")) as conn:
                     conn.execute("UPDATE targets SET vuln_count=? WHERE target_id=?", (len(result.findings), tid))
                     conn.commit()
 
