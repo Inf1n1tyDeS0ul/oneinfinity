@@ -52,6 +52,7 @@ _PHASES: List[str] = [
     "agent_trigger",
     "oob_init",           # NEW: start OOB callback listener
     "auth_setup",         # NEW: configure authenticated sessions
+    "business_logic",     # NEW: business logic attack surface enumeration (canonical phase 6)
     "vuln_scan",
     "graphql_scan",       # NEW: GraphQL endpoint detection + security testing
     "browser_analysis",   # NEW: headless browser DOM/JS/XSS analysis
@@ -72,6 +73,7 @@ _PHASE_PCT: Dict[str, int] = {
     "agent_trigger":     34,
     "oob_init":          37,
     "auth_setup":        40,
+    "business_logic":    47,
     "vuln_scan":         54,
     "graphql_scan":      60,
     "browser_analysis":  66,
@@ -439,6 +441,7 @@ class UnifiedScanEngine:
             "agent_trigger":       self._phase_agent_trigger,
             "oob_init":            self._phase_oob_init,
             "auth_setup":          self._phase_auth_setup,
+            "business_logic":      self._phase_business_logic,
             "vuln_scan":           self._phase_vuln_scan,
             "graphql_scan":        self._phase_graphql_scan,
             "browser_analysis":    self._phase_browser_analysis,
@@ -1807,6 +1810,28 @@ class UnifiedScanEngine:
         except Exception as exc:
             log.warning("auth_setup: failed: %s", exc)
             ctx["auth_manager"] = None
+
+    # ── NEW PHASE: Business Logic ────────────────────────────────────────────
+
+    def _phase_business_logic(self, session: ScanSession, ctx: dict) -> None:
+        """Enumerate business logic attack surface (matches canonical pipeline phase 6)."""
+        try:
+            from business_logic_attack_engine import BusinessLogicAttackEngine
+            import asyncio
+            engine = BusinessLogicAttackEngine()
+            attacks = asyncio.run(engine.generate(session.target, {}, None))
+            count = 0
+            for attack in (attacks or []):
+                d = attack.to_dict() if hasattr(attack, "to_dict") else (attack if isinstance(attack, dict) else {})
+                d.setdefault("vuln_type", "business_logic")
+                d.setdefault("source", "business_logic_engine")
+                if hasattr(session, "findings"):
+                    session.findings.append(d)
+                count += 1
+            session.phases["business_logic"].meta["attack_vectors"] = count
+            log.info("Phase business_logic: %d attack vector(s) found", count)
+        except Exception as exc:
+            log.warning("Phase business_logic skipped: %s", exc)
 
     # ── NEW PHASE: GraphQL Scan ──────────────────────────────────────────────
 
