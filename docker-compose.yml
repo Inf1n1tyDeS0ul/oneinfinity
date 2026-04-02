@@ -79,7 +79,7 @@ services:
       - "web.backend.main:app"
       - "--host=0.0.0.0"
       - "--port=8000"
-      - "--reload"
+      - "--workers=1"
     ports:
       - "8000:8000"
     networks:
@@ -92,7 +92,10 @@ services:
     image: node:20-alpine
     working_dir: /app
     volumes:
-      - ./web/frontend:/app:ro
+      - ./web/frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_BACKEND_URL=http://backend:8000
     command: sh -c "npm ci --silent && npm run dev -- --host 0.0.0.0"
     ports:
       - "3000:3000"
@@ -101,8 +104,53 @@ services:
     networks:
       - oneinfinity-net
 
+  # ── Redis cache for distributed workers ──────────────────────
+  # Required for worker/main.py BLPOP operations
+  redis:
+    profiles: ["full", "distributed"]
+    image: redis:7-alpine
+    container_name: oneinfinity-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - oneinfinity-net
+
+  # ── Distributed worker ──────────────────────────────────────
+  # Processes async scan tasks from Redis queue
+  worker:
+    <<: *oneinfinity-base
+    profiles: ["full", "distributed"]
+    container_name: oneinfinity-worker
+    entrypoint: []
+    command: ["python", "worker/main.py"]
+    environment:
+      - ONEINFINITY_HOME=/data
+      - NUCLEI_TEMPLATES_PATH=/data/.nuclei-templates
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ONEINFINITY_API_KEY=${ONEINFINITY_API_KEY:-}
+      - REDIS_URL=redis://redis:6379/0
+      - ORCHESTRATOR_URL=http://backend:8000
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    networks:
+      - oneinfinity-net
+    restart: "no"
+
 volumes:
   oneinfinity-data:
+    driver: local
+  redis_data:
     driver: local
 
 networks:
