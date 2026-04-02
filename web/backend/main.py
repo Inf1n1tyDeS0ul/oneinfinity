@@ -44,7 +44,7 @@ import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 _API_KEY: str = os.environ.get("ONEINFINITY_API_KEY", "")
 
@@ -1108,7 +1108,8 @@ class PublishReportRequest(BaseModel):
     scan_id: str = Field(..., min_length=1, max_length=128)
     sections: Optional[List[str]] = None   # None = all sections
 
-    @validator("sections")
+    @field_validator("sections")
+    @classmethod
     def validate_sections(cls, v):
         if v is None:
             return v
