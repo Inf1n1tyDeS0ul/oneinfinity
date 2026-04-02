@@ -2952,49 +2952,55 @@ async def tools_capmap():
 
 # ── Graph / Discovery / Swarm routers ─────────────────────────────────────────
 
-try:
-    import sys as _sys, os as _os
-    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-    from graph_api import register_routers as _register_graph_routers
-    _register_graph_routers(app)
-except Exception as _e:
-    print(f"[graph_api] skipped: {_e}")
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 
-try:
-    from swarm_intel_api import register_swarm_routes as _register_swarm_routes
-    _register_swarm_routes(app)
-except Exception as _e:
-    print(f"[swarm_intel_api] skipped: {_e}")
+_ROUTER_STATUS: list = []
 
-try:
-    from system_evolution_api import register_evolution_routes as _register_evolution_routes
-    _register_evolution_routes(app)
-except Exception as _e:
-    print(f"[system_evolution_api] skipped: {_e}")
 
-try:
-    from daemon_api import register_daemon_routes as _register_daemon_routes
-    _register_daemon_routes(app)
-except Exception as _e:
-    print(f"[daemon_api] skipped: {_e}")
+def _safe_register(name: str, import_path: str, fn_name: str, *fn_args, **fn_kwargs):
+    """Import ``import_path``, call ``fn_name(app, *fn_args, **fn_kwargs)`` and
+    record success or failure in ``_ROUTER_STATUS``."""
+    try:
+        mod = __import__(import_path, fromlist=[fn_name])
+        fn = getattr(mod, fn_name)
+        fn(*fn_args, **fn_kwargs)
+        _ROUTER_STATUS.append({"name": name, "status": "ok", "error": None})
+        log.info("Router registered: %s", name)
+    except Exception as exc:
+        _ROUTER_STATUS.append({"name": name, "status": "failed", "error": str(exc)})
+        log.warning("Router FAILED to register: %s — %s", name, exc)
 
-try:
-    from graph_brain_api import register_brain_routes as _register_brain_routes
-    _register_brain_routes(app)
-except Exception as _e:
-    print(f"[graph_brain_api] skipped: {_e}")
 
-try:
-    from orchestrator_api import register_orchestrator_routes as _register_orch_routes
-    _register_orch_routes(app)
-except Exception as _e:
-    print(f"[orchestrator_api] skipped: {_e}")
+_safe_register("graph", "graph_api", "register_routers", app)
+_safe_register("swarm_intel", "swarm_intel_api", "register_swarm_routes", app)
+_safe_register("system_evolution", "system_evolution_api", "register_evolution_routes", app)
+_safe_register("daemon", "daemon_api", "register_daemon_routes", app)
+_safe_register("graph_brain", "graph_brain_api", "register_brain_routes", app)
+_safe_register("orchestrator", "orchestrator_api", "register_orchestrator_routes", app)
 
+# orchestrator_integration.activate is not a router-registration function but
+# we still want to track its load status for observability.
 try:
     from orchestrator_integration import activate as _orch_activate
     _orch_activate(quiet=True)
+    _ROUTER_STATUS.append({"name": "orchestrator_integration", "status": "ok", "error": None})
+    log.info("Router registered: orchestrator_integration")
 except Exception as _e:
-    print(f"[orchestrator_integration] skipped: {_e}")
+    _ROUTER_STATUS.append({"name": "orchestrator_integration", "status": "failed", "error": str(_e)})
+    log.warning("Router FAILED to register: orchestrator_integration — %s", _e)
+
+
+@app.get("/api/health/routers")
+async def router_health():
+    """Report registration status of all optional sub-routers."""
+    registered = [r for r in _ROUTER_STATUS if r["status"] == "ok"]
+    failed = [r for r in _ROUTER_STATUS if r["status"] == "failed"]
+    return {
+        "registered": [r["name"] for r in registered],
+        "failed": [{"name": r["name"], "error": r["error"]} for r in failed],
+        "total": len(_ROUTER_STATUS),
+    }
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
