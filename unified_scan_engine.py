@@ -655,8 +655,8 @@ class UnifiedScanEngine:
                                     properties={"endpoint": _p.path, "param": _pname},
                                 )
                                 param_added += 1
-                            except Exception:
-                                pass
+                            except Exception as _exc:
+                                log.warning('Non-fatal exception suppressed: %s', _exc)
                     # AUTH_ENDPOINT nodes
                     if _AUTH_PATH_PATTERNS.search(_p.path) and _url not in seen_auth:
                         seen_auth.add(_url)
@@ -668,8 +668,8 @@ class UnifiedScanEngine:
                                 properties={"type": "auth", "auth_required": True},
                             )
                             auth_added += 1
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            log.warning('Non-fatal exception suppressed: %s', _exc)
 
                 # Also add auth endpoints from alive hosts
                 for _host in (getattr(intel, "alive_hosts", []) or [])[:50]:
@@ -687,8 +687,8 @@ class UnifiedScanEngine:
                                     properties={"type": "auth_probe", "auth_required": True},
                                 )
                                 auth_added += 1
-                            except Exception:
-                                pass
+                            except Exception as _exc:
+                                log.warning('Non-fatal exception suppressed: %s', _exc)
 
                 # API_ENDPOINT nodes
                 api_map = getattr(intel, "api_map", None)
@@ -701,8 +701,8 @@ class UnifiedScanEngine:
                             properties={"type": "api"},
                         )
                         api_added += 1
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        log.warning('Non-fatal exception suppressed: %s', _exc)
 
                 log.info(
                     "Graph enrichment: +%d PARAMETER, +%d API_ENDPOINT, +%d AUTH_ENDPOINT nodes",
@@ -741,8 +741,8 @@ class UnifiedScanEngine:
                     "(cross-run memory active)",
                     prev_nodes, prev_edges,
                 )
-        except Exception:
-            pass
+        except Exception as _exc:
+            log.warning('Non-fatal exception suppressed: %s', _exc)
 
         intel = ctx.get("recon_intel")
         if intel is None:
@@ -834,8 +834,8 @@ class UnifiedScanEngine:
                 _qs = parse_qs(urlparse(_u).query)
                 if _qs:
                     params_map[_u] = list(_qs.keys())
-            except Exception:
-                pass
+            except Exception as _exc:
+                log.warning('Non-fatal exception suppressed: %s', _exc)
         ctx["params_map"] = params_map
         log.info("params_map built: %d parameterized URLs", len(params_map))
 
@@ -866,8 +866,8 @@ class UnifiedScanEngine:
             try:
                 auth_nodes = brain.get_nodes_by_type("AUTH_ENDPOINT")
                 auth_endpoints = [n.get("url", "") for n in (auth_nodes or []) if n.get("url")]
-            except Exception:
-                pass
+            except Exception as _exc:
+                log.warning('Non-fatal exception suppressed: %s', _exc)
         if not auth_endpoints:
             _AUTH_RE = re.compile(
                 r"/(login|auth|admin|signin|signup|oauth|token|register|password|reset)(/|$)",
@@ -1076,8 +1076,8 @@ class UnifiedScanEngine:
                 tok = getattr(auth_mgr, "token", None)
                 if tok:
                     jwt_tokens.append(str(tok))
-        except Exception:
-            pass
+        except Exception as _exc:
+            log.warning('Non-fatal exception suppressed: %s', _exc)
         ctx["jwt_tokens"] = jwt_tokens
 
         dispatched = 0
@@ -1328,8 +1328,8 @@ class UnifiedScanEngine:
                             findings_count=len(_tool_result),
                             duration_s=round(_tool_duration, 2),
                         )
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    log.warning('Non-fatal exception suppressed: %s', _exc)
                 # ── Priority 7: Decision Engine — record outcomes ────────────
                 try:
                     _de = ctx.get("decision_engine")
@@ -1350,8 +1350,45 @@ class UnifiedScanEngine:
                             success=False,
                             severity="info",
                         )
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    log.warning('Non-fatal exception suppressed: %s', _exc)
+
+        # ── Extended OWASP coverage tests ─────────────────────────────────────
+        # Run new pure-Python tests that aren't part of the tool registry plan.
+        try:
+            from modules.tool_wrappers import (
+                run_deserialization_test, run_file_upload_test,
+                run_oauth_test, run_prototype_pollution_test,
+                run_mfa_bypass_test, run_rate_limit_test, run_pii_scanner,
+            )
+            _ext_tests = [
+                ("deserialization",       run_deserialization_test,       session.target),
+                ("file_upload",           run_file_upload_test,           session.target),
+                ("oauth",                 run_oauth_test,                 session.target),
+                ("prototype_pollution",   run_prototype_pollution_test,   session.target),
+                ("mfa_bypass",            run_mfa_bypass_test,            session.target),
+                ("rate_limit",            run_rate_limit_test,            session.target),
+            ]
+            # PII scan: use discovered URLs if available, else target
+            _pii_urls = list(urls[:20]) if urls else [session.target]
+            _ext_tests.append(("pii_scanner", run_pii_scanner, _pii_urls[0]))
+
+            for _tname, _tfn, _targ in _ext_tests:
+                try:
+                    _tres = _tfn(_targ)
+                    _tlist = _tres if isinstance(_tres, list) else ([_tres] if isinstance(_tres, dict) else [])
+                    _vuln = [f for f in _tlist if isinstance(f, dict) and f.get("severity") not in ("info", None)]
+                    if _vuln:
+                        for _f in _vuln:
+                            _f.setdefault("tool", _tname)
+                        findings.extend(_vuln)
+                        log.info("Extended test '%s': %d finding(s)", _tname, len(_vuln))
+                    else:
+                        log.debug("Extended test '%s': no findings", _tname)
+                except Exception as _te:
+                    log.debug("Extended test '%s' skipped: %s", _tname, _te)
+        except ImportError as _imp_e:
+            log.debug("Extended OWASP tests unavailable: %s", _imp_e)
 
         # ── Fix 7: Collect fabric findings (drain async swarm agents) ────────
         try:
@@ -1375,8 +1412,8 @@ class UnifiedScanEngine:
                 ctx["loop_history"]["ai_signals"] = ctx["loop_history"]["ai_signals"][-20:]
                 log.info("[AI-Signals] %d signals drained into loop_history", len(_AI_SIGNAL_BUFFER))
                 _AI_SIGNAL_BUFFER.clear()
-        except Exception:
-            pass
+        except Exception as _exc:
+            log.warning('Non-fatal exception suppressed: %s', _exc)
 
         # ── Phase 4: Attack Loop — AI-guided iterative follow-on scans ──────────
         # Runs 1–2 additional iterations with AI-suggested tools.
@@ -1559,8 +1596,8 @@ class UnifiedScanEngine:
                     # Append to a module-level buffer read by the loop engine
                     _AI_SIGNAL_BUFFER.extend(_ai_signals)
                     _AI_SIGNAL_BUFFER[:] = _AI_SIGNAL_BUFFER[-20:]  # cap buffer
-            except Exception:
-                pass
+            except Exception as _exc:
+                log.warning('Non-fatal exception suppressed: %s', _exc)
 
         if not result.success and retry and waf_retries > 0:
             try:
@@ -1657,8 +1694,8 @@ class UnifiedScanEngine:
         if target_tool == "nuclei_list" and "targets_file" in kwargs:
             try:
                 Path(kwargs["targets_file"]).unlink(missing_ok=True)
-            except Exception:
-                pass
+            except Exception as _exc:
+                log.warning('Non-fatal exception suppressed: %s', _exc)
 
         # ... rest of the method ...
 
@@ -1850,8 +1887,8 @@ class UnifiedScanEngine:
                 existing_urls.extend(browser_urls)
                 try:
                     intel.all_urls = list(set(existing_urls))
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    log.warning('Non-fatal exception suppressed: %s', _exc)
 
             # Add DOM XSS and JS secret findings
             browser_findings = result.get("findings", [])
@@ -1875,8 +1912,8 @@ class UnifiedScanEngine:
                             response_headers=result.get("response_headers", {}),
                             target=session.target,
                         )
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        log.warning('Non-fatal exception suppressed: %s', _exc)
                 if rel_edges:
                     log.info("browser_analysis: +%d deep relationship edges from JS analysis",
                              rel_edges)
@@ -1893,6 +1930,44 @@ class UnifiedScanEngine:
         except Exception as exc:
             log.warning("browser_analysis: failed: %s", exc)
             session.phases["browser_analysis"].error = str(exc)
+
+        # ── Additional browser security tests ────────────────────────────────
+        extra_count = 0
+        try:
+            from modules.tool_wrappers import run_source_map_scanner, run_clickjacking_test, run_websocket_test
+
+            sm_results = run_source_map_scanner(probe_url)
+            sm_list = sm_results if isinstance(sm_results, list) else (
+                sm_results.get("findings", []) if isinstance(sm_results, dict) else []
+            )
+            if sm_list:
+                session.findings.extend(sm_list)
+                ctx["scan_findings"] = ctx.get("scan_findings", []) + sm_list
+                extra_count += len(sm_list)
+
+            cj_results = run_clickjacking_test(probe_url)
+            cj_list = cj_results if isinstance(cj_results, list) else (
+                [cj_results] if isinstance(cj_results, dict) else []
+            )
+            if cj_list:
+                session.findings.extend(cj_list)
+                ctx["scan_findings"] = ctx.get("scan_findings", []) + cj_list
+                extra_count += len(cj_list)
+
+            ws_results = run_websocket_test(probe_url)
+            ws_list = ws_results if isinstance(ws_results, list) else (
+                [ws_results] if isinstance(ws_results, dict) else []
+            )
+            if ws_list:
+                session.findings.extend(ws_list)
+                ctx["scan_findings"] = ctx.get("scan_findings", []) + ws_list
+                extra_count += len(ws_list)
+
+            if extra_count:
+                log.info("browser_analysis: +%d findings from source-map/clickjacking/websocket tests", extra_count)
+            session.phases["browser_analysis"].meta["extra_tests"] = extra_count
+        except Exception as exc:
+            log.debug("browser_analysis extra tests skipped (non-fatal): %s", exc)
 
     # ── NEW PHASE: Smuggling Test ────────────────────────────────────────────
 
@@ -2189,8 +2264,8 @@ class UnifiedScanEngine:
                 if _kb:
                     _kb.finish_session(ctx.get("kb_session_id", session.scan_id),
                                        total_findings=0, tools_used=[])
-            except Exception:
-                pass
+            except Exception as _exc:
+                log.warning('Non-fatal exception suppressed: %s', _exc)
             return
 
         # ── Fix 8: Deduplication — always enforce + log ──────────────────────
