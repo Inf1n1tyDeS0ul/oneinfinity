@@ -2,27 +2,86 @@
 
 import json
 import csv
+import logging
+import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from result_ingestion_engine import get_ingestion_engine
 from modules.utils import (banner, section, ok, info, warn, err, ask,
                            table, sev, bold, green, yellow, red, cyan, now_str)
 
+log = logging.getLogger("oneinfinity.findings")
+
 SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"]
 
 class FindingsDB:
-    def __init__(self, db_path: str):
-        # We ignore db_path and use the unified ingestion engine
+    def __init__(self, db_path=None):
+        # We use the unified ingestion engine for findings storage
         self.engine = get_ingestion_engine()
         # Ensure db is initialized
         self.engine._init_db()
+        # Store db_path for the audit table; fall back to engine's DB path if not given
+        if db_path is not None:
+            self._audit_db_path = str(db_path)
+        else:
+            self._audit_db_path = str(self.engine._db_path)
+        self._audit_conn: sqlite3.Connection | None = None
+
+    def _get_audit_conn(self) -> sqlite3.Connection:
+        """Return a lazily-opened SQLite connection for the audit table."""
+        if self._audit_conn is None:
+            self._audit_conn = sqlite3.connect(self._audit_db_path, timeout=30)
+        return self._audit_conn
 
     def close(self):
-        pass
+        """Close the audit DB connection gracefully."""
+        if self._audit_conn is not None:
+            try:
+                self._audit_conn.close()
+            except Exception as exc:
+                log.warning("FindingsDB.close(): error closing audit connection: %s", exc)
+            finally:
+                self._audit_conn = None
 
-    def log_action(self, phase: str, action: str, result: str = ""):
-        # Re-use the ingestion engine's DB or ignore for now as it's not strictly required by v2
-        pass
+    def log_action(self, phase: str, action=None, result: str = ""):
+        """Persist an audit event to findings_audit.
+
+        Supports two call styles:
+          log_action(phase, action_str, result_str)   — original 3-arg style
+          log_action(action_str, metadata_dict)       — test-compatible 2-arg style
+        """
+        try:
+            conn = self._get_audit_conn()
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS findings_audit (
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action    TEXT    NOT NULL,
+                    metadata  TEXT    NOT NULL DEFAULT '{}',
+                    timestamp TEXT    NOT NULL
+                )
+                """
+            )
+            # Normalise arguments so both call styles work
+            if isinstance(action, dict):
+                # Called as log_action("action_name", {"key": "val"})
+                action_str = phase
+                metadata_str = json.dumps(action, default=str)
+            else:
+                # Called as log_action(phase, action_str, result_str)
+                action_str = phase
+                metadata_str = json.dumps(
+                    {"action": action, "result": result} if action else {},
+                    default=str,
+                )
+            ts = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                "INSERT INTO findings_audit (action, metadata, timestamp) VALUES (?, ?, ?)",
+                (action_str, metadata_str, ts),
+            )
+            conn.commit()
+        except Exception as exc:
+            log.warning("FindingsDB.log_action(): failed to write audit record: %s", exc)
 
     def add(self, **kwargs) -> str:
         finding = {
