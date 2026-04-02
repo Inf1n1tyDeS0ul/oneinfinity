@@ -226,6 +226,15 @@ def cmd_scan(args):
         return
 
     # ── Script mode (generate recon script, manual execution) ───────────────
+    # ── IMPORTANT: without --yes, we only generate a script, not a scan ──
+    print(
+        "\n⚠️  WARNING: 'oneinfinity scan' without --yes generates a recon script\n"
+        "   to disk but does NOT execute a scan. No network requests will be made.\n"
+        "\n"
+        "   To run an actual scan:     oneinfinity scan <target> --yes\n"
+        "   To run the full pipeline:  oneinfinity full-scan <target>\n",
+        file=sys.stderr,
+    )
     _cmd_scan_legacy(args)
 
 
@@ -2938,10 +2947,10 @@ def build_parser():
                     help="Session ID for status/logs/stop (default: most recent)")
     gm.add_argument("--follow", "-f", action="store_true",
                     help="Follow log output (like tail -f) — used with 'logs'")
-    gm.add_argument("--max-time", default="2h", metavar="DURATION",
-                    help="Time cap: '30m', '2h', '4h' (default: 2h)")
-    gm.add_argument("--max-findings", type=int, default=100, metavar="N",
-                    help="Finding cap (default: 100)")
+    gm.add_argument("--max-time", default="0", metavar="DURATION",
+                    help="Time cap: '30m', '2h', '4h' — default: no limit")
+    gm.add_argument("--max-findings", type=int, default=0, metavar="N",
+                    help="Finding cap — default: no limit")
     gm.add_argument("--background", action="store_true",
                     help="Detach to background after Stage 1 (foundation)")
     gm.add_argument("--no-swarm", action="store_true",
