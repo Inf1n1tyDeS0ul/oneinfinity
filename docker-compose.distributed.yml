@@ -46,7 +46,7 @@ x-common-env: &common-env
   NUCLEI_TEMPLATES_PATH: /data/.nuclei-templates
   REDIS_URL: redis://redis:6379/0
   ORCHESTRATOR_URL: http://orchestrator:8000
-  ONEINFINITY_API_KEY: ${ONEINFINITY_API_KEY:-changeme-set-in-env}
+  ONEINFINITY_API_KEY: ${ONEINFINITY_API_KEY:-}
   GITHUB_TOKEN: ${GITHUB_TOKEN:-}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -303,7 +303,7 @@ services:
     environment:
       VITE_API_URL: ""          # relative — proxied via nginx
       VITE_WS_URL: ""           # relative — proxied via nginx
-      VITE_API_KEY: ${ONEINFINITY_API_KEY:-changeme-set-in-env}
+      VITE_API_KEY: ${ONEINFINITY_API_KEY:-}
     networks:
       - internal
     restart: unless-stopped
@@ -332,7 +332,7 @@ services:
           inotifywait -q -e create,modify,delete,moved_to /app/plugins/community 2>/dev/null && \
           echo '[watcher] Plugin change detected — reloading…' && \
           curl -sf -X POST \
-            -H 'X-API-Key: ${ONEINFINITY_API_KEY:-changeme-set-in-env}' \
+            -H 'X-API-Key: ${ONEINFINITY_API_KEY:-}' \
             http://orchestrator:8000/api/plugins/reload \
             > /dev/null 2>&1 && \
           echo '[watcher] Reload triggered' || \
@@ -455,7 +455,7 @@ services:
     image: grafana/grafana:latest
     container_name: oneinfinity-grafana
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_SERVER_DOMAIN: localhost
       GF_ANALYTICS_REPORTING_ENABLED: "false"
