@@ -67,6 +67,7 @@ ROOT = Path(__file__).parent.parent.parent  # oneinfinity/
 sys.path.insert(0, str(ROOT))
 
 from path_manager import raw_dir, db_path as _db_path
+from core.scan_state import BoundedScanCache
 
 log = logging.getLogger("oneinfinity.api")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -353,8 +354,12 @@ except Exception as _exc:
 # ── In-memory state ───────────────────────────────────────────────────────────
 
 TARGETS: Dict[str, Dict] = {}
-SCANS: Dict[str, Dict] = {}
-VULNERABILITIES: Dict[str, Dict] = {}
+
+MAX_SCANS_IN_MEMORY = 500
+MAX_VULNS_IN_MEMORY = 1000
+
+SCANS: BoundedScanCache = BoundedScanCache(cap=MAX_SCANS_IN_MEMORY)
+VULNERABILITIES: BoundedScanCache = BoundedScanCache(cap=MAX_VULNS_IN_MEMORY)
 AI_CAMPAIGNS: Dict[str, Dict] = {}
 LOG_MESSAGES: List[Dict] = []
 _ws_clients: List[WebSocket] = []
@@ -760,13 +765,13 @@ async def delete_scan(scan_id: str):
                 proc.terminate()
             except Exception:
                 pass
-    del SCANS[scan_id]
+    SCANS.delete(scan_id)
     _scan_db.delete(scan_id)
 
     # Remove findings from in-memory VULNERABILITIES dict
     to_remove = [fid for fid, v in VULNERABILITIES.items() if v.get("scan_id") == scan_id]
     for fid in to_remove:
-        del VULNERABILITIES[fid]
+        VULNERABILITIES.delete(fid)
 
     # Remove findings from persistent DB
     db_deleted = 0
