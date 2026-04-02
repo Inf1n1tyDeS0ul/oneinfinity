@@ -89,6 +89,10 @@ def test_dockerfile_uses_python_313():
         "Dockerfile uses python:3.11 but host runs 3.13. "
         "Update all FROM python:3.11 lines to python:3.13"
     )
-    assert "python:3.13" in dockerfile, (
-        "Dockerfile should explicitly use python:3.13"
+    # Dockerfile may use ARG PYTHON_VERSION=3.13 with FROM python:${PYTHON_VERSION}-...
+    # Accept either the literal string or the ARG-based pattern
+    has_explicit = "python:3.13" in dockerfile
+    has_arg_based = "PYTHON_VERSION=3.13" in dockerfile
+    assert has_explicit or has_arg_based, (
+        "Dockerfile should explicitly use python:3.13 (either directly or via ARG PYTHON_VERSION=3.13)"
     )

@@ -21,7 +21,6 @@
 ARG INSTALL_AI=0
 ARG INSTALL_MOBILE=0
 ARG GO_VERSION=1.24
-ARG PYTHON_VERSION=3.11
 
 # ==============================================================
 # STAGE 1 — Go Tools Builder
@@ -98,7 +97,7 @@ RUN go install github.com/0xsha/cloudbrute@latest 2>/dev/null || true
 # Builds/downloads all Python packages so the final stage
 # can install from a local cache without internet access.
 # ==============================================================
-FROM python:${PYTHON_VERSION}-slim-bookworm AS py-builder
+FROM python:3.13-slim-bookworm AS py-builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=0 \
@@ -146,7 +145,7 @@ RUN if [ "$INSTALL_MOBILE" = "1" ]; then \
 # STAGE 3 — Final Runtime Image
 # Only what's needed to run oneinfinity. No compilers, no Go.
 # ==============================================================
-FROM python:${PYTHON_VERSION}-slim-bookworm AS final
+FROM python:3.13-slim-bookworm AS final
 
 LABEL org.opencontainers.image.title="OneInfinity" \
       org.opencontainers.image.description="AI-Powered Offensive Security Research Framework" \
@@ -235,7 +234,7 @@ RUN git clone --depth=1 https://github.com/urbanadventurer/WhatWeb /opt/whatweb 
 
 # ── Python tools installed as packages ───────────────────────
 # Each tool installed separately so one failure doesn't block others.
-# Python 3.11 is used (unlike host 3.13) so wfuzz/paramspider install natively.
+# Python 3.13 is used to match the host environment.
 RUN pip install --no-cache-dir sqlmap 2>/dev/null || true
 RUN pip install --no-cache-dir dirsearch 2>/dev/null || true
 RUN pip install --no-cache-dir sublist3r 2>/dev/null || true
