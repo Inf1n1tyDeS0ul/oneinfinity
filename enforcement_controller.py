@@ -148,6 +148,17 @@ class EnforcementController:
                     timeout_count += 1
                     kept.append(f)   # pass through on network error
                     continue
+                # WAF blocked all probes — cannot disprove the finding, preserve it
+                if "waf_blocked" in result.flags:
+                    original_conf = float(f.get("confidence", 0.5) or 0.5)
+                    f = {**f, "waf_suppressed": True, "validation_note": "waf_blocked_passthrough"}
+                    kept.append(f)
+                    log.info(
+                        "Enforcement: WAF-blocked finding preserved url=%s vuln_type=%s "
+                        "(original_confidence=%.2f)",
+                        f.get("url", "?"), f.get("vuln_type", "?"), original_conf,
+                    )
+                    continue
                 if result.validated and result.confidence >= 0.5:
                     kept.append(f)
                 else:

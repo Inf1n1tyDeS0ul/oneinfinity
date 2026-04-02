@@ -69,6 +69,19 @@ EVIDENCE_PATTERNS = {
 TIME_BASED_TYPES = {"sqli_time", "cmdi_time"}
 TIMING_THRESHOLD_S = 6.0
 
+# WAF / CDN response detection
+_WAF_STATUS_CODES = frozenset({403, 406, 429})
+_WAF_HEADER_SIGNALS = frozenset({
+    "cf-ray", "x-cloudflare", "x-sucuri-id", "x-fw-token",
+    "x-waf-rule", "x-amz-cf-id", "x-cdn", "x-firewall-protection",
+})
+_WAF_BODY_RE = re.compile(
+    r"cloudflare|access denied|request blocked|web application firewall|"
+    r"attention required|ddos protection|please enable cookies|"
+    r"security check|this page is protected|blocked by",
+    re.I,
+)
+
 
 @dataclass
 class ValidationResult:
@@ -141,6 +154,10 @@ class FindingValidationEngine:
             "sql_injection": self._validate_sqli,
             "xss": self._validate_xss,
             "cross_site_scripting": self._validate_xss,
+            "dom_xss": self._validate_xss,
+            "xss_reflected": self._validate_xss,
+            "xss_stored": self._validate_xss,
+            "xss_dom": self._validate_xss,
             "ssrf": self._validate_ssrf,
             "lfi": self._validate_lfi,
             "local_file_inclusion": self._validate_lfi,
@@ -152,6 +169,14 @@ class FindingValidationEngine:
             "idor": self._validate_idor,
             "xxe": self._validate_xxe,
             "http_request_smuggling": self._validate_passthrough,
+            "oauth_flaw":             self._validate_passthrough,
+            "race_condition":         self._validate_passthrough,
+            "price_manipulation":     self._validate_passthrough,
+            "graphql_deep_nesting":   self._validate_passthrough,
+            "graphql_introspection":  self._validate_passthrough,
+            "prototype_pollution":    self._validate_passthrough,
+            "mobile_ssl_bypass":      self._validate_passthrough,
+            "mobile_secrets":         self._validate_passthrough,
             # OWASP gap checks
             "csrf":                  self.validate_csrf,
             "missing_csrf":          self.validate_csrf,
@@ -177,11 +202,17 @@ class FindingValidationEngine:
                        url: str, payload: str, param: str, method: str) -> bool:
         from exploit_generator import SQLI_PAYLOADS
         baseline = self._baseline(url, method, param)
+        waf_blocked = 0
+        total_probes = 0
         # Try each category
         for category, payloads in SQLI_PAYLOADS.items():
             for p in payloads[:2]:
                 resp = self._send(url, method, param, p)
+                total_probes += 1
                 if not resp:
+                    continue
+                if resp.get("waf_blocked"):
+                    waf_blocked += 1
                     continue
                 result.response_status = resp["status"]
                 result.duration_ms = resp["duration_ms"]
@@ -218,6 +249,9 @@ class FindingValidationEngine:
                         result.flags.append("sql_error_disclosure")
                         self._build_poc(result, url, param, p, method)
                         return True
+
+        if waf_blocked > 0 and waf_blocked == total_probes:
+            return self._waf_passthrough(result, finding)
         return False
 
     def _validate_xss(self, result: ValidationResult, finding: dict,
@@ -228,24 +262,57 @@ class FindingValidationEngine:
         canary = "OIXSS" + "".join(random.choices(string.ascii_uppercase, k=6))
         test_payload = f"<script>alert('{canary}')</script>"
 
+        waf_blocked = 0
+        total_probes = 0
+
         resp = self._send(url, method, param, test_payload)
-        if resp and canary in resp["body"]:
-            if not self._content_type_is_html(resp.get("headers", {})):
-                return False
-            result.evidence = f"Canary reflected: {canary}"
-            result.evidence_type = "reflection"
-            result.confidence = 0.98
-            result.payload = test_payload
-            result.response_status = resp["status"]
-            result.response_body_snippet = resp["body"][:300]
-            result.flags.append("xss_reflected")
-            self._build_poc(result, url, param, test_payload, method)
-            return True
+        total_probes += 1
+        if resp:
+            if resp.get("waf_blocked"):
+                waf_blocked += 1
+            elif canary in resp["body"]:
+                if not self._content_type_is_html(resp.get("headers", {})):
+                    return False
+                result.evidence = f"Canary reflected: {canary}"
+                result.evidence_type = "reflection"
+                result.confidence = 0.98
+                result.payload = test_payload
+                result.response_status = resp["status"]
+                result.response_body_snippet = resp["body"][:300]
+                result.flags.append("xss_reflected")
+                self._build_poc(result, url, param, test_payload, method)
+                return True
+
+        # Script tag was WAF-blocked — try event-handler evasion variants
+        if waf_blocked > 0:
+            for evasion_p in self._waf_evasion_xss_payloads(canary):
+                resp = self._send(url, method, param, evasion_p)
+                total_probes += 1
+                if not resp:
+                    continue
+                if resp.get("waf_blocked"):
+                    waf_blocked += 1
+                    continue
+                if canary in resp["body"] and self._content_type_is_html(resp.get("headers", {})):
+                    result.evidence = f"XSS canary reflected via WAF-evasion payload: {canary}"
+                    result.evidence_type = "reflection"
+                    result.confidence = 0.92
+                    result.payload = evasion_p
+                    result.response_status = resp["status"]
+                    result.response_body_snippet = resp["body"][:300]
+                    result.flags.append("xss_reflected")
+                    result.flags.append("waf_evaded")
+                    self._build_poc(result, url, param, evasion_p, method)
+                    return True
 
         # Try standard payloads
         for p in XSS_PAYLOADS["reflected"][:4]:
             resp = self._send(url, method, param, p)
+            total_probes += 1
             if not resp:
+                continue
+            if resp.get("waf_blocked"):
+                waf_blocked += 1
                 continue
             body = resp["body"]
             if not self._content_type_is_html(resp.get("headers", {})):
@@ -261,6 +328,11 @@ class FindingValidationEngine:
                     result.flags.append("xss_reflected")
                     self._build_poc(result, url, param, p, method)
                     return True
+
+        # Every probe was WAF-blocked — cannot disprove, preserve with original confidence
+        if waf_blocked > 0 and waf_blocked == total_probes:
+            return self._waf_passthrough(result, finding)
+
         return False
 
     def _validate_ssrf(self, result: ValidationResult, finding: dict,
@@ -575,6 +647,8 @@ class FindingValidationEngine:
         """Generic validation: send original payload, check evidence string."""
         evidence_str = finding.get("evidence", "")
         resp = self._send(url, method, param, payload)
+        if resp and resp.get("waf_blocked"):
+            return self._waf_passthrough(result, finding)
         baseline = self._baseline(url, method, param)
         if baseline and evidence_str and evidence_str.lower() in baseline.get("body", "").lower():
             return False
@@ -588,6 +662,13 @@ class FindingValidationEngine:
             return True
         # No evidence to validate — preserve original tool confidence rather than leaving 0.0
         result.confidence = float(finding.get("confidence", 0) or 0)
+        # Passive/informational tool findings (no payload) with sufficient confidence pass through
+        # e.g. nuclei informational templates: missing headers, TLS info, robots.txt
+        if not payload and result.confidence >= 0.5 and finding.get("source_type") == "tool":
+            result.evidence = finding.get("evidence", "")[:200]
+            result.evidence_type = "passthrough"
+            result.flags.append("tool_validated_passthrough")
+            return True
         return False
 
     def _baseline(self, url: str, method: str, param: str) -> Optional[dict]:
@@ -605,6 +686,48 @@ class FindingValidationEngine:
             if len(self._baseline_cache) > self._baseline_cache_limit:
                 self._baseline_cache.popitem(last=False)
         return resp
+
+    def _waf_passthrough(self, result: ValidationResult, finding: dict) -> bool:
+        """Preserve a finding when ALL validation probes were WAF-blocked.
+
+        The engine cannot prove the vulnerability absent — it only knows the WAF
+        prevented proof collection.  Preserve with the original tool confidence so
+        the Enforcement Controller can make an informed decision rather than
+        silently dropping a logically-identified finding.
+        """
+        original_confidence = float(finding.get("confidence", 0) or 0)
+        if original_confidence < 0.3:
+            original_confidence = 0.5   # minimum floor for logic-derived findings
+        result.confidence = original_confidence
+        result.evidence = (
+            finding.get("evidence") or
+            "All HTTP validation probes were blocked by WAF"
+        )[:200]
+        result.evidence_type = "waf_blocked_passthrough"
+        result.flags.append("waf_blocked")
+        logger.info(
+            "Validation: WAF blocked all probes for %s %s — preserving with confidence %.2f",
+            result.vuln_type, result.url, original_confidence,
+        )
+        return True
+
+    @staticmethod
+    def _waf_evasion_xss_payloads(canary: str) -> list:
+        """Return a short list of WAF-evasion XSS probes that embed `canary`.
+
+        These avoid the raw <script> tag that most WAFs pattern-match on.
+        They are tried in order; the first one that reflects the canary wins.
+        """
+        c = canary
+        return [
+            f"<img src=x onerror=alert('{c}')>",
+            f"<svg onload=alert('{c}')>",
+            f"\"><img src=x onerror=alert('{c}')>",
+            f"'><img src=x onerror=alert('{c}')>",
+            f"<details open ontoggle=alert('{c}')>",
+            f"<ScRiPt>alert('{c}')</ScRiPt>",
+            f"<script>alert`{c}`</script>",
+        ]
 
     @staticmethod
     def _content_type_is_html(headers: dict) -> bool:
@@ -655,7 +778,16 @@ class FindingValidationEngine:
                     body = e.read(65536).decode("utf-8", errors="replace")
                 except Exception:
                     body = ""
-                return {"status": e.code, "body": body, "headers": {}, "duration_ms": duration}
+                headers = dict(e.headers or {})
+                header_keys = {k.lower() for k in headers}
+                waf_blocked = (
+                    e.code in _WAF_STATUS_CODES and (
+                        bool(header_keys & _WAF_HEADER_SIGNALS) or
+                        bool(_WAF_BODY_RE.search(body[:2000]))
+                    )
+                )
+                return {"status": e.code, "body": body, "headers": headers,
+                        "duration_ms": duration, "waf_blocked": waf_blocked}
             except urllib.error.URLError as e:
                 logger.debug(f"HTTP send URLError (attempt {attempt + 1}): {e}")
                 time.sleep(0.2 * (attempt + 1))
