@@ -137,7 +137,7 @@ def _run_cmd(
             last_rc, last_out, last_err = proc.returncode, proc.stdout, proc.stderr
         except subprocess.TimeoutExpired:
             return 1, "", f"Command timed out after {timeout}s: {' '.join(cmd)}"
-        except FileNotFoundError:
+        except (FileNotFoundError, PermissionError):
             return 127, "", f"Tool not found: {cmd[0]}"
         except Exception as exc:
             last_rc, last_out, last_err = 1, "", str(exc)
@@ -192,6 +192,12 @@ def _wrap(tool: str, cmd: list[str], timeout: int = 300,
     count = 0
 
     if rc == 127:
+        log.warning(
+            "TOOL NOT FOUND: '%s' is not installed or not on PATH. "
+            "This scan phase will produce no results. "
+            "Install it to enable this capability.",
+            cmd[0] if cmd else tool,
+        )
         return ToolResult(tool=tool, success=False, error=stderr,
                           returncode=rc, stderr=stderr,
                           duration=duration, command=command_str)
@@ -230,7 +236,7 @@ def _wrap(tool: str, cmd: list[str], timeout: int = 300,
 
     return ToolResult(
         tool=tool,
-        success=success or bool(data),  # tools that exit 1 but still produce output
+        success=success,
         data=data,
         count=count,
         raw=stdout,
