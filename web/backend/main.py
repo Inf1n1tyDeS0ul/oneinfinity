@@ -30,13 +30,15 @@ _SAFE_TARGET_RE = _re.compile(
 _SHELL_META_RE = _re.compile(r'[;&|`$<>()\\\n\r]')
 
 def _validate_target(domain: str) -> str:
-    """Raise HTTPException(400) if the target contains shell metacharacters."""
+    """Raise HTTPException(400) if the target fails denylist or allowlist checks."""
     if not domain:
         raise HTTPException(status_code=400, detail="Target/domain must not be empty")
-    if _SHELL_META_RE.search(domain):
-        raise HTTPException(status_code=400, detail=f"Invalid target — shell metacharacters not allowed: {domain!r}")
     if len(domain) > 512:
         raise HTTPException(status_code=400, detail="Target too long (max 512 chars)")
+    if _SHELL_META_RE.search(domain):
+        raise HTTPException(status_code=400, detail=f"Invalid target — shell metacharacters not allowed: {domain!r}")
+    if not _SAFE_TARGET_RE.match(domain):
+        raise HTTPException(status_code=400, detail=f"Invalid target — contains disallowed characters: {domain!r}")
     return domain.strip()
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException, UploadFile, File, Depends
@@ -2324,6 +2326,7 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
     target = (data.get("target") or "").strip()
     if not target:
         raise HTTPException(status_code=400, detail="target is required")
+    _validate_target(target)
     max_time     = str(data.get("max_time", "0"))
     max_findings = int(data.get("max_findings", 0))
     no_swarm     = bool(data.get("no_swarm", False))
