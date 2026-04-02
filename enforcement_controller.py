@@ -279,7 +279,14 @@ class EnforcementController:
             def _on_new_endpoint(event):
                 with self._lock:
                     s = self._recursion_states.get(scan_id)
-                    if not s or s.depth >= s.max_depth or s.item_count >= s.max_items:
+                    if s is None:
+                        # Orphaned handler — self-unregister
+                        try:
+                            bus.off(EventType.NEW_ENDPOINT, _on_new_endpoint)
+                        except Exception:
+                            pass
+                        return
+                    if s.depth >= s.max_depth or s.item_count >= s.max_items:
                         return
                     s.item_count += 1
                     current_depth = s.depth + 1
@@ -306,7 +313,14 @@ class EnforcementController:
             def _on_new_api(event):
                 with self._lock:
                     s = self._recursion_states.get(scan_id)
-                    if not s or s.item_count >= s.max_items:
+                    if s is None:
+                        # Orphaned handler — self-unregister
+                        try:
+                            bus.off(EventType.NEW_API, _on_new_api)
+                        except Exception:
+                            pass
+                        return
+                    if s.item_count >= s.max_items:
                         return
                     s.item_count += 1
                 url = (event.data or {}).get("url", "")
@@ -326,6 +340,15 @@ class EnforcementController:
                 threading.Thread(target=_run_idor, daemon=True).start()
 
             def _on_new_vulnerability(event):
+                with self._lock:
+                    s = self._recursion_states.get(scan_id)
+                    if s is None:
+                        # Orphaned handler — self-unregister
+                        try:
+                            bus.off(EventType.NEW_VULNERABILITY, _on_new_vulnerability)
+                        except Exception:
+                            pass
+                        return
                 finding = event.data or {}
                 log.info(
                     "Recursive: NEW_VULNERABILITY vuln_type=%s — attack-graph + chains",
