@@ -233,12 +233,6 @@ export const endpoints = {
   getChainContext:     (id) => api.get(`/chains/${id}`),
   runWorkflow:         (data) => api.post('/workflow/run', data),
 
-  // Utilities  (/api/utilities/*)
-  cvssCalculate:       (data) => api.post('/utilities/cvss', data),
-  dedupCheck:          (title) => api.post('/utilities/dedup', { title }),
-  methodologyGet:      (vuln_class) => api.get(`/utilities/methodology/${vuln_class}`),
-  wafBypassPayloads:   (waf, vuln_type) => api.get(`/utilities/waf-bypass/${waf}/${vuln_type}`),
-
   // Reports  (/api/reports/*)
   replayFindings:      (data) => api.post('/reports/replay', data),
 
@@ -259,4 +253,16 @@ export const endpoints = {
   godModeStop:         (scanId) => api.post('/god-mode/stop', { scan_id: scanId || null }),
   godModeDelete:       (scanId) => api.delete(`/god-mode/${scanId}`),
   godModeLogs:         (scanId, lines) => api.get(`/god-mode/logs/${scanId}`, { params: { lines: lines || 150 } }),
+
+  // Tools & Plugins
+  learningStats:       () => api.get('/learning/stats'),
+  learningPlan:        (target, tech) => api.post('/learning/plan', { target, tech }),
+  toolsStatus:         () => api.get('/tools/status'),
+  toolsCapmap:         () => api.get('/tools/capmap'),
+
+  // Utilities
+  utilsCvss:           (vector, describe) => api.post('/utils/cvss', { vector, describe }),
+  utilsDedup:          (title) => api.post('/utils/dedup', { title }),
+  utilsWafBypass:      (waf, vuln_type) => api.post('/utils/waf-bypass', { waf, vuln_type }),
+  utilsMethodology:    (vuln_class) => api.post('/utils/methodology', { vuln_class }),
 }
