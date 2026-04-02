@@ -44,8 +44,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, validator
 
-async def _require_auth():
-    pass  # Auth disabled — open access for local tool use
+_API_KEY: str = os.environ.get("ONEINFINITY_API_KEY", "")
+
+async def _require_auth(request: Request):
+    """Enforce X-API-Key header when ONEINFINITY_API_KEY env var is set.
+
+    When ONEINFINITY_API_KEY is empty (local dev), all requests pass through.
+    When set, requests must provide a matching X-API-Key header.
+    """
+    if not _API_KEY:
+        return  # Local dev mode — no key configured
+    provided = request.headers.get("X-API-Key", "")
+    if not provided:
+        raise HTTPException(status_code=401, detail="X-API-Key header required")
+    if provided != _API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
 
 # ── Path setup ───────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.parent.parent  # oneinfinity/
