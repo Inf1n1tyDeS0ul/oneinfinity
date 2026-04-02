@@ -3090,6 +3090,147 @@ async def router_health():
         "total": len(_ROUTER_STATUS),
     }
 
+# ── Cache / utility routes ────────────────────────────────────────────────────
+
+@app.get("/api/cache/stats")
+async def cache_stats():
+    return {
+        "scans_in_memory": len(SCANS),
+        "vulnerabilities_in_memory": len(VULNERABILITIES),
+    }
+
+
+@app.post("/api/cache/sweep", dependencies=[Depends(_require_auth)])
+async def cache_sweep():
+    evicted = 0
+    for scan in list(SCANS.get_all_in_memory()):
+        if scan.get("status") in ("completed", "error", "stopped"):
+            try:
+                _scan_db.upsert(scan)
+                SCANS.delete(scan["id"])
+                evicted += 1
+            except Exception:
+                pass
+    return {"evicted": evicted, "remaining": len(SCANS)}
+
+
+@app.post("/api/cache/clear", dependencies=[Depends(_require_auth)])
+async def cache_clear():
+    global SCANS, VULNERABILITIES
+    scans_cleared = len(SCANS)
+    vulns_cleared = len(VULNERABILITIES)
+    for scan in SCANS.get_all_in_memory():
+        try:
+            _scan_db.upsert(scan)
+        except Exception:
+            pass
+    SCANS = BoundedScanCache(cap=500)
+    VULNERABILITIES = BoundedScanCache(cap=1000)
+    return {"scans_cleared": scans_cleared, "vulns_cleared": vulns_cleared}
+
+
+@app.post("/api/benchmark", dependencies=[Depends(_require_auth)])
+async def run_benchmark(request: Request):
+    import time as _time
+    data = await request.json()
+    target = (data.get("target") or "").strip()
+    t0 = _time.time()
+    result: Dict[str, Any] = {"target": target, "tools_available": [], "phases_available": []}
+    try:
+        from modules.tool_wrappers import is_available
+        for tool in ["nuclei", "subfinder", "httpx", "ffuf", "sqlmap", "dalfox"]:
+            if is_available(tool):
+                result["tools_available"].append(tool)
+    except Exception:
+        pass
+    try:
+        from pipeline.canonical import PHASE_MAP
+        result["phases_available"] = list(PHASE_MAP.keys())
+    except Exception:
+        pass
+    result["benchmark_duration_ms"] = round((_time.time() - t0) * 1000, 2)
+    return result
+
+
+@app.post("/api/distributed/scan", dependencies=[Depends(_require_auth)])
+async def distributed_scan(request: Request):
+    import uuid as _uuid2
+    import json as _json
+    data = await request.json()
+    target = (data.get("target") or "").strip()
+    task_id = f"dist-{_uuid2.uuid4().hex[:12]}"
+    try:
+        import redis as _redis
+        r = _redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
+        r.lpush("tasks:full_pipeline", _json.dumps({"id": task_id, "target": target}))
+        return {"task_id": task_id, "status": "queued"}
+    except Exception as exc:
+        raise HTTPException(503, f"Redis unavailable: {exc}")
+
+
+@app.get("/api/safety")
+async def get_safety_config():
+    return {
+        "rate_limit_rps": int(os.environ.get("RATE_LIMIT_RPS", "10")),
+        "scope_enforcement": True,
+        "max_concurrent_tools": int(os.environ.get("MAX_CONCURRENT_TOOLS", "5")),
+    }
+
+
+@app.get("/api/waf/stats")
+async def get_waf_stats():
+    waf_scans = [s for s in SCANS.get_all_in_memory() if s.get("waf_detected")]
+    return {
+        "waf_detected_count": len(waf_scans),
+        "recent_waf_targets": [s.get("target") for s in waf_scans[-10:]],
+    }
+
+
+@app.post("/api/workflow/run", dependencies=[Depends(_require_auth)])
+async def run_workflow(request: Request, background_tasks: BackgroundTasks):
+    import uuid as _uuid2
+    import threading
+    data = await request.json()
+    target = (data.get("target") or "").strip()
+    workflow = data.get("workflow", "recon")
+    if workflow not in {"recon", "vuln-scan", "full", "quick"}:
+        raise HTTPException(400, f"Unknown workflow '{workflow}'")
+    scan_id = f"wf-{workflow}-{_uuid2.uuid4().hex[:8]}"
+    SCANS[scan_id] = {
+        "id": scan_id, "target": target, "scan_type": workflow,
+        "status": "queued", "findings": [], "pid": None,
+        "_cancel_event": threading.Event(),
+    }
+    background_tasks.add_task(_run_scan_via_engine, scan_id, target, workflow)
+    return {"scan_id": scan_id, "workflow": workflow, "status": "queued"}
+
+
+@app.post("/api/reports/replay", dependencies=[Depends(_require_auth)])
+async def replay_finding_report(request: Request):
+    data = await request.json()
+    finding_id = (data.get("finding_id") or "").strip()
+    if not finding_id:
+        raise HTTPException(400, "finding_id required")
+    finding = VULNERABILITIES.get(finding_id)
+    if not finding:
+        try:
+            from result_ingestion_engine import get_ingestion_engine
+            findings = get_ingestion_engine().get_findings()
+            finding = next((f for f in (findings or []) if f.get("id") == finding_id), None)
+        except Exception:
+            pass
+    if not finding:
+        return {"finding_id": finding_id, "validated": False,
+                "error": f"Finding '{finding_id}' not found", "confidence": 0.0}
+    try:
+        from finding_validation_engine import FindingValidationEngine
+        result = FindingValidationEngine(timeout=10, max_retries=1).validate(finding)
+        return {"finding_id": finding_id, "validated": result.validated,
+                "confidence": result.confidence, "error": result.error}
+    except Exception as exc:
+        return {"finding_id": finding_id, "validated": False, "error": str(exc)}
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
