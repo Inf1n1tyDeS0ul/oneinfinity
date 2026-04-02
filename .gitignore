@@ -109,6 +109,10 @@ desktop.ini
 *.sublime-project
 *.sublime-workspace
 
+# ── Postman collections (expose API surface) ────────────────────────────────────
+gc_api.json
+sc_api.json
+
 # ── OneInfinity runtime data ───────────────────────────────────────────────────
 .oneinfinity/
 .claude/
