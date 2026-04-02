@@ -2441,6 +2441,21 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
                 SCANS[gm_scan_id]["completed_at"] = datetime.utcnow().isoformat()
                 SCANS[gm_scan_id]["progress"] = 100
                 _scan_db.upsert(SCANS[gm_scan_id])
+            # Sync findings from in-memory SCANS dict to the ingestion engine
+            # so that report generation (which reads from ingestion engine) sees them
+            try:
+                from result_ingestion_engine import get_ingestion_engine, RawResult
+                ie = get_ingestion_engine()
+                scan_findings = SCANS.get(gm_scan_id, {}).get("findings", [])
+                for finding in scan_findings:
+                    try:
+                        fd = finding.to_dict() if hasattr(finding, "to_dict") else finding
+                        ie.ingest(RawResult(scan_id=gm_scan_id, source="god-mode-api-sync", raw=fd))
+                    except Exception as _exc:
+                        log.debug("god-mode ingestion sync: %s", _exc)
+                log.info("god-mode: synced %d finding(s) to ingestion engine", len(scan_findings))
+            except Exception as exc:
+                log.warning("god-mode ingestion sync failed (non-fatal): %s", exc)
         except Exception as exc:
             print(f"[god-mode] run error: {exc}")
             if gm_scan_id in SCANS:
