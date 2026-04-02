@@ -151,6 +151,33 @@ def _run_cmd(
     return last_rc, last_out, last_err
 
 
+def _redact_cmd(cmd_list: list) -> str:
+    """Build a command string for logging, redacting sensitive header values.
+
+    Redacts the value after -H / --header flags, and any token starting with
+    'Authorization:' or 'X-API-Key:'.
+    """
+    redacted = []
+    skip_next = False
+    for token in cmd_list:
+        if skip_next:
+            redacted.append("[REDACTED]")
+            skip_next = False
+            continue
+        token_str = str(token)
+        token_lower = token_str.lower()
+        if token_lower in ("-h", "--header"):
+            redacted.append(token_str)
+            skip_next = True
+        elif token_lower.startswith("authorization:"):
+            redacted.append("Authorization:[REDACTED]")
+        elif token_lower.startswith("x-api-key:"):
+            redacted.append("X-API-Key:[REDACTED]")
+        else:
+            redacted.append(token_str)
+    return " ".join(redacted)
+
+
 def _wrap(tool: str, cmd: list[str], timeout: int = 300,
           parse_fn=None, input_data: Optional[str] = None,
           env: Optional[dict] = None) -> ToolResult:
@@ -158,7 +185,7 @@ def _wrap(tool: str, cmd: list[str], timeout: int = 300,
     t0 = time.time()
     rc, stdout, stderr = _run_cmd(cmd, timeout=timeout, input_data=input_data, env=env)
     duration = time.time() - t0
-    command_str = " ".join(str(c) for c in cmd)
+    command_str = _redact_cmd(cmd)
     success = rc == 0
     data = None
     error = ""
@@ -222,6 +249,8 @@ def is_available(tool: str) -> bool:
         "/usr/local/go/bin", "/root/go/bin",
         str(Path.home() / "go" / "bin"),
         str(Path.home() / ".cargo" / "bin"),
+        str(Path.home() / ".local" / "bin"),
+        str(Path.home() / "bin"),
         "/usr/local/bin", "/usr/bin", "/bin",
     ]
     full_path = os.environ.get("PATH", "") + ":" + ":".join(paths)
@@ -1026,14 +1055,13 @@ def run_dalfox(url: str | list[str], params: list[str] = None,
 
 def run_sqlmap(url: str, params: str = "", data: str = "",
                level: int = 1, risk: int = 1,
-               timeout: int = 300, param: str = "") -> ToolResult:
+               timeout: int = 300, param: str = "",
+               tamper: str = "") -> ToolResult:
     """SQL injection testing with sqlmap (non-interactive)."""
     import sys as _sys
     _check_scope(url)
     params = params or param  # accept either kwarg name
     tmpdir = tempfile.mkdtemp(prefix="sqlmap_")
-    # Resolve the full path to the sqlmap wrapper script and run it through
-    # the current interpreter so exec-permission on the script is irrelevant.
     import shutil as _shutil
     _sqlmap_bin = _shutil.which("sqlmap") or "sqlmap"
     cmd = [
@@ -1041,12 +1069,15 @@ def run_sqlmap(url: str, params: str = "", data: str = "",
         "-u", url,
         "--level", str(level), "--risk", str(risk),
         "--batch", "--quiet",
+        "--technique=BEUST",  # Boolean, Error, Union, Stacked, Time-based
         "--output-dir", tmpdir,
     ]
     if params:
         cmd.extend(["-p", params])
     if data:
         cmd.extend(["--data", data])
+    if tamper:
+        cmd.extend(["--tamper", tamper])
     result = _wrap("sqlmap", cmd, timeout=timeout,
                    env={"HOME": tmpdir, "SQLMAP_OUTPUT_DIRECTORY": tmpdir})
     # Parse vulnerable parameter from output
@@ -2491,7 +2522,7 @@ def run_smuggling_python(
 def run_payment_tampering_test(
     base_url: str,
     headers: dict = None,
-    timeout: int = 30,
+    timeout: int = 5,
 ) -> ToolResult:
     """
     Test payment/checkout flows for business logic tampering:
@@ -2618,7 +2649,7 @@ TOOL_REGISTRY: dict[str, dict] = {
     "wfuzz":        {"fn": run_wfuzz,        "category": "content",    "args": ["url"]},
     # AI testing
     "garak":        {"fn": run_garak,        "category": "ai",         "args": ["target"]},
-    "pyrit":        {"fn": run_pyrit,        "category": "ai",         "args": ["target"]},
+    "pyrit":        {"fn": run_pyrit,        "category": "ai",         "args": ["target"],  "pure_python": True},
     # Secrets
     "trufflehog":   {"fn": run_trufflehog,   "category": "secrets",    "args": ["target"]},
     "gitleaks":     {"fn": run_gitleaks,     "category": "secrets",    "args": ["target"]},
@@ -2638,21 +2669,21 @@ TOOL_REGISTRY: dict[str, dict] = {
     "qsreplace":    {"fn": run_qsreplace,    "category": "util",       "args": ["urls"]},
     "anew":         {"fn": run_anew,         "category": "util",       "args": ["existing", "new_items"]},
     # Pure-Python HTTP client (no CLI needed — used by swarm agents for targeted probes)
-    "http_request": {"fn": run_http_request, "category": "http",       "args": ["url"]},
+    "http_request": {"fn": run_http_request, "category": "http",       "args": ["url"],       "pure_python": True},
     # Extended security tests — pure Python, no CLI dependency
-    "race_condition_test":     {"fn": run_race_condition_test,     "category": "vuln", "args": ["url"]},
-    "file_upload_test":        {"fn": run_file_upload_test,        "category": "vuln", "args": ["base_url"]},
-    "oauth_test":              {"fn": run_oauth_test,              "category": "vuln", "args": ["base_url"]},
-    "prototype_pollution_test":{"fn": run_prototype_pollution_test,"category": "vuln", "args": ["url"]},
-    "websocket_test":          {"fn": run_websocket_test,          "category": "vuln", "args": ["base_url"]},
-    "mfa_bypass_test":         {"fn": run_mfa_bypass_test,         "category": "vuln", "args": ["base_url"]},
-    "rate_limit_test":         {"fn": run_rate_limit_test,         "category": "vuln", "args": ["base_url"]},
-    "pii_scanner":             {"fn": run_pii_scanner,             "category": "vuln", "args": ["urls"]},
-    "source_map_scanner":      {"fn": run_source_map_scanner,      "category": "vuln", "args": ["base_url"]},
-    "clickjacking_test":       {"fn": run_clickjacking_test,       "category": "vuln", "args": ["url"]},
-    "deserialization_test":    {"fn": run_deserialization_test,    "category": "vuln", "args": ["url"]},
-    "smuggling_python":        {"fn": run_smuggling_python,        "category": "vuln", "args": ["url"]},
-    "payment_tampering_test":  {"fn": run_payment_tampering_test,  "category": "vuln", "args": ["base_url"]},
+    "race_condition_test":     {"fn": run_race_condition_test,     "category": "vuln", "args": ["url"],       "pure_python": True},
+    "file_upload_test":        {"fn": run_file_upload_test,        "category": "vuln", "args": ["base_url"],  "pure_python": True},
+    "oauth_test":              {"fn": run_oauth_test,              "category": "vuln", "args": ["base_url"],  "pure_python": True},
+    "prototype_pollution_test":{"fn": run_prototype_pollution_test,"category": "vuln", "args": ["url"],       "pure_python": True},
+    "websocket_test":          {"fn": run_websocket_test,          "category": "vuln", "args": ["base_url"],  "pure_python": True},
+    "mfa_bypass_test":         {"fn": run_mfa_bypass_test,         "category": "vuln", "args": ["base_url"],  "pure_python": True},
+    "rate_limit_test":         {"fn": run_rate_limit_test,         "category": "vuln", "args": ["base_url"],  "pure_python": True},
+    "pii_scanner":             {"fn": run_pii_scanner,             "category": "vuln", "args": ["urls"],      "pure_python": True},
+    "source_map_scanner":      {"fn": run_source_map_scanner,      "category": "vuln", "args": ["base_url"],  "pure_python": True},
+    "clickjacking_test":       {"fn": run_clickjacking_test,       "category": "vuln", "args": ["url"],       "pure_python": True},
+    "deserialization_test":    {"fn": run_deserialization_test,    "category": "vuln", "args": ["url"],       "pure_python": True},
+    "smuggling_python":        {"fn": run_smuggling_python,        "category": "vuln", "args": ["url"],       "pure_python": True},
+    "payment_tampering_test":  {"fn": run_payment_tampering_test,  "category": "vuln", "args": ["base_url"],  "pure_python": True},
 }
 
 
@@ -2719,7 +2750,7 @@ class ToolRegistry:
         """Return availability status for every tool."""
         return {
             name: {
-                "available": is_available(name),
+                "available": meta.get("pure_python", False) or is_available(name),
                 "category": meta["category"],
             }
             for name, meta in TOOL_REGISTRY.items()
