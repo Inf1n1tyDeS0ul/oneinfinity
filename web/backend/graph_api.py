@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import os
+import threading as _threading
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -41,6 +42,7 @@ swarm_router = APIRouter(prefix="/api/swarm", tags=["swarm"])
 # ── In-memory state ──────────────────────────────────────────────────────────
 
 _graph_instances: Dict[str, Any] = {}
+_graph_lock = _threading.Lock()
 _swarm_status: Dict[str, Any] = {}
 
 # ── Graph endpoints ──────────────────────────────────────────────────────────
@@ -62,12 +64,53 @@ async def get_full_graph(target: str):
 @graph_router.get("/{target}/attack-paths")
 async def get_attack_paths(target: str):
     """Return BFS attack paths from entry to impact nodes."""
+    import uuid as _uuid
     try:
-        from attack_graph_core.graph_query_engine import GraphQueryEngine
-        engine = _get_or_create_graph(target)
+        from attack_graph_core.graph_engine import AttackGraphEngine, NodeType
+        from attack_graph_core.graph_query_engine import GraphQueryEngine, AttackPath
+        from attack_graph_core.graph_updater import GraphUpdater
+
+        # Build a fresh engine populated with real findings for this target
+        engine = AttackGraphEngine()
+        updater = GraphUpdater(engine)
+        try:
+            from result_ingestion_engine import get_ingestion_engine
+            raw = get_ingestion_engine().get_findings(target=target)
+            updater.update_from_scan_result(target, raw)
+        except Exception:
+            pass
+
+        # Nodes use UUID IDs — look up the target node by (type, label)
+        target_node_id = engine._label_index.get((NodeType.TARGET, target))
+        if not target_node_id:
+            return {"target": target, "paths": []}
+
         qe = GraphQueryEngine(engine)
-        paths = qe.find_attack_paths(target)
-        return {"target": target, "paths": [p.to_dict() if hasattr(p, 'to_dict') else p for p in paths]}
+        paths = qe.find_attack_paths(target_node_id)
+
+        # find_attack_paths only reaches IMPACT/EXPLOIT nodes (created by exploit engine).
+        # For regular scan findings we only have VULNERABILITY nodes, so fall back to
+        # building scored paths directly from those.
+        if not paths:
+            sev_score = {"critical": 10.0, "high": 7.5, "medium": 5.0, "low": 2.5, "info": 0.5}
+            vuln_nodes = engine.find_nodes(node_type=NodeType.VULNERABILITY)
+            vuln_nodes.sort(key=lambda n: sev_score.get(n.severity or "info", 0), reverse=True)
+            for v in vuln_nodes[:10]:
+                score = sev_score.get(v.severity or "info", 0.5)
+                paths.append(AttackPath(
+                    path_id=str(_uuid.uuid4()),
+                    nodes=[v],
+                    edges=[],
+                    total_score=round(score * 0.7, 2),
+                    exploitability_score=round(score * 0.4, 2),
+                    impact_score=round(score * 0.6, 2),
+                    difficulty="easy" if score >= 7 else "medium" if score >= 4 else "hard",
+                    entry_point=target,
+                    final_impact=v.label,
+                    description=f"{v.label} ({v.severity}) at {target}",
+                ))
+
+        return {"target": target, "paths": [p.to_dict() for p in paths]}
     except Exception:
         return {"target": target, "paths": _demo_paths()}
 
@@ -254,12 +297,19 @@ async def swarm_results(session_id: str):
 # ── Helper functions ─────────────────────────────────────────────────────────
 
 def _get_or_create_graph(target: str):
-    if target not in _graph_instances:
-        try:
-            from attack_graph_core.graph_engine import AttackGraphEngine
-            _graph_instances[target] = AttackGraphEngine()
-        except Exception:
-            _graph_instances[target] = None
+    """Thread-safe: return cached graph instance, creating one if needed."""
+    # Fast path — already exists, no lock needed
+    if target in _graph_instances:
+        return _graph_instances[target]
+    # Slow path — create under lock to prevent concurrent double-creation
+    with _graph_lock:
+        # Double-check after acquiring lock (another thread may have created it)
+        if target not in _graph_instances:
+            try:
+                from attack_graph_core.graph_engine import AttackGraphEngine
+                _graph_instances[target] = AttackGraphEngine()
+            except Exception:
+                _graph_instances[target] = None
     return _graph_instances[target]
 
 
