@@ -831,20 +831,47 @@ async def delete_scan(scan_id: str):
 
 # Vulnerabilities
 @app.get("/api/findings")
-async def list_findings(target: Optional[str] = None, severity: Optional[str] = None):
-    """Alias for vulnerabilities specifically tailored for Secret Intel dashboard."""
+async def list_findings(
+    target: Optional[str] = None,
+    severity: Optional[str] = None,
+    scan_id: Optional[str] = None,
+):
+    """Return findings — merges in-memory cache with persisted SQLite findings."""
+    results: dict = {}
+
+    # 1. In-memory findings (from current session)
+    try:
+        for fid, fdata in VULNERABILITIES.items():
+            if fid and isinstance(fdata, dict):
+                results[fid] = fdata
+    except Exception as exc:
+        log.warning("get_findings: in-memory read failed: %s", exc)
+
+    # 2. Persisted findings from ingestion engine (includes swarm worker results)
     try:
         from result_ingestion_engine import get_ingestion_engine
-        raw = get_ingestion_engine().get_findings(target=target, severity=severity)
-        return raw
+        ie = get_ingestion_engine()
+        db_findings = ie.get_findings(target=target, severity=severity, scan_id=scan_id)
+        for f in (db_findings or []):
+            if not isinstance(f, dict):
+                try:
+                    f = f.to_dict()
+                except Exception:
+                    f = vars(f) if hasattr(f, "__dict__") else {}
+            fid = f.get("id") or f.get("finding_id") or f.get("sha256", "")
+            if fid and fid not in results:
+                results[fid] = f
     except Exception as exc:
-        log.warning("ResultIngestionEngine unavailable, using in-memory: %s", exc)
-        res = list(VULNERABILITIES.values())
-        if target:
-            res = [v for v in res if v.get("target") == target]
-        if severity:
-            res = [v for v in res if v.get("severity") == severity]
-        return res
+        log.warning("get_findings: DB read failed: %s", exc)
+
+    findings = list(results.values())
+    if scan_id:
+        findings = [f for f in findings if f.get("scan_id") == scan_id]
+    if target:
+        findings = [f for f in findings if f.get("target") == target]
+    if severity:
+        findings = [f for f in findings if f.get("severity") == severity]
+    return findings
 
 @app.get("/api/vulnerabilities")
 async def list_vulnerabilities(target: Optional[str] = None, severity: Optional[str] = None):
