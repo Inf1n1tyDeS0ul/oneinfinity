@@ -682,6 +682,7 @@ async def create_target(body: Dict[str, Any], background_tasks: BackgroundTasks)
     t = _target_db.add(target_id, domain, name, platform, ttype)
     _add_log(f"Target added: {domain} (type={ttype})", "info", "system")
     # Auto-start scan
+    import threading as _threading
     scan_id = str(uuid.uuid4())[:8]
     _auto_scan = {
         "id": scan_id, "target": domain, "scan_type": "full",
@@ -689,6 +690,7 @@ async def create_target(body: Dict[str, Any], background_tasks: BackgroundTasks)
         "started_at": datetime.utcnow().isoformat(),
         "completed_at": None, "progress": 0, "findings_count": 0,
         "log_lines": [], "pid": None, "phase": "queued",
+        "_cancel_event": _threading.Event(),
     }
     SCANS[scan_id] = _auto_scan
     _scan_db.upsert(_auto_scan)
@@ -705,19 +707,32 @@ async def delete_target(target_id: str):
     return {"ok": True}
 
 # Scans
+
+# Private keys stored on scan records that must not be JSON-serialized in responses.
+_SCAN_PRIVATE_KEYS = {"_cancel_event"}
+
+def _scan_response(scan: dict) -> dict:
+    """Return a copy of a scan record with internal/non-serializable fields removed."""
+    return {k: v for k, v in scan.items() if k not in _SCAN_PRIVATE_KEYS}
+
 @app.get("/api/scans")
 async def list_scans():
-    return sorted(SCANS.values(), key=lambda s: s.get("started_at") or "", reverse=True)
+    return sorted(
+        (_scan_response(s) for s in SCANS.values()),
+        key=lambda s: s.get("started_at") or "", reverse=True,
+    )
 
 @app.get("/api/scans/{scan_id}")
 async def get_scan(scan_id: str):
     if scan_id not in SCANS:
         raise HTTPException(404, "Scan not found")
-    return SCANS[scan_id]
+    return _scan_response(SCANS[scan_id])
 
 @app.post("/api/scans", dependencies=[Depends(_require_auth)])
 async def launch_scan(req: ScanRequest, background_tasks: BackgroundTasks):
+    import threading as _threading
     scan_id = str(uuid.uuid4())[:8]
+    _cancel_ev = _threading.Event()
     scan = {
         "id": scan_id,
         "target": req.target,
@@ -731,6 +746,7 @@ async def launch_scan(req: ScanRequest, background_tasks: BackgroundTasks):
         "log_lines": [],
         "pid": None,
         "phase": "queued",
+        "_cancel_event": _cancel_ev,
     }
     SCANS[scan_id] = scan
     _scan_db.upsert(scan)
@@ -742,25 +758,40 @@ async def launch_scan(req: ScanRequest, background_tasks: BackgroundTasks):
     }
     background_tasks.add_task(_run_scan_via_engine, scan_id, req.target, req.scan_type,
                                auth_config=_auth_config)
-    return scan
+    return _scan_response(scan)
 
 @app.post("/api/scans/{scan_id}/stop", dependencies=[Depends(_require_auth)])
 async def stop_scan(scan_id: str):
     if scan_id not in SCANS:
         raise HTTPException(404, "Scan not found")
     scan = SCANS[scan_id]
+
+    # Signal cancellation for thread-based (inline) scans
+    cancel_event = scan.get("_cancel_event")
+    if cancel_event:
+        cancel_event.set()
+
+    # Kill subprocess and full process tree for CLI-mode scans
     pid = scan.get("pid")
     if pid:
         try:
             proc = psutil.Process(pid)
+            # Kill entire process tree (prevents orphaned tool children like nuclei, sqlmap)
+            children = proc.children(recursive=True)
+            for child in children:
+                try:
+                    child.kill()
+                except psutil.NoSuchProcess:
+                    pass
             proc.terminate()
-        except Exception:
-            pass
+        except (psutil.NoSuchProcess, Exception) as exc:
+            log.warning("stop_scan: process kill failed for pid=%s: %s", pid, exc)
+
     scan["status"] = "stopped"
     scan["completed_at"] = datetime.utcnow().isoformat()
     _scan_db.upsert(scan)
     _add_log(f"Scan stopped: {scan_id}", "warn", "scanner", scan_id)
-    return scan
+    return _scan_response(scan)
 
 @app.delete("/api/scans/{scan_id}", dependencies=[Depends(_require_auth)])
 async def delete_scan(scan_id: str):
@@ -1255,6 +1286,7 @@ class SimpleScanRequest(BaseModel):
 async def simple_scan(req: SimpleScanRequest, background_tasks: BackgroundTasks):
     """Simplified scan endpoint - just provide a target, everything is auto."""
     target = req.validated_target  # raises 400 if target contains shell metacharacters
+    import threading as _threading
     scan_id = str(uuid.uuid4())[:8]
     scan = {
         "id": scan_id, "target": target, "scan_type": "full",
@@ -1262,6 +1294,7 @@ async def simple_scan(req: SimpleScanRequest, background_tasks: BackgroundTasks)
         "started_at": datetime.utcnow().isoformat(),
         "completed_at": None, "progress": 0, "findings_count": 0,
         "log_lines": [], "pid": None, "phase": "queued",
+        "_cancel_event": _threading.Event(),
     }
     SCANS[scan_id] = scan
 
@@ -1273,7 +1306,7 @@ async def simple_scan(req: SimpleScanRequest, background_tasks: BackgroundTasks)
 
     background_tasks.add_task(_run_scan_via_engine, scan_id, req.target, "full")
     _add_log(f"Auto-scan queued: {req.target}", "info", "scanner", scan_id)
-    return scan
+    return _scan_response(scan)
 
 # ── Background tasks ──────────────────────────────────────────────────────────
 
@@ -2373,6 +2406,7 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
     # findings_count / status via the _sync_god_mode_scans helper on each poll.
     import uuid as _uuid2
     gm_scan_id = "gm-" + str(_uuid2.uuid4())[:6]
+    import threading as _threading
     _gm_scan_entry = {
         "id": gm_scan_id, "target": target, "scan_type": "god_mode",
         "profile": "custom" if modules else "god_mode", "status": "running",
@@ -2381,6 +2415,7 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
         "log_lines": [], "pid": None, "phase": "starting",
         "modules": modules,       # in-memory only — not persisted to ScanDB
         "intensities": intensities,  # in-memory only — not persisted to ScanDB
+        "_cancel_event": _threading.Event(),
     }
     SCANS[gm_scan_id] = _gm_scan_entry
     _scan_db.upsert(_gm_scan_entry)
