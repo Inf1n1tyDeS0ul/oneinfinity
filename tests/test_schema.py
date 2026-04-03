@@ -17,5 +17,5 @@ def test_knowledge_base_table_exists():
     assert "knowledge_base" in SCHEMA
 
 def test_all_tables_present():
-    for table in ("scans", "findings", "agents", "events", "knowledge_base"):
+    for table in ("scans", "findings", "agents", "events", "knowledge_base", "recon_assets"):
         assert table in SCHEMA, f"Missing table: {table}"
