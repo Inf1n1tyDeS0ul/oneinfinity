@@ -341,18 +341,24 @@ class EventBus:
                     lst.remove(sub)
 
         # Persist
-        if self._db:
+        if self._persist:
             try:
                 d = event.to_dict()
-                self._db.execute(
-                    "INSERT OR IGNORE INTO events(event_id,event_type,source,data,timestamp,correlation_id)"
-                    " VALUES(?,?,?,?,?,?)",
-                    (d["event_id"], d["event_type"], d["source"],
-                     json.dumps(d["data"]), d["timestamp"], d["correlation_id"])
-                )
-                self._db.commit()
+                _persist_event_async(d)
             except Exception:
                 pass
+            if self._db:
+                try:
+                    d = event.to_dict()
+                    self._db.execute(
+                        "INSERT OR IGNORE INTO events(event_id,event_type,source,data,timestamp,correlation_id)"
+                        " VALUES(?,?,?,?,?,?)",
+                        (d["event_id"], d["event_type"], d["source"],
+                         json.dumps(d["data"]), d["timestamp"], d["correlation_id"])
+                    )
+                    self._db.commit()
+                except Exception:
+                    pass
 
         # Ring buffer
         d = event.to_dict()
@@ -550,6 +556,25 @@ class EventBus:
 
     def dlq(self, limit: int = 20) -> list[dict]:
         return list(reversed(self._dlq))[:limit]
+
+
+def _persist_event_async(event_dict: dict) -> None:
+    """Fire-and-forget event persistence — tries Postgres first, falls back to SQLite."""
+    try:
+        from core.db_manager import get_db_manager_sync
+        mgr = get_db_manager_sync()
+        if mgr and mgr.mode in ("distributed", "postgres"):
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if not loop.is_running():
+                loop.run_until_complete(mgr.save_event(event_dict))
+            else:
+                # Already in async context — schedule as task
+                loop.create_task(mgr.save_event(event_dict))
+            return
+    except Exception:
+        pass
+    # SQLite fallback handled by caller
 
 
 # ── Singleton ─────────────────────────────────────────────────────────────────
