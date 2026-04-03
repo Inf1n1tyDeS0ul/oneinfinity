@@ -186,6 +186,13 @@ class EventBus:
 
         self._start()
 
+        # Redis transport (optional — falls back to local-only when unavailable)
+        self._redis = None
+        self._redis_listener: Optional[threading.Thread] = None
+        self._published_ids: set = set()   # event_ids we published (skip on re-receive)
+        self._published_ids_lock = threading.Lock()
+        self._init_redis_transport()
+
     # ── Init ──────────────────────────────────────────────────────────────────
 
     def _init_db(self, db_path: Path):
@@ -214,6 +221,61 @@ class EventBus:
             daemon=True,
         )
         self._thread.start()
+
+    def _init_redis_transport(self) -> None:
+        """Connect to Redis and start cross-process listener thread."""
+        try:
+            from core.redis_client import get_redis
+            r = get_redis()
+            if r is None:
+                return
+            self._redis = r
+            self._redis_listener = threading.Thread(
+                target=self._redis_listener_loop,
+                name="event-bus-redis-listener",
+                daemon=True,
+            )
+            self._redis_listener.start()
+            log.info("EventBus: Redis transport active")
+        except Exception as exc:
+            log.warning("EventBus: Redis transport init failed (%s) — local-only mode", exc)
+
+    def _redis_listener_loop(self) -> None:
+        """Subscribe to Redis channels and feed cross-process events into local inbox."""
+        try:
+            from core.redis_client import get_redis
+            r = get_redis()
+            if r is None:
+                return
+            pubsub = r.pubsub(ignore_subscribe_messages=True)
+            pubsub.psubscribe("oneinfinity:events:*")
+            for raw_msg in pubsub.listen():
+                if not self._running:
+                    break
+                if raw_msg is None or raw_msg.get("type") != "pmessage":
+                    continue
+                try:
+                    d = json.loads(raw_msg["data"])
+                    event_id = d.get("event_id", "")
+                    # Skip events we published ourselves
+                    with self._published_ids_lock:
+                        if event_id in self._published_ids:
+                            continue
+                    # Reconstruct and deliver locally
+                    event = BusEvent(
+                        event_type=EventType(d["event_type"]),
+                        data=d.get("data", {}),
+                        source=d.get("source", "remote"),
+                        event_id=event_id,
+                        timestamp=d.get("timestamp", time.time()),
+                        priority=Priority(d.get("priority", Priority.NORMAL.value)),
+                        correlation_id=d.get("correlation_id", ""),
+                    )
+                    self._inbox.put_nowait((event.priority.value, event.timestamp, event.event_id, event))
+                except Exception as exc:
+                    log.debug("Redis listener: bad message (%s)", exc)
+        except Exception as exc:
+            log.warning("Redis listener loop exited: %s", exc)
 
     def _run_loop(self):
         asyncio.set_event_loop(self._loop)
@@ -341,6 +403,25 @@ class EventBus:
             self._published += 1
         except queue.Full:
             log.warning("EventBus: inbox full, dropping %s", event_type)
+            return event.event_id
+
+        # Redis transport: broadcast to cross-process subscribers
+        if self._redis is not None:
+            try:
+                payload = json.dumps(event.to_dict())
+                scan_id = correlation_id or "global"
+                channel = f"oneinfinity:events:{scan_id}"
+                self._redis.publish(channel, payload)
+                self._redis.publish("oneinfinity:events:global", payload)
+                # Track our own event_id to avoid re-delivery from listener
+                with self._published_ids_lock:
+                    self._published_ids.add(event.event_id)
+                    if len(self._published_ids) > 10_000:
+                        # Trim oldest (approximate — set has no order guarantee)
+                        self._published_ids = set(list(self._published_ids)[-5_000:])
+            except Exception as exc:
+                log.debug("EventBus: Redis publish failed (%s) — local only", exc)
+
         return event.event_id
 
     def publish_event(self, event: BusEvent) -> str:
