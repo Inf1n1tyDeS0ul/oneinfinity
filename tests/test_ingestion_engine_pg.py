@@ -3,19 +3,14 @@ import asyncio, os
 from unittest.mock import patch, AsyncMock, MagicMock
 
 def test_ingest_delegates_to_db_manager_save_finding():
-    """ResultIngestionEngine.ingest() must call db_manager.save_finding in Postgres mode."""
+    """ResultIngestionEngine.ingest() must call sync_save_finding in Postgres mode."""
     saved = []
-
-    async def mock_save(f):
-        saved.append(f)
-        return f.get("finding_id", "test")
 
     mock_mgr = MagicMock()
     mock_mgr.mode = "postgres"
-    mock_mgr.save_finding = mock_save
-    mock_mgr.sync_save_finding = lambda f: asyncio.get_event_loop().run_until_complete(mock_save(f))
+    mock_mgr.sync_save_finding = lambda f: saved.append(f) or f.get("finding_id", "test")
 
-    with patch("core.db_manager.get_db_manager", new_callable=AsyncMock, return_value=mock_mgr):
+    with patch("result_ingestion_engine._get_db_manager_sync", return_value=mock_mgr):
         from result_ingestion_engine import ResultIngestionEngine, RawResult
         engine = ResultIngestionEngine()
         raw = RawResult(scan_id="scan-1", source="nuclei", raw={
@@ -23,8 +18,7 @@ def test_ingest_delegates_to_db_manager_save_finding():
             "matched-at": "http://example.com/test", "host": "example.com",
         })
         engine.ingest(raw)
-        # Should have called save_finding
-        assert len(saved) >= 0  # graceful: timing may vary
+        assert len(saved) == 1, "sync_save_finding must have been called exactly once"
 
 def test_ingest_falls_back_to_sqlite_when_no_pg():
     """ResultIngestionEngine.ingest() must fall back to SQLite when Postgres unavailable."""
