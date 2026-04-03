@@ -80,6 +80,15 @@ services:
       - "--host=0.0.0.0"
       - "--port=8000"
       - "--workers=1"
+    environment:
+      - ONEINFINITY_HOME=/data
+      - NUCLEI_TEMPLATES_PATH=/data/.nuclei-templates
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ONEINFINITY_API_KEY=${ONEINFINITY_API_KEY:-}
+      - POSTGRES_URL=postgresql://${POSTGRES_USER:-oneinfinity}:${POSTGRES_PASSWORD:-}@postgres:5432/oneinfinity
+      - REDIS_URL=redis://redis:6379/0
+      - ONEINFINITY_STORAGE_MODE=${ONEINFINITY_STORAGE_MODE:-auto}
     ports:
       - "8000:8000"
     networks:
@@ -122,6 +131,28 @@ services:
     networks:
       - oneinfinity-net
 
+  # ── PostgreSQL — persistent findings + scan data ─────────────────────
+  postgres:
+    profiles: ["full", "distributed"]
+    image: postgres:16-alpine
+    container_name: oneinfinity-postgres
+    environment:
+      POSTGRES_DB: oneinfinity
+      POSTGRES_USER: ${POSTGRES_USER:-oneinfinity}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oneinfinity} -d oneinfinity"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - oneinfinity-net
+
   # ── Distributed worker ──────────────────────────────────────
   # Processes async scan tasks from Redis queue
   worker:
@@ -151,6 +182,8 @@ volumes:
   oneinfinity-data:
     driver: local
   redis_data:
+    driver: local
+  pg_data:
     driver: local
 
 networks:
