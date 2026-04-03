@@ -430,6 +430,96 @@ class Neo4jEngine:
             scores[ct] = 0.5 + 1.5 * rate
         return scores
 
+    # --- Simple single-item CRUD (interface-compatible helpers) -----------------
+
+    def ping(self) -> bool:
+        """Return True if Neo4j is reachable."""
+        if self._driver is None:
+            return False
+        try:
+            with self._driver.session(database=self._database) as s:
+                s.run("RETURN 1")
+            return True
+        except Exception:
+            return False
+
+    def upsert_node(self, node: dict) -> None:
+        """Create or update a node in Neo4j. Non-fatal on error."""
+        if self._driver is None:
+            return
+        try:
+            with self._driver.session(database=self._database) as s:
+                s.run(
+                    "MERGE (n:Node {node_id: $node_id}) "
+                    "SET n += $props",
+                    node_id=node.get("node_id", ""),
+                    props={k: v for k, v in node.items()
+                           if isinstance(v, (str, int, float, bool))},
+                )
+        except Exception as exc:
+            log.warning("Neo4j upsert_node failed: %s", exc)
+
+    def upsert_edge(self, edge: dict) -> None:
+        """Create or update an edge in Neo4j. Non-fatal on error."""
+        if self._driver is None:
+            return
+        try:
+            with self._driver.session(database=self._database) as s:
+                s.run(
+                    "MATCH (a:Node {node_id: $src}), (b:Node {node_id: $dst}) "
+                    "MERGE (a)-[r:EDGE {edge_id: $edge_id}]->(b) "
+                    "SET r += $props",
+                    src=edge.get("source_id", ""),
+                    dst=edge.get("target_id", ""),
+                    edge_id=edge.get("edge_id", ""),
+                    props={k: v for k, v in edge.items()
+                           if isinstance(v, (str, int, float, bool))},
+                )
+        except Exception as exc:
+            log.warning("Neo4j upsert_edge failed: %s", exc)
+
+    def delete_node(self, node_id: str) -> None:
+        """Delete a node by node_id. Non-fatal on error."""
+        if self._driver is None:
+            return
+        try:
+            with self._driver.session(database=self._database) as s:
+                s.run("MATCH (n:Node {node_id: $nid}) DETACH DELETE n", nid=node_id)
+        except Exception as exc:
+            log.warning("Neo4j delete_node failed: %s", exc)
+
+    def delete_edge(self, edge_id: str) -> None:
+        """Delete an edge by edge_id. Non-fatal on error."""
+        if self._driver is None:
+            return
+        try:
+            with self._driver.session(database=self._database) as s:
+                s.run("MATCH ()-[r:EDGE {edge_id: $eid}]-() DELETE r", eid=edge_id)
+        except Exception as exc:
+            log.warning("Neo4j delete_edge failed: %s", exc)
+
+    def find_paths_node_ids(
+        self,
+        source_id: str,
+        target_id: str,
+        max_depth: int = 5,
+    ) -> list:
+        """Find all shortest paths between two nodes. Returns list of node ID lists."""
+        if self._driver is None:
+            return []
+        try:
+            hop = max(1, min(int(max_depth), 12))
+            cypher = (
+                "MATCH p=allShortestPaths((a:Node {node_id: $src})-[*..%d]->(b:Node {node_id: $dst})) "
+                "RETURN [n IN nodes(p) | n.node_id] AS path" % hop
+            )
+            with self._driver.session(database=self._database) as s:
+                result = s.run(cypher, src=source_id, dst=target_id)
+                return [r["path"] for r in result]
+        except Exception as exc:
+            log.warning("Neo4j find_paths_node_ids failed: %s", exc)
+            return []
+
     # --- Optional: pull all into dicts for merge into local store ---------------
 
     def export_all_graph_dicts(self) -> tuple[list[dict], list[dict]]:
