@@ -47,9 +47,18 @@ async def get_db_manager() -> "DBManager":
 
 
 def get_db_manager_sync() -> "DBManager":
-    """Sync wrapper for CLI — runs the event loop to init DBManager."""
-    loop = asyncio.get_event_loop()
-    return loop.run_until_complete(get_db_manager())
+    """Sync wrapper for CLI — creates a new event loop if needed."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Already inside an async context — create a new loop in a thread
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(asyncio.run, get_db_manager())
+                return future.result()
+        return loop.run_until_complete(get_db_manager())
+    except RuntimeError:
+        return asyncio.run(get_db_manager())
 
 
 class DBManager:
