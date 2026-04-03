@@ -375,12 +375,18 @@ except Exception as _exc:
 # ── Lazy db_manager init ─────────────────────────────────────────────────────
 
 _db_mgr = None
+_db_mgr_lock: asyncio.Lock | None = None
 
 async def get_mgr():
-    global _db_mgr
-    if _db_mgr is None:
-        from core.db_manager import get_db_manager
-        _db_mgr = await get_db_manager()
+    global _db_mgr, _db_mgr_lock
+    if _db_mgr is not None:
+        return _db_mgr
+    if _db_mgr_lock is None:
+        _db_mgr_lock = asyncio.Lock()
+    async with _db_mgr_lock:
+        if _db_mgr is None:
+            from core.db_manager import get_db_manager
+            _db_mgr = await get_db_manager()
     return _db_mgr
 
 async def _persist_scan_bg(scan_dict: dict) -> None:
