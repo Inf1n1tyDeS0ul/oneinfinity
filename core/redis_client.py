@@ -11,40 +11,50 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Optional
 
 log = logging.getLogger("oneinfinity.redis_client")
 
 _pool: Optional[object] = None
 _client: Optional[object] = None
+_lock: threading.Lock = threading.Lock()
 
 
 def get_redis() -> Optional["redis.Redis"]:
     """Return a Redis client, or None if Redis is unavailable."""
     global _pool, _client
-    if _client is not None:
+    if _client is not None:      # fast path, no lock
         return _client
-    redis_url = os.environ.get("REDIS_URL", "").strip()
-    if not redis_url:
-        return None
-    try:
-        import redis
-        _pool = redis.ConnectionPool.from_url(
-            redis_url,
-            max_connections=20,
-            socket_connect_timeout=3,
-            socket_timeout=5,
-            decode_responses=True,
-        )
-        _client = redis.Redis(connection_pool=_pool)
-        _client.ping()
-        log.info("Redis connected: %s", _safe_url(redis_url))
-        return _client
-    except Exception as exc:
-        log.warning("Redis unavailable (%s) — falling back to in-memory", exc)
-        _client = None
-        _pool = None
-        return None
+    with _lock:
+        if _client is not None:  # re-check inside lock
+            return _client
+        redis_url = os.environ.get("REDIS_URL", "").strip()
+        if not redis_url:
+            return None
+        try:
+            import redis
+            _pool = redis.ConnectionPool.from_url(
+                redis_url,
+                max_connections=20,
+                socket_connect_timeout=3,
+                socket_timeout=5,
+                decode_responses=True,
+            )
+            _client = redis.Redis(connection_pool=_pool)
+            _client.ping()
+            log.info("Redis connected: %s", _safe_url(redis_url))
+            return _client
+        except Exception as exc:
+            log.warning("Redis unavailable (%s) — falling back to in-memory", exc)
+            if _pool is not None:
+                try:
+                    _pool.disconnect()
+                except Exception:
+                    pass
+            _client = None
+            _pool = None
+            return None
 
 
 def close_redis() -> None:
