@@ -200,6 +200,20 @@ class AgentSwarmCoordinator:
             except Exception:
                 pass
 
+    # ── State factory ─────────────────────────────────────────────────────────
+
+    def _make_swarm_state(self, scan_id: str):
+        """Return Redis-backed state when Redis is available, else in-memory."""
+        try:
+            from core.redis_client import get_redis
+            from core.swarm_state_redis import RedisSwarmState
+            r = get_redis()
+            if r is not None:
+                return RedisSwarmState(scan_id=scan_id, redis=r)
+        except Exception as exc:
+            logger.warning("Swarm state: Redis init failed (%s) — using in-memory", exc)
+        return SharedSwarmState(session_id=scan_id)
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     async def scan(self, target: str, context: Dict[str, Any]) -> SwarmScanResult:
