@@ -3,7 +3,6 @@
 import json
 import csv
 import logging
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from result_ingestion_engine import get_ingestion_engine
@@ -25,11 +24,12 @@ class FindingsDB:
             self._audit_db_path = str(db_path)
         else:
             self._audit_db_path = str(self.engine._db_path)
-        self._audit_conn: sqlite3.Connection | None = None
+        self._audit_conn: object | None = None  # sqlite3.Connection when open
 
-    def _get_audit_conn(self) -> sqlite3.Connection:
+    def _get_audit_conn(self) -> object:
         """Return a lazily-opened SQLite connection for the audit table."""
         if self._audit_conn is None:
+            import sqlite3
             self._audit_conn = sqlite3.connect(self._audit_db_path, timeout=30)
         return self._audit_conn
 
