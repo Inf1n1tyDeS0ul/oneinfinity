@@ -9,7 +9,6 @@ import asyncio
 import json
 import logging
 import os
-import sqlite3
 import subprocess
 import sys
 import time
@@ -104,26 +103,35 @@ async def _lifespan(application):
             try:
                 state = _json.loads(sf.read_text())
                 sid = state.get("scan_id")
-                if not sid or sid in SCANS:
+                if not sid:
                     continue
+                # Always prefer state-file data over stale SQLite records for god-mode scans
+                existing = SCANS.get(sid, {})
+                if existing.get("scan_type") == "god_mode" and existing.get("findings_count", 0) >= state.get("finding_count", 0):
+                    continue  # in-memory already has equal or better data
                 terminated_by = state.get("terminated_by") or ""
                 status = ("stopped" if terminated_by == "stop"
                           else "completed" if terminated_by
-                          else "failed")
+                          else existing.get("status", "failed"))
                 import datetime as _dt
-                started_at = (_dt.datetime.utcfromtimestamp(state["start_time"]).isoformat()
-                              if state.get("start_time") else None)
+                start_ts = state.get("start_time")
+                elapsed = state.get("elapsed_seconds") or 0
+                started_at = (_dt.datetime.utcfromtimestamp(start_ts).isoformat()
+                              if start_ts else existing.get("started_at"))
+                completed_at = (_dt.datetime.utcfromtimestamp(start_ts + elapsed).isoformat()
+                                if start_ts and elapsed and terminated_by else None)
+                phases = state.get("phases_complete") or []
                 entry = {
                     "id": sid, "scan_id": sid,
-                    "target": state.get("target", ""),
-                    "scan_type": "god_mode", "profile": "god_mode",
+                    "target": state.get("target", existing.get("target", "")),
+                    "scan_type": "god_mode", "profile": existing.get("profile", "god_mode"),
                     "status": status,
                     "started_at": started_at,
-                    "completed_at": None,
-                    "progress": 100,
+                    "completed_at": completed_at,
+                    "progress": 100 if terminated_by else existing.get("progress", 0),
                     "findings_count": state.get("finding_count", 0),
                     "log_lines": [], "pid": None,
-                    "phase": state.get("phases_complete", [""])[-1] if state.get("phases_complete") else "",
+                    "phase": phases[-1] if phases else existing.get("phase", ""),
                     "error": "",
                 }
                 SCANS[sid] = entry
@@ -165,9 +173,10 @@ app.add_middleware(
 
 # ── SQLite helpers ───────────────────────────────────────────────────────────
 
-def _db_connect(db_path) -> sqlite3.Connection:
+def _db_connect(db_path):
     """Open a SQLite connection with WAL mode and busy_timeout to prevent
     'database is locked' errors under concurrent writes."""
+    import sqlite3
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
@@ -319,6 +328,7 @@ class ScanDB:
 
     def load_all(self) -> List[dict]:
         try:
+            import sqlite3
             with _db_connect(self._db) as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
@@ -361,6 +371,25 @@ try:
     _get_rie().set_broadcast_callback(_on_finding_ingested)
 except Exception as _exc:
     log.warning("Could not wire ResultIngestionEngine broadcast: %s", _exc)
+
+# ── Lazy db_manager init ─────────────────────────────────────────────────────
+
+_db_mgr = None
+
+async def get_mgr():
+    global _db_mgr
+    if _db_mgr is None:
+        from core.db_manager import get_db_manager
+        _db_mgr = await get_db_manager()
+    return _db_mgr
+
+async def _persist_scan_bg(scan_dict: dict) -> None:
+    """Background task: persist scan to Postgres if available."""
+    try:
+        mgr = await get_mgr()
+        await mgr.save_scan(scan_dict)
+    except Exception as exc:
+        log.debug("_persist_scan_bg: %s", exc)
 
 # ── In-memory state ───────────────────────────────────────────────────────────
 
@@ -831,46 +860,20 @@ async def delete_scan(scan_id: str):
 
 # Vulnerabilities
 @app.get("/api/findings")
-async def list_findings(
-    target: Optional[str] = None,
-    severity: Optional[str] = None,
-    scan_id: Optional[str] = None,
-):
-    """Return findings — merges in-memory cache with persisted SQLite findings."""
-    results: dict = {}
-
-    # 1. In-memory findings (from current session)
-    try:
-        for fid, fdata in VULNERABILITIES.items():
-            if fid and isinstance(fdata, dict):
-                results[fid] = fdata
-    except Exception as exc:
-        log.warning("get_findings: in-memory read failed: %s", exc)
-
-    # 2. Persisted findings from ingestion engine (includes swarm worker results)
-    try:
-        from result_ingestion_engine import get_ingestion_engine
-        ie = get_ingestion_engine()
-        db_findings = ie.get_findings(target=target, severity=severity, scan_id=scan_id)
-        for f in (db_findings or []):
-            if not isinstance(f, dict):
-                try:
-                    f = f.to_dict()
-                except Exception:
-                    f = vars(f) if hasattr(f, "__dict__") else {}
-            fid = f.get("id") or f.get("finding_id") or f.get("sha256", "")
-            if fid and fid not in results:
-                results[fid] = f
-    except Exception as exc:
-        log.warning("get_findings: DB read failed: %s", exc)
-
+async def list_findings(target: Optional[str] = None, scan_id: Optional[str] = None,
+                        severity: Optional[str] = None):
+    """Return findings — merges db_manager (Postgres or SQLite) with in-memory cache."""
+    mgr = await get_mgr()
+    # Primary: db_manager (Postgres or SQLite via ingestion engine)
+    db_results = await mgr.get_findings(scan_id=scan_id, target=target, severity=severity)
+    # Merge with in-memory VULNERABILITIES (may have more recent items)
+    results = {f.get("finding_id", f.get("id", "")): f for f in db_results}
+    for fid, fdata in VULNERABILITIES.items():
+        if fid and fid not in results:
+            results[fid] = fdata
     findings = list(results.values())
     if scan_id:
         findings = [f for f in findings if f.get("scan_id") == scan_id]
-    if target:
-        findings = [f for f in findings if f.get("target") == target]
-    if severity:
-        findings = [f for f in findings if f.get("severity") == severity]
     return findings
 
 @app.get("/api/vulnerabilities")
@@ -2452,14 +2455,30 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
             import sys as _s, os as _o
             _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)) + "/../..")
             from god_mode_engine import get_god_mode_conductor
+            # Bridge god-mode log records → live WebSocket log panel
+            import logging as _logging
+            class _WsBridge(_logging.Handler):
+                def emit(self, record):
+                    try:
+                        lvl = record.levelname.lower()
+                        level = "error" if lvl == "error" else "warn" if lvl == "warning" else "info"
+                        _add_log(record.getMessage(), level, "god-mode", gm_scan_id)
+                    except Exception:
+                        pass
+            _ws_handler = _WsBridge()
+            _ws_handler.setLevel(_logging.INFO)
+            _oi_logger = _logging.getLogger("oneinfinity")
+            _oi_logger.addHandler(_ws_handler)
             conductor = get_god_mode_conductor()
             conductor.run(
                 target=target, max_time=max_time, max_findings=max_findings,
-                background=True, no_swarm=no_swarm, no_research=no_research,
+                background=False, no_swarm=no_swarm, no_research=no_research,
                 report_fmt=report_fmt, auth_config=auth_config if has_auth else None,
                 _override_scan_id=gm_scan_id,
             )
-            # After run() completes, sync final state back to SCANS + DB
+            # Remove WS bridge handler now that scan is done
+            _oi_logger.removeHandler(_ws_handler)
+            # After run() completes (foreground within this background task), sync final state
             state = conductor.status(gm_scan_id)
             if state and gm_scan_id in SCANS:
                 terminated_by = state.get("terminated_by") or ""
@@ -2484,6 +2503,7 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
             except Exception as exc:
                 log.warning("god-mode ingestion sync failed (non-fatal): %s", exc)
         except Exception as exc:
+            _oi_logger.removeHandler(_ws_handler)
             print(f"[god-mode] run error: {exc}")
             if gm_scan_id in SCANS:
                 SCANS[gm_scan_id]["status"] = "failed"
@@ -2542,6 +2562,56 @@ async def god_mode_sessions():
         return {"sessions": sessions}
     except Exception as exc:
         return {"sessions": [], "error": str(exc)}
+
+
+@app.post("/api/god-mode/sync/{scan_id}")
+async def god_mode_sync_scan(scan_id: str):
+    """Re-sync a God Mode scan's SCANS entry and DB record from its state file."""
+    from pathlib import Path
+    import json as _j, datetime as _dt
+    gm_dir = Path.home() / ".oneinfinity"
+    state_file = gm_dir / f"god-mode-{scan_id}.json"
+    if not state_file.exists():
+        raise HTTPException(status_code=404, detail=f"State file not found for {scan_id}")
+    try:
+        state = _j.loads(state_file.read_text())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read state file: {exc}")
+    terminated_by = state.get("terminated_by") or ""
+    status = "stopped" if terminated_by == "stop" else ("completed" if terminated_by else "running")
+    phases = state.get("phases_complete") or []
+    phase = phases[-1] if phases else "starting"
+    start_ts = state.get("start_time")
+    elapsed = state.get("elapsed_seconds") or 0
+    started_at = _dt.datetime.utcfromtimestamp(start_ts).isoformat() if start_ts else None
+    completed_at = (_dt.datetime.utcfromtimestamp(start_ts + elapsed).isoformat()
+                    if start_ts and elapsed and terminated_by else None)
+    if scan_id in SCANS:
+        SCANS[scan_id].update({
+            "status": status,
+            "findings_count": state.get("finding_count", 0),
+            "phase": phase,
+            "completed_at": completed_at,
+            "progress": 100 if terminated_by else SCANS[scan_id].get("progress", 0),
+        })
+        _scan_db.upsert(SCANS[scan_id])
+    else:
+        entry = {
+            "id": scan_id, "scan_id": scan_id,
+            "target": state.get("target", ""),
+            "scan_type": "god_mode", "profile": "god_mode",
+            "status": status,
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "progress": 100 if terminated_by else 0,
+            "findings_count": state.get("finding_count", 0),
+            "log_lines": [], "pid": None,
+            "phase": phase, "error": "",
+        }
+        SCANS[scan_id] = entry
+        _scan_db.upsert(entry)
+    return {"synced": True, "scan_id": scan_id, "status": status,
+            "findings_count": state.get("finding_count", 0)}
 
 
 @app.post("/api/god-mode/stop", dependencies=[Depends(_require_auth)])
