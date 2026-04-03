@@ -20,6 +20,15 @@ import path_manager
 
 log = logging.getLogger("oneinfinity.result_ingestion")
 
+
+def _get_db_manager_sync():
+    """Get DBManager synchronously for use in sync ingestion code."""
+    try:
+        from core.db_manager import get_db_manager_sync
+        return get_db_manager_sync()
+    except Exception:
+        return None
+
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
@@ -444,6 +453,15 @@ class ResultIngestionEngine:
 
     def _check_and_store(self, finding: NormalizedFinding) -> bool:
         """Atomically check for duplicate and store if new. Returns True if stored."""
+        # Try Postgres first (via DBManager)
+        mgr = _get_db_manager_sync()
+        if mgr is not None and mgr.mode in ("distributed", "postgres"):
+            try:
+                mgr.sync_save_finding(finding.to_dict())
+                return True
+            except Exception as exc:
+                log.warning("DBManager save failed, falling back to SQLite: %s", exc)
+        # SQLite fallback (existing logic continues below)
         last_exc: Optional[Exception] = None
         for attempt in range(3):
             try:
@@ -619,6 +637,17 @@ class ResultIngestionEngine:
             log.error("get_findings: DB error: %s", exc)
             return []
 
+    def delete_findings_for_scan(self, scan_id: str) -> int:
+        """Delete all findings for the given scan_id. Returns the count deleted."""
+        try:
+            with sqlite3.connect(str(self._db_path)) as conn:
+                cur = conn.execute("DELETE FROM findings WHERE scan_id = ?", (scan_id,))
+                conn.commit()
+                return cur.rowcount
+        except Exception as exc:
+            log.error("delete_findings_for_scan: DB error: %s", exc)
+            return 0
+
     def get_recon_assets(
         self,
         scan_id: str = None,
@@ -677,6 +706,15 @@ class ResultIngestionEngine:
 
     def _store_finding(self, finding: NormalizedFinding) -> None:
         """Unconditionally persist a finding (used by persist_finding, no dup check)."""
+        # Try Postgres first (via DBManager)
+        mgr = _get_db_manager_sync()
+        if mgr is not None and mgr.mode in ("distributed", "postgres"):
+            try:
+                mgr.sync_save_finding(finding.to_dict())
+                return
+            except Exception as exc:
+                log.warning("DBManager save failed, falling back to SQLite: %s", exc)
+        # SQLite fallback (existing logic continues below)
         last_exc: Optional[Exception] = None
         for attempt in range(3):
             try:
