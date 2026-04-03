@@ -171,3 +171,38 @@ class BatchedNeo4jGraphBackend(GraphStorageBackend):
         return self._engine.find_path_node_ids(
             start_id, end_id, max_depth=max_depth, max_paths=max_paths
         )
+
+
+class Neo4jPrimaryBackend(GraphStorageBackend):
+    """
+    Neo4j as the sole graph store — no SQLite duplication.
+    Used when NEO4J_ENABLED=true or Neo4j is available.
+    All writes go directly to Neo4j. Non-fatal on errors (logs warning).
+    """
+
+    def __init__(self, engine):
+        self._engine = engine
+
+    def on_node_saved(self, node_dict: dict) -> None:
+        try:
+            self._engine.upsert_node(node_dict)
+        except Exception as exc:
+            log.warning("Neo4jPrimaryBackend.on_node_saved failed: %s", exc)
+
+    def on_edge_saved(self, edge_dict: dict) -> None:
+        try:
+            self._engine.upsert_edge(edge_dict)
+        except Exception as exc:
+            log.warning("Neo4jPrimaryBackend.on_edge_saved failed: %s", exc)
+
+    def on_node_deleted(self, node_id: str) -> None:
+        try:
+            self._engine.delete_node(node_id)
+        except Exception as exc:
+            log.warning("Neo4jPrimaryBackend.on_node_deleted failed: %s", exc)
+
+    def on_edge_deleted(self, edge_id: str) -> None:
+        try:
+            self._engine.delete_edge(edge_id)
+        except Exception as exc:
+            log.warning("Neo4jPrimaryBackend.on_edge_deleted failed: %s", exc)
