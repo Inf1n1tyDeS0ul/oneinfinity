@@ -34,3 +34,21 @@ def test_neo4j_primary_backend_on_edge_saved_does_not_raise_on_error():
     backend = Neo4jPrimaryBackend(mock_engine)
     # Must not raise
     backend.on_edge_saved({"edge_id": "e1", "source_id": "n1", "target_id": "n2"})
+
+def test_neo4j_primary_backend_on_node_deleted_does_not_raise_on_error():
+    """Neo4jPrimaryBackend.on_node_deleted must be non-fatal on errors."""
+    from core.graph_storage import Neo4jPrimaryBackend
+    from unittest.mock import MagicMock
+    mock_engine = MagicMock()
+    mock_engine.delete_node.side_effect = Exception("Neo4j down")
+    backend = Neo4jPrimaryBackend(mock_engine)
+    backend.on_node_deleted("n1")
+
+def test_neo4j_primary_backend_on_edge_deleted_does_not_raise_on_error():
+    """Neo4jPrimaryBackend.on_edge_deleted must be non-fatal on errors."""
+    from core.graph_storage import Neo4jPrimaryBackend
+    from unittest.mock import MagicMock
+    mock_engine = MagicMock()
+    mock_engine.delete_edge.side_effect = Exception("Neo4j down")
+    backend = Neo4jPrimaryBackend(mock_engine)
+    backend.on_edge_deleted("e1")
