@@ -59,6 +59,7 @@ recon/
 *.db-wal
 *.db-shm
 *.sql
+!db/schema.sql
 *.bak
 *.dump
 
