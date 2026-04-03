@@ -44,6 +44,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
@@ -189,7 +190,7 @@ class EventBus:
         # Redis transport (optional — falls back to local-only when unavailable)
         self._redis = None
         self._redis_listener: Optional[threading.Thread] = None
-        self._published_ids: set = set()   # event_ids we published (skip on re-receive)
+        self._published_ids: OrderedDict = OrderedDict()  # ordered set of event_ids we published
         self._published_ids_lock = threading.Lock()
         self._init_redis_transport()
 
@@ -415,10 +416,11 @@ class EventBus:
                 self._redis.publish("oneinfinity:events:global", payload)
                 # Track our own event_id to avoid re-delivery from listener
                 with self._published_ids_lock:
-                    self._published_ids.add(event.event_id)
+                    self._published_ids[event.event_id] = None
                     if len(self._published_ids) > 10_000:
-                        # Trim oldest (approximate — set has no order guarantee)
-                        self._published_ids = set(list(self._published_ids)[-5_000:])
+                        # Remove oldest entries (OrderedDict preserves insertion order)
+                        while len(self._published_ids) > 5_000:
+                            self._published_ids.popitem(last=False)
             except Exception as exc:
                 log.debug("EventBus: Redis publish failed (%s) — local only", exc)
 
@@ -433,6 +435,24 @@ class EventBus:
             self._published += 1
         except queue.Full:
             log.warning("EventBus: inbox full, dropping %s", event.event_type)
+
+        # Redis transport: broadcast to cross-process subscribers
+        if self._redis is not None:
+            try:
+                import json as _json
+                payload = _json.dumps(event.to_dict())
+                scan_id = getattr(event, 'correlation_id', None) or "global"
+                channel = f"oneinfinity:events:{scan_id}"
+                self._redis.publish(channel, payload)
+                self._redis.publish("oneinfinity:events:global", payload)
+                with self._published_ids_lock:
+                    self._published_ids[event.event_id] = None
+                    if len(self._published_ids) > 10_000:
+                        while len(self._published_ids) > 5_000:
+                            self._published_ids.popitem(last=False)
+            except Exception as exc:
+                log.debug("EventBus: Redis publish failed (%s) — local only", exc)
+
         return event.event_id
 
     # ── Subscribe ─────────────────────────────────────────────────────────────
