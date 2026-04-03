@@ -38,7 +38,14 @@ _DEFAULTS: dict[str, Any] = {
         "max_recursive_items": 100,
         "module_compliance": "warn",
         "ingestion_audit": False,
-    }
+    },
+    "redis": {
+        "url": "",
+    },
+    "postgres": {
+        "url": "",
+    },
+    "storage_mode": "auto",  # auto | distributed | sqlite | memory
 }
 
 
@@ -71,5 +78,18 @@ def load_graph_config() -> dict[str, Any]:
         neo["password"] = os.environ["NEO4J_PASSWORD"]
     if os.environ.get("NEO4J_DATABASE"):
         neo["database"] = os.environ["NEO4J_DATABASE"]
+
+    # Redis
+    if os.environ.get("REDIS_URL"):
+        cfg["redis"]["url"] = os.environ["REDIS_URL"]
+
+    # PostgreSQL
+    if os.environ.get("POSTGRES_URL"):
+        cfg["postgres"]["url"] = os.environ["POSTGRES_URL"]
+
+    # Storage mode
+    mode = os.environ.get("ONEINFINITY_STORAGE_MODE", "").lower()
+    if mode in ("auto", "distributed", "sqlite", "memory"):
+        cfg["storage_mode"] = mode
 
     return cfg
