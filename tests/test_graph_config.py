@@ -29,4 +29,4 @@ def test_storage_mode_defaults_to_auto():
         import core.graph_config as gc
         importlib.reload(gc)
         cfg = gc.load_graph_config()
-        assert cfg.get("storage_mode", "auto") in ("auto", "distributed", "sqlite", "memory")
+        assert cfg["storage_mode"] == "auto"
