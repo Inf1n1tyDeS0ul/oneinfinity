@@ -32,3 +32,4 @@ aiofiles>=23.0
 # Dynamic Analysis & Browsers
 playwright>=1.42.0
 selenium>=4.18.0
+psycopg[binary,pool]
