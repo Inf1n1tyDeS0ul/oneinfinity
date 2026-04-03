@@ -40,6 +40,7 @@ class RedisSwarmState:
         self._mem_claimed: dict = {}
         self._mem_findings: set = set()
         self._mem_stats: dict = {}
+        self._mem_heartbeat_ts: float = 0.0
 
     # ── Keys ────────────────────────────────────────────────────────────────
 
@@ -108,6 +109,8 @@ class RedisSwarmState:
         """Renew heartbeat key (call every 30s)."""
         if self._r is not None:
             self._r.set(self._k("heartbeat"), "1", ex=60)
+        else:
+            self._mem_heartbeat_ts = time.time()
 
     # ── Leader election ──────────────────────────────────────────────────────
 
