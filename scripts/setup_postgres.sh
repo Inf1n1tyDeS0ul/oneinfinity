@@ -7,6 +7,17 @@ DB_USER="${POSTGRES_USER:-oneinfinity}"
 DB_NAME="${POSTGRES_DB:-oneinfinity}"
 DB_PORT="${POSTGRES_PORT:-5432}"
 
+# ── Validate inputs ───────────────────────────────────────────────────────────
+if [[ ! "$DB_USER" =~ ^[a-zA-Z_][a-zA-Z0-9_]{0,62}$ ]]; then
+  echo "[✗] POSTGRES_USER contains invalid characters: $DB_USER"; exit 1
+fi
+if [[ ! "$DB_NAME" =~ ^[a-zA-Z_][a-zA-Z0-9_]{0,62}$ ]]; then
+  echo "[✗] POSTGRES_DB contains invalid characters: $DB_NAME"; exit 1
+fi
+if [[ ! "$DB_PORT" =~ ^[0-9]+$ ]]; then
+  echo "[✗] POSTGRES_PORT must be numeric: $DB_PORT"; exit 1
+fi
+
 # ── Password ──────────────────────────────────────────────────────────────────
 if [[ -z "${POSTGRES_PASSWORD:-}" ]]; then
   read -rsp "Enter password for PostgreSQL role '$DB_USER': " POSTGRES_PASSWORD
@@ -47,10 +58,14 @@ fi
 ROLE_EXISTS=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>/dev/null || true)
 if [[ "$ROLE_EXISTS" == "1" ]]; then
   echo "[✓] Role '$DB_USER' already exists — updating password"
-  sudo -u postgres psql -c "ALTER ROLE $DB_USER WITH LOGIN PASSWORD '$POSTGRES_PASSWORD';" >/dev/null
+  sudo -u postgres psql >/dev/null <<SQL
+ALTER ROLE "$DB_USER" WITH LOGIN PASSWORD '$POSTGRES_PASSWORD';
+SQL
 else
   echo "[→] Creating role '$DB_USER'..."
-  sudo -u postgres psql -c "CREATE ROLE $DB_USER WITH LOGIN PASSWORD '$POSTGRES_PASSWORD';" >/dev/null
+  sudo -u postgres psql >/dev/null <<SQL
+CREATE ROLE "$DB_USER" WITH LOGIN PASSWORD '$POSTGRES_PASSWORD';
+SQL
   echo "[✓] Role '$DB_USER' created"
 fi
 
@@ -89,6 +104,7 @@ echo "=== Setup Complete ==="
 echo ""
 echo "Add the following to your ~/.bashrc (or ~/.zshrc):"
 echo ""
+echo "  # SECURITY: Treat this URL as a secret — do not commit it to version control."
 echo "  export POSTGRES_URL=\"$POSTGRES_URL\""
 echo ""
 echo "Then reload your shell:"
