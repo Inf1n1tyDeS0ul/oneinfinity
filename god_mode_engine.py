@@ -93,6 +93,40 @@ class GodModeStateFile:
         self.path = GOD_MODE_DIR / f"god-mode-{scan_id}.json"
 
     def write(self, session: GodModeSession) -> None:
+        db_ok = self._persist_to_db(session)
+        if not db_ok:
+            # DBManager unavailable — JSON is the only persistence path
+            log.warning(
+                "FALLBACK TRIGGERED: DBManager unavailable — writing JSON only for scan %s",
+                session.scan_id,
+            )
+        # JSON is always written as cache for status() reads and backward compat
+        self._write_json(session)
+
+    def _persist_to_db(self, session: GodModeSession) -> bool:
+        """Write scan metadata to DBManager. Returns True on success."""
+        try:
+            from core.db_manager import get_db_manager_sync
+            mgr = get_db_manager_sync()
+            scan_dict = {
+                "scan_id":          session.scan_id,
+                "id":               session.scan_id,
+                "target":           session.target,
+                "scan_type":        "god_mode",
+                "status":           "completed" if session.terminated_by else "running",
+                "started_at":       str(session.start_time),
+                "finding_count":    session.finding_count,
+                "phases_complete":  session.phases_complete,
+                "missions":         session.missions,
+                "terminated_by":    session.terminated_by,
+            }
+            mgr.sync_save_scan(scan_dict)
+            return True
+        except Exception as exc:
+            log.debug("_persist_to_db failed: %s", exc)
+            return False
+
+    def _write_json(self, session: GodModeSession) -> None:
         try:
             data = asdict(session)
             data["elapsed_seconds"] = round(session.elapsed(), 1)
@@ -518,7 +552,7 @@ class ReportMission(Mission):
         try:
             from result_ingestion_engine import get_ingestion_engine
             from enforcement_controller import get_enforcement_controller
-            raw_findings = get_ingestion_engine().get_findings() or []
+            raw_findings = get_ingestion_engine().get_findings(scan_id=session.scan_id, target=session.target) or []
             validated = get_enforcement_controller().validate_findings(raw_findings)
             log.info("[GOD MODE] Report: validated %d/%d findings", len(validated), len(raw_findings))
         except Exception as exc:
