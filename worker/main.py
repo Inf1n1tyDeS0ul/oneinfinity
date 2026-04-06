@@ -145,7 +145,12 @@ class Worker:
                             attempt, max_retries, exc)
                 time.sleep(backoff)
 
-        log.critical("[worker] Could not connect to Redis after %d attempts", max_retries)
+        log.critical(
+            "[worker] FATAL: Could not connect to Redis after %d attempts. "
+            "Worker requires REDIS_URL — Redis is mandatory for distributed mode, not optional. "
+            "Set REDIS_URL=redis://<host>:6379 and retry.",
+            max_retries,
+        )
         sys.exit(1)
 
     # ── Registration ──────────────────────────────────────────────────────────
