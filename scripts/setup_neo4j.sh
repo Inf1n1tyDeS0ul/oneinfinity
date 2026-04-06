@@ -44,11 +44,14 @@ else
   echo "[✓] Neo4j installed"
 fi
 
-# ── 2. Set initial password (before first start) ──────────────────────────────
-# neo4j-admin set-initial-password is safe to run before the service starts.
-echo "[→] Setting Neo4j initial password..."
-sudo neo4j-admin dbms set-initial-password "$NEO4J_PASSWORD" 2>/dev/null \
-  || echo "[i] Password may already be set (service may have started before) — continuing"
+# ── 2. Set initial password (only on first install, before service starts) ────
+if ! systemctl is-active --quiet neo4j; then
+  echo "[→] Setting Neo4j initial password..."
+  sudo neo4j-admin dbms set-initial-password "$NEO4J_PASSWORD" 2>/dev/null \
+    || echo "[i] Initial password already configured — skipping"
+else
+  echo "[✓] Neo4j already running — skipping password init"
+fi
 
 # ── 3. Start service ──────────────────────────────────────────────────────────
 if systemctl is-active --quiet neo4j; then
@@ -62,8 +65,8 @@ fi
 # ── 4. Wait for Neo4j to be ready ────────────────────────────────────────────
 echo "[→] Waiting for Neo4j to accept connections..."
 for i in $(seq 1 30); do
-  if cypher-shell -u "$NEO4J_USERNAME" -p "$NEO4J_PASSWORD" \
-       -a "$NEO4J_URI" "RETURN 1" &>/dev/null 2>&1; then
+  if NEO4J_PASSWORD="$NEO4J_PASSWORD" cypher-shell -u "$NEO4J_USERNAME" \
+       -a "$NEO4J_URI" "RETURN 1" &>/dev/null; then
     echo "[✓] Neo4j accepting connections"
     break
   fi
