@@ -169,6 +169,113 @@ docker compose --profile full up
 
 ---
 
+## ⚡ Redis Setup (Optional — Required for Distributed Mode)
+
+Redis enables cross-process event broadcasting, distributed worker queues, and swarm state sharing. Without it, the event bus and workers operate in local-only mode.
+
+### Native Install (Linux)
+
+```bash
+bash scripts/setup_redis.sh
+```
+
+The script will:
+- Install Redis via `apt` (skipped if already installed)
+- Start and enable the `redis-server` service
+- Verify connectivity on port 6379
+- Print the `REDIS_URL` to add to your shell config
+
+Then add to `~/.zshrc` (or `~/.bashrc`):
+
+```bash
+export REDIS_URL="redis://localhost:6379/0"
+```
+
+Reload and verify:
+
+```bash
+source ~/.zshrc
+python3 -c "from core.redis_client import get_redis; r=get_redis(); print('Redis OK:', r.ping())"
+```
+
+### Docker
+
+Redis is included in the `full` and `distributed` profiles:
+
+```bash
+docker compose --profile full up
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `REDIS_URL` | unset | Redis DSN — activates Redis transport when set |
+
+> **Note:** With both `POSTGRES_URL` and `REDIS_URL` set, oneinfinity runs in full **DISTRIBUTED mode** (Redis + Postgres).
+
+---
+
+## 🕸️ Neo4j Setup (Optional — Enables Graph-Powered Attack Paths)
+
+Neo4j powers the attack graph engine — enabling deep path queries, lateral movement simulation, and exploit chain detection across large target sets. Without it, the graph engine falls back to an in-memory NetworkX graph.
+
+### Native Install (Linux)
+
+```bash
+bash scripts/setup_neo4j.sh
+```
+
+The script will:
+- Add the Neo4j 5.x LTS apt repository
+- Install Neo4j and set the initial password (`neo4j123` by default, matches `config/graph.yaml`)
+- Start and enable the Neo4j service
+- Wait up to 30s for the service to accept connections
+
+Then add to `~/.zshrc` (or `~/.bashrc`):
+
+```bash
+export NEO4J_URI="bolt://localhost:7687"
+export NEO4J_USERNAME="neo4j"
+# SECURITY: Treat this as a secret — do not commit to version control.
+export NEO4J_PASSWORD="neo4j123"
+export NEO4J_ENABLED=1
+```
+
+Reload and verify:
+
+```bash
+source ~/.zshrc
+python3 -c "
+from core.neo4j_engine import Neo4jEngine
+e = Neo4jEngine('bolt://localhost:7687', 'neo4j', 'neo4j123')
+print('Neo4j connected:', e._connected)
+"
+```
+
+Neo4j Browser is available at **http://localhost:7474** (username: `neo4j`, password: `neo4j123`).
+
+### Docker
+
+Neo4j is available via the distributed compose file:
+
+```bash
+docker compose -f docker-compose.distributed.yml up neo4j
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `NEO4J_URI` | `bolt://localhost:7687` | Neo4j Bolt URI |
+| `NEO4J_USERNAME` | `neo4j` | Neo4j username |
+| `NEO4J_PASSWORD` | `neo4j123` (from `config/graph.yaml`) | Neo4j password |
+| `NEO4J_ENABLED` | `0` | Set to `1` to enable Neo4j backend |
+
+> **Note:** If Neo4j is unavailable, the attack graph engine falls back to in-memory NetworkX. No scan data is lost.
+
+---
+
 ## ⚡ Core Features
 
 ### 🕸️ Recon & Intelligence
