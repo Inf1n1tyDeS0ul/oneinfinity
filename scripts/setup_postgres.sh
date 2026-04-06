@@ -75,13 +75,13 @@ if [[ "$DB_EXISTS" == "1" ]]; then
   echo "[✓] Database '$DB_NAME' already exists"
 else
   echo "[→] Creating database '$DB_NAME'..."
-  sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" >/dev/null
+  sudo -u postgres psql -c "CREATE DATABASE \"$DB_NAME\" OWNER \"$DB_USER\";" >/dev/null
   echo "[✓] Database '$DB_NAME' created"
 fi
 
 # ── 5. Grant privileges ───────────────────────────────────────────────────────
-sudo -u postgres psql -d "$DB_NAME" -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;" >/dev/null
-sudo -u postgres psql -d "$DB_NAME" -c "GRANT ALL ON SCHEMA public TO $DB_USER;" >/dev/null
+sudo -u postgres psql -d "$DB_NAME" -c "GRANT ALL PRIVILEGES ON DATABASE \"$DB_NAME\" TO \"$DB_USER\";" >/dev/null
+sudo -u postgres psql -d "$DB_NAME" -c "GRANT ALL ON SCHEMA public TO \"$DB_USER\";" >/dev/null
 echo "[✓] Privileges granted"
 
 # ── 6. Apply schema ───────────────────────────────────────────────────────────
