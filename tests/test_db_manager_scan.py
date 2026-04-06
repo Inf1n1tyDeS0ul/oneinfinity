@@ -78,7 +78,7 @@ def test_findings_check_and_store_uses_dbmanager_sqlite(tmp_db, monkeypatch):
     import result_ingestion_engine as rie
 
     # Reset singleton so it picks up our monkeypatched DBManager
-    rie._ingestion_engine = None
+    rie._engine = None
 
     engine = rie.get_ingestion_engine()
     # Force SQLite mode so DBManager won't try Postgres
@@ -99,4 +99,4 @@ def test_findings_check_and_store_uses_dbmanager_sqlite(tmp_db, monkeypatch):
     engine.ingest(raw)
     assert len(calls) >= 1, f"_sqlite_save_finding was not called. Direct sqlite3 bypass is still in use."
     dm._manager = None
-    rie._ingestion_engine = None
+    rie._engine = None
