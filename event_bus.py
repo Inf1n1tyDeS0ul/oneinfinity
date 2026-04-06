@@ -242,41 +242,55 @@ class EventBus:
             log.warning("EventBus: Redis transport init failed (%s) — local-only mode", exc)
 
     def _redis_listener_loop(self) -> None:
-        """Subscribe to Redis channels and feed cross-process events into local inbox."""
-        try:
-            from core.redis_client import get_redis
-            r = get_redis()
-            if r is None:
-                return
-            pubsub = r.pubsub(ignore_subscribe_messages=True)
-            pubsub.psubscribe("oneinfinity:events:*")
-            for raw_msg in pubsub.listen():
+        """Subscribe to Redis channels and feed cross-process events into local inbox.
+
+        Reconnects automatically on failure with exponential backoff (cap 30s).
+        """
+        import time as _time
+        backoff = 1.0
+        while self._running:
+            try:
+                from core.redis_client import get_redis
+                r = get_redis()
+                if r is None:
+                    return  # Redis not configured — stop permanently
+                pubsub = r.pubsub(ignore_subscribe_messages=True)
+                pubsub.psubscribe("oneinfinity:events:*")
+                log.info("EventBus: Redis listener connected")
+                backoff = 1.0  # reset on successful connect
+                for raw_msg in pubsub.listen():
+                    if not self._running:
+                        return
+                    if raw_msg is None or raw_msg.get("type") != "pmessage":
+                        continue
+                    try:
+                        d = json.loads(raw_msg["data"])
+                        event_id = d.get("event_id", "")
+                        with self._published_ids_lock:
+                            if event_id in self._published_ids:
+                                continue
+                        event = BusEvent(
+                            event_type=EventType(d["event_type"]),
+                            data=d.get("data", {}),
+                            source=d.get("source", "remote"),
+                            event_id=event_id,
+                            timestamp=d.get("timestamp", time.time()),
+                            priority=Priority(d.get("priority", Priority.NORMAL.value)),
+                            correlation_id=d.get("correlation_id", ""),
+                        )
+                        self._inbox.put_nowait(
+                            (event.priority.value, event.timestamp, event.event_id, event)
+                        )
+                    except Exception as exc:
+                        log.debug("Redis listener: bad message (%s)", exc)
+            except Exception as exc:
                 if not self._running:
-                    break
-                if raw_msg is None or raw_msg.get("type") != "pmessage":
-                    continue
-                try:
-                    d = json.loads(raw_msg["data"])
-                    event_id = d.get("event_id", "")
-                    # Skip events we published ourselves
-                    with self._published_ids_lock:
-                        if event_id in self._published_ids:
-                            continue
-                    # Reconstruct and deliver locally
-                    event = BusEvent(
-                        event_type=EventType(d["event_type"]),
-                        data=d.get("data", {}),
-                        source=d.get("source", "remote"),
-                        event_id=event_id,
-                        timestamp=d.get("timestamp", time.time()),
-                        priority=Priority(d.get("priority", Priority.NORMAL.value)),
-                        correlation_id=d.get("correlation_id", ""),
-                    )
-                    self._inbox.put_nowait((event.priority.value, event.timestamp, event.event_id, event))
-                except Exception as exc:
-                    log.debug("Redis listener: bad message (%s)", exc)
-        except Exception as exc:
-            log.warning("Redis listener loop exited: %s", exc)
+                    return
+                log.warning(
+                    "EventBus: Redis listener disconnected (%s) — retrying in %.0fs", exc, backoff
+                )
+                _time.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
 
     def _run_loop(self):
         asyncio.set_event_loop(self._loop)
