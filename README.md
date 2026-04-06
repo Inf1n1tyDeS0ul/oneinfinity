@@ -117,6 +117,58 @@ cd web/frontend && npm install && npm run dev
 
 ---
 
+## 🗄️ PostgreSQL Setup (Optional — Recommended)
+
+By default, OneInfinity stores findings in a local SQLite file (`~/.oneinfinity/findings.db`). This works well for solo use.
+
+For **distributed scanning**, **persistent data across Docker restarts**, or running the **web dashboard with multiple workers**, switch to PostgreSQL.
+
+### Native Install (Linux)
+
+```bash
+# From the repo root:
+bash scripts/setup_postgres.sh
+```
+
+The script will:
+- Install PostgreSQL via `apt` (skipped if already installed)
+- Create an `oneinfinity` user and database
+- Apply the schema (`db/schema.sql`)
+- Print the `POSTGRES_URL` to add to your shell config
+
+Then add to `~/.zshrc` or `~/.bashrc`:
+
+```bash
+export POSTGRES_URL="postgresql://oneinfinity:<password>@localhost:5432/oneinfinity"
+```
+
+Reload your shell and verify:
+
+```bash
+source ~/.zshrc  # or ~/.bashrc
+oneinfinity doctor
+# Look for: [DBManager] Running in POSTGRES mode
+```
+
+### Docker
+
+PostgreSQL is included in the `full` and `distributed` Docker Compose profiles — no manual setup needed:
+
+```bash
+docker compose --profile full up
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `POSTGRES_URL` | unset | Full DSN — activates Postgres mode when set |
+| `ONEINFINITY_STORAGE_MODE` | `auto` | Force mode: `postgres`, `sqlite`, `distributed`, `memory` |
+
+> **Note:** If `POSTGRES_URL` is not set, the tool automatically falls back to SQLite. No data is lost.
+
+---
+
 ## ⚡ Core Features
 
 ### 🕸️ Recon & Intelligence
