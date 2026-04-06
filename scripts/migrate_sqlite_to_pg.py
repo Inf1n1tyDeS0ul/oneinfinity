@@ -303,7 +303,56 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="Preview without writing")
     parser.add_argument("--postgres-url", default=os.environ.get("POSTGRES_URL", ""),
                         help="Postgres connection string")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        default=False,
+        help="Dry-run: report SQLite row counts and Postgres connectivity. No writes.",
+    )
     args = parser.parse_args()
+
+    if args.check:
+        import sys as _sys
+        print("\n=== Migration Check Mode (read-only) ===\n")
+        # Find SQLite databases
+        try:
+            import path_manager as _pm
+            dbs = {
+                "findings.db": str(_pm.findings_db_path()),
+                "metadata.db": str(_pm.db_path("metadata.db")),
+            }
+        except Exception:
+            dbs = {}
+            print("  WARNING: path_manager unavailable, cannot locate SQLite files")
+        for label, db_path in dbs.items():
+            if Path(db_path).exists():
+                try:
+                    conn = sqlite3.connect(db_path)
+                    for table in ("findings", "scan_history"):
+                        try:
+                            count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                            print(f"  {label} / {table}: {count} rows")
+                        except sqlite3.OperationalError:
+                            print(f"  {label} / {table}: table not found")
+                    conn.close()
+                except Exception as e:
+                    print(f"  {label}: error reading — {e}")
+            else:
+                print(f"  {label}: not found at {db_path}")
+        # Check Postgres connectivity
+        pg_url = os.environ.get("POSTGRES_URL", "")
+        if pg_url:
+            try:
+                import psycopg
+                with psycopg.connect(pg_url) as conn:
+                    conn.execute("SELECT 1")
+                print(f"\n  PostgreSQL: reachable at {pg_url[:50]}...")
+            except Exception as exc:
+                print(f"\n  PostgreSQL: UNREACHABLE — {exc}")
+        else:
+            print("\n  PostgreSQL: POSTGRES_URL not set")
+        print("\n=== End Check ===\n")
+        _sys.exit(0)
 
     if not args.postgres_url:
         log.error("POSTGRES_URL not set. Set via env or --postgres-url flag.")
