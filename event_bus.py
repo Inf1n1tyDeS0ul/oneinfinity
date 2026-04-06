@@ -258,9 +258,10 @@ class EventBus:
                 pubsub.psubscribe("oneinfinity:events:*")
                 log.info("EventBus: Redis listener connected")
                 backoff = 1.0  # reset on successful connect
-                for raw_msg in pubsub.listen():
-                    if not self._running:
-                        return
+                # Use get_message() polling instead of listen() to avoid socket_timeout
+                # causing spurious disconnects every 5s on an idle pub/sub connection.
+                while self._running:
+                    raw_msg = pubsub.get_message(timeout=1.0)
                     if raw_msg is None or raw_msg.get("type") != "pmessage":
                         continue
                     try:
@@ -578,9 +579,18 @@ def _persist_event_async(event_dict: dict) -> None:
         mgr = get_db_manager_sync()
         if mgr and mgr.mode in ("distributed", "postgres"):
             import asyncio
-            loop = asyncio.get_running_loop()
-            loop.create_task(mgr.save_event(event_dict))
-            return
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(mgr.save_event(event_dict))
+                return
+            except RuntimeError:
+                # No running loop — run synchronously
+                try:
+                    import asyncio
+                    asyncio.run(mgr.save_event(event_dict))
+                except Exception:
+                    pass
+                return
     except Exception:
         pass
     # SQLite fallback handled by caller
