@@ -46,7 +46,9 @@ def get_redis() -> Optional["redis.Redis"]:
             log.info("Redis connected: %s", _safe_url(redis_url))
             return _client
         except Exception as exc:
-            log.warning("Redis unavailable (%s) — falling back to in-memory", exc)
+            log.warning(
+                "FALLBACK TRIGGERED: Redis connection failed (%s) — falling back to in-memory", exc
+            )
             if _pool is not None:
                 try:
                     _pool.disconnect()

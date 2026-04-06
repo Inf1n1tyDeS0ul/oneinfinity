@@ -80,13 +80,29 @@ class DBManager:
 
         if explicit == "memory":
             self.mode = "memory"
-            log.info("DBManager: memory mode (forced)")
+            log.info("[DBManager] Running in MEMORY mode (forced)")
             return
 
         if explicit == "sqlite":
             self.mode = "sqlite"
-            log.info("DBManager: SQLite mode (forced)")
+            log.info("[DBManager] Running in SQLITE fallback mode (forced)")
             return
+
+        if explicit == "postgres":
+            if not os.environ.get("POSTGRES_URL", "").strip():
+                raise RuntimeError(
+                    "[DBManager] ONEINFINITY_STORAGE_MODE=postgres requires POSTGRES_URL to be set"
+                )
+
+        if explicit == "distributed":
+            if not os.environ.get("POSTGRES_URL", "").strip():
+                raise RuntimeError(
+                    "[DBManager] ONEINFINITY_STORAGE_MODE=distributed requires POSTGRES_URL to be set"
+                )
+            if not os.environ.get("REDIS_URL", "").strip():
+                raise RuntimeError(
+                    "[DBManager] ONEINFINITY_STORAGE_MODE=distributed requires REDIS_URL to be set"
+                )
 
         # Try PostgreSQL
         from core.pg_client import get_async_pool
@@ -98,11 +114,16 @@ class DBManager:
             from core.redis_client import get_redis
             has_redis = get_redis() is not None
             self.mode = "distributed" if has_redis else "postgres"
-            log.info("DBManager: %s mode", self.mode)
+            if self.mode == "distributed":
+                log.info("[DBManager] Running in DISTRIBUTED mode (Redis + Postgres)")
+            else:
+                log.info("[DBManager] Running in POSTGRES mode")
             return
 
         self.mode = "sqlite"
-        log.info("DBManager: SQLite fallback mode (Postgres unavailable)")
+        log.warning(
+            "[DBManager] FALLBACK TRIGGERED: PostgreSQL unavailable — running in SQLITE fallback mode"
+        )
 
     async def _ensure_schema(self) -> None:
         """Apply db/schema.sql to Postgres if tables don't exist."""

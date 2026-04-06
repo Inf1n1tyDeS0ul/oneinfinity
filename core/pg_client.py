@@ -47,7 +47,9 @@ async def get_async_pool() -> Optional[object]:
             log.info("PostgreSQL async pool connected: %s", _safe_url(url))
             return _async_pool
         except Exception as exc:
-            log.warning("PostgreSQL async pool failed (%s) — falling back to SQLite", exc)
+            log.warning(
+                "FALLBACK TRIGGERED: PostgreSQL connection failed (%s) — Postgres unavailable", exc
+            )
             return None
 
 
@@ -73,7 +75,9 @@ def get_sync_conn() -> Optional[object]:
             log.info("PostgreSQL sync connection established: %s", _safe_url(url))
             return _sync_conn
         except Exception as exc:
-            log.warning("PostgreSQL sync connection failed (%s) — CLI will use SQLite fallback", exc)
+            log.warning(
+                "FALLBACK TRIGGERED: PostgreSQL connection failed (%s) — Postgres unavailable", exc
+            )
             return None
 
 
