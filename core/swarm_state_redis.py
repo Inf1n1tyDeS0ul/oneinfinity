@@ -47,6 +47,15 @@ class RedisSwarmState:
     def _k(self, suffix: str) -> str:
         return f"swarm:{self._scan_id}:{suffix}"
 
+    @property
+    def session_id(self) -> str:
+        """Alias for scan_id — interface parity with SharedSwarmState."""
+        return self._scan_id
+
+    @property
+    def scan_id(self) -> str:
+        return self._scan_id
+
     # ── Claimed tasks ────────────────────────────────────────────────────────
 
     def claim_task(self, task_id: str, agent_id: str) -> None:

@@ -234,12 +234,17 @@ class AgentSwarmCoordinator:
           workflows      : List[Dict]
         """
         start = time.time()
-        state = SharedSwarmState()
+        import uuid as _uuid
+        _session_id = _uuid.uuid4().hex[:16]
+        state = self._make_swarm_state(_session_id)
+        # event_queue and findings are always process-local
+        _local_findings: list = getattr(state, "findings", [])
+        _local_queue = getattr(state, "event_queue", asyncio.Queue())
         state_dict: Dict[str, Any] = {
-            "session_id":  state.session_id,
-            "findings":    state.findings,
-            "event_queue": state.event_queue,
-            "claimed_tasks": state.claimed_tasks,
+            "session_id":   state.session_id,
+            "findings":     _local_findings,
+            "event_queue":  _local_queue,
+            "claimed_tasks": getattr(state, "claimed_tasks", getattr(state, "_mem_claimed", {})),
         }
 
         logger.info("[Coordinator] Starting swarm session %s for %s", state.session_id, target)
@@ -301,7 +306,7 @@ class AgentSwarmCoordinator:
 
         # ── 5. Execute all agents + event bus listener concurrently ──────────
         event_listener_task = asyncio.create_task(
-            self._event_bus_listener(state, agents, task_queue, target, context)
+            self._event_bus_listener(state_dict, agents, task_queue, target, context)
         )
 
         agent_result_lists = await asyncio.gather(*coros, return_exceptions=True)
@@ -312,7 +317,7 @@ class AgentSwarmCoordinator:
             pass
 
         # ── 6. Collect all findings ───────────────────────────────────────────
-        all_raw: List[AgentFinding] = list(state.findings)
+        all_raw: List[AgentFinding] = list(_local_findings)
         for res in agent_result_lists:
             if isinstance(res, list):
                 all_raw.extend(res)
@@ -405,7 +410,7 @@ class AgentSwarmCoordinator:
 
     async def _event_bus_listener(
         self,
-        state:     SharedSwarmState,
+        state_dict: Dict[str, Any],
         agents:    Dict[AgentType, SwarmAgent],
         queue:     asyncio.PriorityQueue,
         target:    str,
@@ -419,10 +424,12 @@ class AgentSwarmCoordinator:
             with the finding's endpoint added to context
         """
         processed: Set[str] = set()
+        _event_queue: asyncio.Queue = state_dict["event_queue"]
+        _claimed_tasks: dict = state_dict["claimed_tasks"]
 
         while True:
             try:
-                event = await asyncio.wait_for(state.event_queue.get(), timeout=2.0)
+                event = await asyncio.wait_for(_event_queue.get(), timeout=2.0)
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
@@ -437,7 +444,7 @@ class AgentSwarmCoordinator:
             processed.add(finding.finding_id)
 
             # Competition: mark task as claimed by the finder
-            state.claimed_tasks[finding.target] = finding.agent_id
+            _claimed_tasks[finding.target] = finding.agent_id
 
             # Collaboration: trigger partner agents
             for vuln_prefix, target_agent_type, boost in self.COLLABORATION_RULES:
