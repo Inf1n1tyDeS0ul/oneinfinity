@@ -273,6 +273,7 @@ class DBManager:
                 await conn.commit()
         except Exception as exc:
             log.warning("DBManager._pg_save_scan failed: %s", exc)
+            raise
 
     def _sqlite_save_scan(self, scan: dict) -> None:
         import sqlite3 as _sq
@@ -338,6 +339,17 @@ class DBManager:
         db_path = path_manager.db_path("metadata.db")
         try:
             with _sq.connect(str(db_path), check_same_thread=False) as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS scan_history (
+                        scan_id TEXT PRIMARY KEY, target TEXT NOT NULL,
+                        scan_type TEXT, profile TEXT,
+                        status TEXT NOT NULL DEFAULT 'queued',
+                        started_at TEXT, completed_at TEXT,
+                        progress INTEGER DEFAULT 0,
+                        findings_count INTEGER DEFAULT 0,
+                        phase TEXT, error TEXT
+                    )
+                """)
                 conn.execute("DELETE FROM scan_history WHERE scan_id=?", (scan_id,))
                 conn.commit()
         except Exception as exc:
@@ -385,6 +397,17 @@ class DBManager:
         db_path = path_manager.db_path("metadata.db")
         try:
             with _sq.connect(str(db_path), check_same_thread=False) as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS scan_history (
+                        scan_id TEXT PRIMARY KEY, target TEXT NOT NULL,
+                        scan_type TEXT, profile TEXT,
+                        status TEXT NOT NULL DEFAULT 'queued',
+                        started_at TEXT, completed_at TEXT,
+                        progress INTEGER DEFAULT 0,
+                        findings_count INTEGER DEFAULT 0,
+                        phase TEXT, error TEXT
+                    )
+                """)
                 conn.row_factory = _sq.Row
                 rows = conn.execute(
                     "SELECT * FROM scan_history ORDER BY started_at DESC"

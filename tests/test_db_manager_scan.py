@@ -14,15 +14,12 @@ def tmp_db(tmp_path, monkeypatch):
     dm._manager = None
 
 def run(coro):
-    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            raise RuntimeError
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop.run_until_complete(coro)
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 def test_save_scan_sqlite(tmp_db):
     import core.db_manager as dm
