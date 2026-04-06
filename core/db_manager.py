@@ -243,6 +243,8 @@ class DBManager:
         scan = {**scan, "scan_id": sid}
         if self.mode in ("distributed", "postgres"):
             await self._pg_save_scan(scan)
+        else:
+            self._sqlite_save_scan(scan)
         return sid
 
     async def _pg_save_scan(self, scan: dict) -> None:
@@ -271,6 +273,142 @@ class DBManager:
                 await conn.commit()
         except Exception as exc:
             log.warning("DBManager._pg_save_scan failed: %s", exc)
+
+    def _sqlite_save_scan(self, scan: dict) -> None:
+        import sqlite3 as _sq
+        db_path = path_manager.db_path("metadata.db")
+        sid = scan.get("scan_id") or scan.get("id")
+        if not sid:
+            return
+        try:
+            with _sq.connect(str(db_path), check_same_thread=False) as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS scan_history (
+                        scan_id TEXT PRIMARY KEY, target TEXT NOT NULL,
+                        scan_type TEXT, profile TEXT,
+                        status TEXT NOT NULL DEFAULT 'queued',
+                        started_at TEXT, completed_at TEXT,
+                        progress INTEGER DEFAULT 0,
+                        findings_count INTEGER DEFAULT 0,
+                        phase TEXT, error TEXT
+                    )
+                """)
+                conn.execute("""
+                    INSERT INTO scan_history
+                        (scan_id, target, scan_type, profile, status,
+                         started_at, completed_at, progress, findings_count, phase, error)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(scan_id) DO UPDATE SET
+                        status=excluded.status, completed_at=excluded.completed_at,
+                        progress=excluded.progress, findings_count=excluded.findings_count,
+                        phase=excluded.phase, error=excluded.error
+                """, (
+                    sid,
+                    scan.get("target", ""),
+                    scan.get("scan_type", "full"),
+                    scan.get("profile", "auto"),
+                    scan.get("status", "queued"),
+                    scan.get("started_at"),
+                    scan.get("completed_at"),
+                    scan.get("progress", 0),
+                    scan.get("findings_count", 0),
+                    scan.get("phase", ""),
+                    scan.get("error", ""),
+                ))
+                conn.commit()
+        except Exception as exc:
+            log.warning("DBManager._sqlite_save_scan failed: %s", exc)
+
+    async def delete_scan(self, scan_id: str) -> None:
+        if self.mode in ("distributed", "postgres"):
+            await self._pg_delete_scan(scan_id)
+        else:
+            self._sqlite_delete_scan(scan_id)
+
+    async def _pg_delete_scan(self, scan_id: str) -> None:
+        try:
+            async with self._pg_pool.connection() as conn:
+                await conn.execute("DELETE FROM scans WHERE scan_id = %s", (scan_id,))
+                await conn.commit()
+        except Exception as exc:
+            log.warning("DBManager._pg_delete_scan failed: %s", exc)
+
+    def _sqlite_delete_scan(self, scan_id: str) -> None:
+        import sqlite3 as _sq
+        db_path = path_manager.db_path("metadata.db")
+        try:
+            with _sq.connect(str(db_path), check_same_thread=False) as conn:
+                conn.execute("DELETE FROM scan_history WHERE scan_id=?", (scan_id,))
+                conn.commit()
+        except Exception as exc:
+            log.warning("DBManager._sqlite_delete_scan failed: %s", exc)
+
+    async def load_scans(self) -> list:
+        if self.mode in ("distributed", "postgres"):
+            return await self._pg_load_scans()
+        return self._sqlite_load_scans()
+
+    async def _pg_load_scans(self) -> list:
+        try:
+            async with self._pg_pool.connection() as conn:
+                rows = await conn.execute(
+                    "SELECT scan_id, target, scan_type, status, data, "
+                    "       started_at, completed_at "
+                    "FROM scans ORDER BY started_at DESC NULLS LAST"
+                )
+                results = []
+                async for row in rows:
+                    d = {
+                        "scan_id": row[0], "id": row[0],
+                        "target": row[1], "scan_type": row[2],
+                        "status": row[3],
+                        "started_at": str(row[5]) if row[5] else None,
+                        "completed_at": str(row[6]) if row[6] else None,
+                        "log_lines": [], "pid": None,
+                        "progress": 0, "findings_count": 0, "phase": "",
+                    }
+                    extra = row[4] or {}
+                    if isinstance(extra, str):
+                        import json as _j; extra = _j.loads(extra)
+                    d.update(extra)
+                    if d.get("status") == "running":
+                        d["status"] = "failed"
+                        d["error"] = d.get("error") or "Process interrupted (server restart)"
+                    results.append(d)
+                return results
+        except Exception as exc:
+            log.warning("DBManager._pg_load_scans failed: %s", exc)
+            return []
+
+    def _sqlite_load_scans(self) -> list:
+        import sqlite3 as _sq
+        db_path = path_manager.db_path("metadata.db")
+        try:
+            with _sq.connect(str(db_path), check_same_thread=False) as conn:
+                conn.row_factory = _sq.Row
+                rows = conn.execute(
+                    "SELECT * FROM scan_history ORDER BY started_at DESC"
+                ).fetchall()
+                scans = []
+                for row in rows:
+                    d = dict(row)
+                    d["id"] = d["scan_id"]
+                    d["log_lines"] = []
+                    d["pid"] = None
+                    if d.get("status") == "running":
+                        d["status"] = "failed"
+                        d["error"] = d.get("error") or "Process interrupted (server restart)"
+                    scans.append(d)
+                return scans
+        except Exception as exc:
+            log.warning("DBManager._sqlite_load_scans failed: %s", exc)
+            return []
+
+    def sync_delete_scan(self, scan_id: str) -> None:
+        self._run_sync(self.delete_scan(scan_id))
+
+    def sync_load_scans(self) -> list:
+        return self._run_sync(self.load_scans())
 
     # ── Events ────────────────────────────────────────────────────────────────
 
