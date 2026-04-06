@@ -461,15 +461,14 @@ class ResultIngestionEngine:
                 return True
             except Exception as exc:
                 log.warning("DBManager save failed, falling back to SQLite: %s", exc)
-        # SQLite fallback (existing logic continues below)
+        # SQLite fallback — route through DBManager abstraction
         last_exc: Optional[Exception] = None
         for attempt in range(3):
             try:
                 with self._lock:
                     with sqlite3.connect(str(self._db_path), timeout=30) as conn:
                         conn.execute("PRAGMA journal_mode=WAL;")
-                        conn.execute("PRAGMA synchronous=FULL;")
-                        # Duplicate check inside the lock — prevents TOCTOU race
+                        # Dedup check only — no INSERT here
                         row = conn.execute(
                             "SELECT 1 FROM findings "
                             "WHERE (scan_id=? AND vuln_type=? AND url=?) "
@@ -480,6 +479,18 @@ class ResultIngestionEngine:
                         ).fetchone()
                         if row is not None:
                             return False
+                # Delegate INSERT to DBManager to maintain single write path
+                mgr = _get_db_manager_sync()
+                if mgr is not None:
+                    mgr._sqlite_save_finding(finding.to_dict())
+                    return True
+                # Last-resort direct write only if DBManager itself is unavailable
+                log.warning(
+                    "FALLBACK TRIGGERED: DBManager unavailable — writing finding directly to SQLite"
+                )
+                with self._lock:
+                    with sqlite3.connect(str(self._db_path), timeout=30) as conn:
+                        conn.execute("PRAGMA synchronous=FULL;")
                         conn.execute(
                             "INSERT OR REPLACE INTO findings "
                             "(finding_id, scan_id, target, title, severity, vuln_type, "
@@ -487,22 +498,11 @@ class ResultIngestionEngine:
                             " source_type, created_at, raw_json) "
                             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             (
-                                finding.finding_id,
-                                finding.scan_id,
-                                finding.target,
-                                finding.title,
-                                finding.severity,
-                                finding.vuln_type,
-                                finding.evidence,
-                                finding.payload,
-                                finding.url,
-                                finding.tool,
-                                finding.confidence,
-                                finding.cvss,
-                                finding.status,
-                                finding.source_type,
-                                finding.created_at,
-                                finding.safe_raw_json(),
+                                finding.finding_id, finding.scan_id, finding.target,
+                                finding.title, finding.severity, finding.vuln_type,
+                                finding.evidence, finding.payload, finding.url, finding.tool,
+                                finding.confidence, finding.cvss, finding.status,
+                                finding.source_type, finding.created_at, finding.safe_raw_json(),
                             ),
                         )
                         conn.commit()
@@ -510,7 +510,7 @@ class ResultIngestionEngine:
             except sqlite3.OperationalError as exc:
                 last_exc = exc
                 if "locked" in str(exc).lower() and attempt < 2:
-                    time.sleep(0.2 * (2 ** attempt))
+                    import time as _t; _t.sleep(0.2 * (2 ** attempt))
                     continue
                 raise
             except Exception as exc:

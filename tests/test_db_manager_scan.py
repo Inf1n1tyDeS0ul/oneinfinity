@@ -58,3 +58,45 @@ def test_load_scans_marks_interrupted_running(tmp_db):
     loaded = next(s for s in scans if s["scan_id"] == "int-001")
     assert loaded["status"] == "failed"
     assert "interrupted" in (loaded.get("error") or "").lower()
+
+def test_findings_check_and_store_uses_dbmanager_sqlite(tmp_db, monkeypatch):
+    """_check_and_store must call DBManager._sqlite_save_finding, not raw sqlite3 INSERT."""
+    import core.db_manager as dm
+    dm._manager = None
+
+    calls = []
+    original_sqlite_save = dm.DBManager._sqlite_save_finding
+
+    def spy(self, finding):
+        calls.append(finding.get("finding_id") or finding.get("id"))
+        original_sqlite_save(self, finding)
+
+    monkeypatch.setattr(dm.DBManager, "_sqlite_save_finding", spy)
+
+    import sys
+    sys.path.insert(0, "/home/devendra-yadav/oneinfinity")
+    import result_ingestion_engine as rie
+
+    # Reset singleton so it picks up our monkeypatched DBManager
+    rie._ingestion_engine = None
+
+    engine = rie.get_ingestion_engine()
+    # Force SQLite mode so DBManager won't try Postgres
+    engine_mgr = dm.get_db_manager_sync()
+    assert engine_mgr.mode == "sqlite"
+
+    raw = rie.RawResult(
+        scan_id="scan-spy-001",
+        source="test",
+        raw={
+            "type": "xss",
+            "url": "http://target.test/vuln",
+            "title": "Reflected XSS",
+            "severity": "high",
+            "target": "target.test",
+        },
+    )
+    engine.ingest(raw)
+    assert len(calls) >= 1, f"_sqlite_save_finding was not called. Direct sqlite3 bypass is still in use."
+    dm._manager = None
+    rie._ingestion_engine = None
