@@ -241,10 +241,11 @@ class AgentSwarmCoordinator:
         _local_findings: list = getattr(state, "findings", [])
         _local_queue = getattr(state, "event_queue", asyncio.Queue())
         state_dict: Dict[str, Any] = {
-            "session_id":   state.session_id,
-            "findings":     _local_findings,
-            "event_queue":  _local_queue,
-            "claimed_tasks": getattr(state, "claimed_tasks", getattr(state, "_mem_claimed", {})),
+            "session_id":    state.session_id,
+            "findings":      _local_findings,
+            "event_queue":   _local_queue,
+            "claimed_tasks": getattr(state, "_mem_claimed", {}),
+            "_swarm_state":  state,   # retained so listeners can call state.claim_task()
         }
 
         logger.info("[Coordinator] Starting swarm session %s for %s", state.session_id, target)
@@ -443,8 +444,12 @@ class AgentSwarmCoordinator:
                 continue
             processed.add(finding.finding_id)
 
-            # Competition: mark task as claimed by the finder
-            _claimed_tasks[finding.target] = finding.agent_id
+            # Competition: mark task as claimed by the finder (via state for Redis persistence)
+            _swarm_state = state_dict.get("_swarm_state")
+            if _swarm_state is not None:
+                _swarm_state.claim_task(finding.target, finding.agent_id)
+            else:
+                _claimed_tasks[finding.target] = finding.agent_id
 
             # Collaboration: trigger partner agents
             for vuln_prefix, target_agent_type, boost in self.COLLABORATION_RULES:
