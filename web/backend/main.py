@@ -90,7 +90,9 @@ async def _lifespan(application):
         log.warning("Could not load persisted findings: %s", exc)
     # Load persisted scan history
     try:
-        for s in _scan_db.load_all():
+        from core.db_manager import get_db_manager as _get_dbm
+        _startup_mgr = await _get_dbm()
+        for s in await _startup_mgr.load_scans():
             SCANS[s["scan_id"]] = s
         log.info("Loaded %d persisted scans into memory", len(SCANS))
     except Exception as exc:
@@ -135,7 +137,7 @@ async def _lifespan(application):
                     "error": "",
                 }
                 SCANS[sid] = entry
-                _scan_db.upsert(entry)
+                await _startup_mgr.save_scan(entry)
             except Exception:
                 pass
         gm_count = sum(1 for s in SCANS.values() if s.get("scan_type") == "god_mode")
@@ -257,102 +259,6 @@ class TargetDB:
 
 
 _target_db = TargetDB(_db_path("metadata.db"))
-
-# ── SQLite-backed scan history ────────────────────────────────────────────────
-
-class ScanDB:
-    """Persists scan metadata to SQLite so history survives restarts."""
-
-    _COLS = ("scan_id", "target", "scan_type", "profile", "status",
-             "started_at", "completed_at", "progress", "findings_count", "phase", "error")
-
-    def __init__(self, db_path: Path):
-        self._db = db_path
-        with _db_connect(self._db) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS scan_history (
-                    scan_id      TEXT PRIMARY KEY,
-                    target       TEXT NOT NULL,
-                    scan_type    TEXT,
-                    profile      TEXT,
-                    status       TEXT NOT NULL DEFAULT 'queued',
-                    started_at   TEXT,
-                    completed_at TEXT,
-                    progress     INTEGER DEFAULT 0,
-                    findings_count INTEGER DEFAULT 0,
-                    phase        TEXT,
-                    error        TEXT
-                )
-            """)
-
-    def upsert(self, scan: dict) -> None:
-        sid = scan.get("id") or scan.get("scan_id")
-        if not sid:
-            return
-        try:
-            with _db_connect(self._db) as conn:
-                conn.execute("""
-                    INSERT INTO scan_history
-                        (scan_id, target, scan_type, profile, status,
-                         started_at, completed_at, progress, findings_count, phase, error)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
-                    ON CONFLICT(scan_id) DO UPDATE SET
-                        status         = excluded.status,
-                        completed_at   = excluded.completed_at,
-                        progress       = excluded.progress,
-                        findings_count = excluded.findings_count,
-                        phase          = excluded.phase,
-                        error          = excluded.error
-                """, (
-                    sid,
-                    scan.get("target", ""),
-                    scan.get("scan_type", "full"),
-                    scan.get("profile", "auto"),
-                    scan.get("status", "queued"),
-                    scan.get("started_at"),
-                    scan.get("completed_at"),
-                    scan.get("progress", 0),
-                    scan.get("findings_count", 0),
-                    scan.get("phase", ""),
-                    scan.get("error", ""),
-                ))
-        except Exception as exc:
-            log.warning("ScanDB.upsert error: %s", exc)
-
-    def delete(self, scan_id: str) -> None:
-        try:
-            with _db_connect(self._db) as conn:
-                conn.execute("DELETE FROM scan_history WHERE scan_id=?", (scan_id,))
-        except Exception as exc:
-            log.warning("ScanDB.delete error: %s", exc)
-
-    def load_all(self) -> List[dict]:
-        try:
-            import sqlite3
-            with _db_connect(self._db) as conn:
-                conn.row_factory = sqlite3.Row
-                rows = conn.execute(
-                    "SELECT * FROM scan_history ORDER BY started_at DESC"
-                ).fetchall()
-                scans = []
-                for row in rows:
-                    d = dict(row)
-                    d["id"] = d["scan_id"]
-                    # Mark interrupted running scans as failed
-                    if d.get("status") == "running":
-                        d["status"] = "failed"
-                        d["error"] = d.get("error") or "Process interrupted (server restart)"
-                    # Transient fields not stored in DB
-                    d["log_lines"] = []
-                    d["pid"] = None
-                    scans.append(d)
-                return scans
-        except Exception as exc:
-            log.warning("ScanDB.load_all error: %s", exc)
-            return []
-
-
-_scan_db = ScanDB(_db_path("metadata.db"))
 
 # ── Wire ResultIngestionEngine broadcast ─────────────────────────────────────
 
@@ -728,7 +634,7 @@ async def create_target(body: Dict[str, Any], background_tasks: BackgroundTasks)
         "_cancel_event": _threading.Event(),
     }
     SCANS[scan_id] = _auto_scan
-    _scan_db.upsert(_auto_scan)
+    await (await get_mgr()).save_scan(_auto_scan)
     background_tasks.add_task(_run_scan_via_engine, scan_id, domain, "full")
     _add_log(f"Auto-scan queued for new target: {domain}", "info", "scanner", scan_id)
     return {**t, "scan_id": scan_id}
@@ -784,7 +690,7 @@ async def launch_scan(req: ScanRequest, background_tasks: BackgroundTasks):
         "_cancel_event": _cancel_ev,
     }
     SCANS[scan_id] = scan
-    _scan_db.upsert(scan)
+    await (await get_mgr()).save_scan(scan)
     _add_log(f"Scan queued: {req.scan_type} on {req.target}", "info", "scanner", scan_id)
     _auth_config = {
         "session_cookie": req.session_cookie or "",
@@ -824,7 +730,7 @@ async def stop_scan(scan_id: str):
 
     scan["status"] = "stopped"
     scan["completed_at"] = datetime.utcnow().isoformat()
-    _scan_db.upsert(scan)
+    await (await get_mgr()).save_scan(scan)
     _add_log(f"Scan stopped: {scan_id}", "warn", "scanner", scan_id)
     return _scan_response(scan)
 
@@ -843,7 +749,7 @@ async def delete_scan(scan_id: str):
             except Exception:
                 pass
     SCANS.delete(scan_id)
-    _scan_db.delete(scan_id)
+    await (await get_mgr()).delete_scan(scan_id)
 
     # Remove findings from in-memory VULNERABILITIES dict
     to_remove = [fid for fid, v in VULNERABILITIES.items() if v.get("scan_id") == scan_id]
@@ -1388,7 +1294,7 @@ async def _run_scan_via_engine(scan_id: str, target: str, scan_type: str, auth_c
             scan["progress"] = 100
             scan["completed_at"] = datetime.utcnow().isoformat()
             scan["findings_count"] = len(result.findings)
-            _scan_db.upsert(scan)
+            await (await get_mgr()).save_scan(scan)
 
             for f in result.findings:
                 api_f = _finding_to_api(f)
@@ -1432,7 +1338,7 @@ async def _run_scan_via_engine(scan_id: str, target: str, scan_type: str, auth_c
     except Exception as fallback_exc:
         scan["status"] = "failed"
         scan["completed_at"] = datetime.utcnow().isoformat()
-        _scan_db.upsert(scan)
+        await (await get_mgr()).save_scan(scan)
         _add_log(f"Fallback scan failed: {fallback_exc}", "error", "scanner", scan_id)
 
 
@@ -1484,13 +1390,13 @@ async def _run_scan(scan_id: str, req: ScanRequest):
         scan["status"] = "completed" if proc.returncode == 0 else "failed"
         scan["progress"] = 100
         scan["completed_at"] = datetime.utcnow().isoformat()
-        _scan_db.upsert(scan)
+        await (await get_mgr()).save_scan(scan)
         _add_log(f"Scan completed: {req.scan_type} on {req.target} (exit {proc.returncode})",
                  "success" if proc.returncode == 0 else "error", "scanner", scan_id)
     except Exception as exc:
         scan["status"] = "failed"
         scan["completed_at"] = datetime.utcnow().isoformat()
-        _scan_db.upsert(scan)
+        await (await get_mgr()).save_scan(scan)
         _add_log(f"Scan error: {exc}", "error", "scanner", scan_id)
 
 async def _run_ai_campaign(campaign_id: str):
@@ -2454,7 +2360,7 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
         "_cancel_event": _threading.Event(),
     }
     SCANS[gm_scan_id] = _gm_scan_entry
-    _scan_db.upsert(_gm_scan_entry)
+    await (await get_mgr()).save_scan(_gm_scan_entry)
 
     def _run():
         try:
@@ -2492,7 +2398,8 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
                 SCANS[gm_scan_id]["findings_count"] = state.get("finding_count", 0)
                 SCANS[gm_scan_id]["completed_at"] = datetime.utcnow().isoformat()
                 SCANS[gm_scan_id]["progress"] = 100
-                _scan_db.upsert(SCANS[gm_scan_id])
+                from core.db_manager import get_db_manager_sync as _get_dbm_sync
+                _get_dbm_sync().sync_save_scan(SCANS[gm_scan_id])
             # Sync findings from in-memory SCANS dict to the ingestion engine
             # so that report generation (which reads from ingestion engine) sees them
             try:
@@ -2514,7 +2421,8 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
             if gm_scan_id in SCANS:
                 SCANS[gm_scan_id]["status"] = "failed"
                 SCANS[gm_scan_id]["completed_at"] = datetime.utcnow().isoformat()
-                _scan_db.upsert(SCANS[gm_scan_id])
+                from core.db_manager import get_db_manager_sync as _get_dbm_sync
+                _get_dbm_sync().sync_save_scan(SCANS[gm_scan_id])
 
     background_tasks.add_task(_run)
     return {"status": "started", "target": target, "scan_id": gm_scan_id,
@@ -2600,7 +2508,7 @@ async def god_mode_sync_scan(scan_id: str):
             "completed_at": completed_at,
             "progress": 100 if terminated_by else SCANS[scan_id].get("progress", 0),
         })
-        _scan_db.upsert(SCANS[scan_id])
+        await (await get_mgr()).save_scan(SCANS[scan_id])
     else:
         entry = {
             "id": scan_id, "scan_id": scan_id,
@@ -2615,7 +2523,7 @@ async def god_mode_sync_scan(scan_id: str):
             "phase": phase, "error": "",
         }
         SCANS[scan_id] = entry
-        _scan_db.upsert(entry)
+        await (await get_mgr()).save_scan(entry)
     return {"synced": True, "scan_id": scan_id, "status": status,
             "findings_count": state.get("finding_count", 0)}
 
@@ -3182,7 +3090,7 @@ async def cache_sweep():
     for scan in list(SCANS.get_all_in_memory()):
         if scan.get("status") in ("completed", "error", "stopped"):
             try:
-                _scan_db.upsert(scan)
+                await (await get_mgr()).save_scan(scan)
                 SCANS.delete(scan["id"])
                 evicted += 1
             except Exception:
@@ -3197,7 +3105,7 @@ async def cache_clear():
     vulns_cleared = len(VULNERABILITIES)
     for scan in SCANS.get_all_in_memory():
         try:
-            _scan_db.upsert(scan)
+            await (await get_mgr()).save_scan(scan)
         except Exception:
             pass
     SCANS = BoundedScanCache(cap=500)
