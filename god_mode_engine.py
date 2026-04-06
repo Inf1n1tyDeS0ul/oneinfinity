@@ -123,7 +123,7 @@ class GodModeStateFile:
             mgr.sync_save_scan(scan_dict)
             return True
         except Exception as exc:
-            log.debug("_persist_to_db failed: %s", exc)
+            log.debug("_persist_to_db failed: %s", exc, exc_info=True)
             return False
 
     def _write_json(self, session: GodModeSession) -> None:

@@ -524,6 +524,10 @@ class DBManager:
         """Run a coroutine synchronously, creating a new event loop if needed."""
         try:
             loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    return ex.submit(asyncio.run, coro).result()
             if loop.is_closed():
                 raise RuntimeError("loop is closed")
         except RuntimeError:

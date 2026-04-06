@@ -19,8 +19,6 @@ def test_redis_listener_retries_on_disconnect(monkeypatch):
     import sys
     sys.path.insert(0, "/home/devendra-yadav/oneinfinity")
     import event_bus as eb
-    monkeypatch.setattr(eb, "_redis_get_for_listener", fake_get_redis, raising=False)
-
     from event_bus import EventBus
     import queue
     bus = EventBus.__new__(EventBus)

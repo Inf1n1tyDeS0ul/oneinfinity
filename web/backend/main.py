@@ -2355,8 +2355,8 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
         "started_at": datetime.utcnow().isoformat(),
         "completed_at": None, "progress": 0, "findings_count": 0,
         "log_lines": [], "pid": None, "phase": "starting",
-        "modules": modules,       # in-memory only — not persisted to ScanDB
-        "intensities": intensities,  # in-memory only — not persisted to ScanDB
+        "modules": modules,       # in-memory only — not persisted to DBManager
+        "intensities": intensities,  # in-memory only — not persisted to DBManager
         "_cancel_event": _threading.Event(),
     }
     SCANS[gm_scan_id] = _gm_scan_entry
