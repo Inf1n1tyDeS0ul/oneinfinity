@@ -944,6 +944,382 @@ class DBManager:
             log.warning("DBManager.get_cross_target_patterns failed: %s", exc)
             return []
 
+    # ── Learning ──────────────────────────────────────────────────────────────
+
+    async def save_learning_session(self, data: dict) -> None:
+        """Upsert a learning scan session.
+
+        ON CONFLICT updates only the finish fields (finished_at, total_findings,
+        tools_used, notes) — target, started_at, and phases are preserved from
+        the original INSERT (start_session call).
+        """
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("save_learning_session requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO learning_scan_sessions
+                        (session_id, target, started_at, finished_at, phases,
+                         total_findings, tools_used, notes)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (session_id) DO UPDATE SET
+                        finished_at    = EXCLUDED.finished_at,
+                        total_findings = EXCLUDED.total_findings,
+                        tools_used     = EXCLUDED.tools_used,
+                        notes          = EXCLUDED.notes
+                    """,
+                    (
+                        data["session_id"],
+                        data.get("target", ""),
+                        data.get("started_at", 0.0),
+                        data.get("finished_at"),
+                        data.get("phases", []),
+                        data.get("total_findings", 0),
+                        data.get("tools_used", []),
+                        data.get("notes", ""),
+                    ),
+                )
+                await conn.commit()
+        except Exception as exc:
+            log.warning("DBManager.save_learning_session failed: %s", exc)
+            raise
+
+    async def get_learning_session(self, session_id: str) -> Optional[dict]:
+        """Return one learning session row as a dict, or None."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("get_learning_session requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                rows = await conn.execute(
+                    "SELECT * FROM learning_scan_sessions WHERE session_id = %s",
+                    (session_id,),
+                )
+                async for row in rows:
+                    return dict(row)
+            return None
+        except Exception as exc:
+            log.warning("DBManager.get_learning_session failed: %s", exc)
+            return None
+
+    async def list_learning_sessions(self, limit: int = 10) -> list:
+        """Return the most recent learning sessions, newest first."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("list_learning_sessions requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                rows = await conn.execute(
+                    "SELECT * FROM learning_scan_sessions ORDER BY started_at DESC LIMIT %s",
+                    (limit,),
+                )
+                result = []
+                async for row in rows:
+                    result.append(dict(row))
+                return result
+        except Exception as exc:
+            log.warning("DBManager.list_learning_sessions failed: %s", exc)
+            return []
+
+    async def save_learning_finding(self, data: dict) -> None:
+        """Insert one learning finding row (every finding is a new row)."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("save_learning_finding requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO learning_findings
+                        (session_id, target, vuln_type, severity, cvss_score,
+                         endpoint, parameter, source_tool, confirmed, chain_id,
+                         discovered_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        data["session_id"],
+                        data.get("target", ""),
+                        data.get("vuln_type", "unknown"),
+                        data.get("severity", "info"),
+                        data.get("cvss_score"),
+                        data.get("endpoint", ""),
+                        data.get("parameter", ""),
+                        data.get("source_tool", ""),
+                        data.get("confirmed", 1),
+                        data.get("chain_id", ""),
+                        data.get("discovered_at", 0.0),
+                    ),
+                )
+                await conn.commit()
+        except Exception as exc:
+            log.warning("DBManager.save_learning_finding failed: %s", exc)
+            raise
+
+    async def record_tool_run(self, data: dict) -> None:
+        """Atomically upsert tool performance stats with weighted average duration.
+
+        ON CONFLICT uses the old runs_total (before +1) for the EMA calculation,
+        which is correct because PostgreSQL evaluates the table reference in
+        DO UPDATE SET before applying the increment.
+        """
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("record_tool_run requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO tool_performance
+                        (tool_name, vuln_type, target_type, runs_total, runs_success,
+                         findings_total, avg_duration_s, last_updated)
+                    VALUES (%s, %s, %s, 1, %s, %s, %s, %s)
+                    ON CONFLICT (tool_name, vuln_type, target_type) DO UPDATE SET
+                        runs_total     = tool_performance.runs_total + 1,
+                        runs_success   = tool_performance.runs_success + EXCLUDED.runs_success,
+                        findings_total = tool_performance.findings_total + EXCLUDED.findings_total,
+                        avg_duration_s = CASE
+                            WHEN EXCLUDED.avg_duration_s > 0
+                            THEN (tool_performance.avg_duration_s * tool_performance.runs_total
+                                  + EXCLUDED.avg_duration_s)
+                                 / (tool_performance.runs_total + 1)
+                            ELSE tool_performance.avg_duration_s
+                        END,
+                        last_updated = EXCLUDED.last_updated
+                    """,
+                    (
+                        data["tool_name"],
+                        data.get("vuln_type", ""),
+                        data.get("target_type", ""),
+                        data.get("runs_success", 0),
+                        data.get("findings_total", 0),
+                        data.get("avg_duration_s", 0.0),
+                        data.get("last_updated"),
+                    ),
+                )
+                await conn.commit()
+        except Exception as exc:
+            log.warning("DBManager.record_tool_run failed: %s", exc)
+            raise
+
+    async def get_best_tool_for_vuln(
+        self, vuln_type: str, top_n: int = 3
+    ) -> list:
+        """Return top tools for a vuln_type ordered by findings/run ratio."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("get_best_tool_for_vuln requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                rows = await conn.execute(
+                    """
+                    SELECT tool_name, runs_total, runs_success, findings_total, avg_duration_s
+                    FROM tool_performance
+                    WHERE vuln_type = %s AND runs_total > 0
+                    ORDER BY CAST(findings_total AS FLOAT) / NULLIF(runs_total, 0) DESC
+                    LIMIT %s
+                    """,
+                    (vuln_type, top_n),
+                )
+                result = []
+                async for row in rows:
+                    result.append({
+                        "tool_name":      row[0],
+                        "runs_total":     row[1],
+                        "runs_success":   row[2],
+                        "findings_total": row[3],
+                        "avg_duration_s": row[4],
+                    })
+                return result
+        except Exception as exc:
+            log.warning("DBManager.get_best_tool_for_vuln failed: %s", exc)
+            return []
+
+    async def upsert_target_profile(self, data: dict) -> None:
+        """Upsert a target profile, atomically incrementing scan_count."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("upsert_target_profile requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO target_profiles
+                        (domain, tech_stack, waf_detected, scope_notes,
+                         historical_vulns, last_scanned, scan_count)
+                    VALUES (%s, %s, %s, %s, %s, %s, 1)
+                    ON CONFLICT (domain) DO UPDATE SET
+                        tech_stack       = EXCLUDED.tech_stack,
+                        waf_detected     = EXCLUDED.waf_detected,
+                        scope_notes      = EXCLUDED.scope_notes,
+                        last_scanned     = EXCLUDED.last_scanned,
+                        scan_count       = target_profiles.scan_count + 1
+                    """,
+                    (
+                        data["domain"],
+                        data.get("tech_stack", []),
+                        data.get("waf_detected", ""),
+                        data.get("scope_notes", ""),
+                        data.get("historical_vulns", {}),
+                        data.get("last_scanned"),
+                    ),
+                )
+                await conn.commit()
+        except Exception as exc:
+            log.warning("DBManager.upsert_target_profile failed: %s", exc)
+            raise
+
+    async def get_target_profile(self, domain: str) -> Optional[dict]:
+        """Return one target profile row as a dict, or None."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("get_target_profile requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                rows = await conn.execute(
+                    "SELECT * FROM target_profiles WHERE domain = %s",
+                    (domain,),
+                )
+                async for row in rows:
+                    return dict(row)
+            return None
+        except Exception as exc:
+            log.warning("DBManager.get_target_profile failed: %s", exc)
+            return None
+
+    async def upsert_pattern(self, data: dict) -> None:
+        """Upsert a vulnerability pattern, atomically incrementing occurrence_count
+        and updating the weighted average CVSS score."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("upsert_pattern requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO pattern_library
+                        (tech_stack_key, vuln_type, occurrence_count, avg_cvss,
+                         best_tool, last_seen)
+                    VALUES (%s, %s, 1, %s, %s, %s)
+                    ON CONFLICT (tech_stack_key, vuln_type) DO UPDATE SET
+                        occurrence_count = pattern_library.occurrence_count + 1,
+                        avg_cvss = (
+                            pattern_library.avg_cvss * pattern_library.occurrence_count
+                            + EXCLUDED.avg_cvss
+                        ) / (pattern_library.occurrence_count + 1),
+                        best_tool = EXCLUDED.best_tool,
+                        last_seen = EXCLUDED.last_seen
+                    """,
+                    (
+                        data["tech_stack_key"],
+                        data["vuln_type"],
+                        data.get("avg_cvss", 0.0),
+                        data.get("best_tool", ""),
+                        data.get("last_seen"),
+                    ),
+                )
+                await conn.commit()
+        except Exception as exc:
+            log.warning("DBManager.upsert_pattern failed: %s", exc)
+            raise
+
+    async def get_patterns_for_tech_stack(self, tech_stack_key: str) -> list:
+        """Return patterns for a tech_stack_key, highest frequency first."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("get_patterns_for_tech_stack requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                rows = await conn.execute(
+                    "SELECT * FROM pattern_library WHERE tech_stack_key = %s "
+                    "ORDER BY occurrence_count DESC LIMIT 20",
+                    (tech_stack_key,),
+                )
+                result = []
+                async for row in rows:
+                    result.append(dict(row))
+                return result
+        except Exception as exc:
+            log.warning("DBManager.get_patterns_for_tech_stack failed: %s", exc)
+            return []
+
+    async def get_learning_stats(self) -> dict:
+        """Return aggregated learning statistics (sessions, findings, targets, top vulns/tools)."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("get_learning_stats requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                cur = await conn.execute(
+                    "SELECT COUNT(*) FROM learning_scan_sessions"
+                )
+                sessions = 0
+                async for row in cur:
+                    sessions = row[0]
+
+                cur = await conn.execute(
+                    "SELECT COUNT(*) FROM learning_findings WHERE confirmed = 1"
+                )
+                findings = 0
+                async for row in cur:
+                    findings = row[0]
+
+                cur = await conn.execute(
+                    "SELECT COUNT(DISTINCT domain) FROM target_profiles"
+                )
+                targets = 0
+                async for row in cur:
+                    targets = row[0]
+
+                cur = await conn.execute(
+                    "SELECT vuln_type, COUNT(*) AS cnt FROM learning_findings "
+                    "WHERE confirmed = 1 "
+                    "GROUP BY vuln_type ORDER BY cnt DESC LIMIT 5"
+                )
+                top_vulns = []
+                async for row in cur:
+                    top_vulns.append({"vuln_type": row[0], "count": row[1]})
+
+                cur = await conn.execute(
+                    "SELECT tool_name, SUM(findings_total) AS total FROM tool_performance "
+                    "GROUP BY tool_name ORDER BY total DESC LIMIT 5"
+                )
+                top_tools = []
+                async for row in cur:
+                    top_tools.append({"tool": row[0], "findings": row[1]})
+
+            return {
+                "sessions":           sessions,
+                "confirmed_findings": findings,
+                "unique_targets":     targets,
+                "top_vuln_types":     top_vulns,
+                "top_tools":          top_tools,
+            }
+        except Exception as exc:
+            log.warning("DBManager.get_learning_stats failed: %s", exc)
+            return {
+                "sessions": 0, "confirmed_findings": 0, "unique_targets": 0,
+                "top_vuln_types": [], "top_tools": [],
+            }
+
+    async def list_tool_performance(self) -> list:
+        """Return all tool_performance rows with computed EMA (success rate)."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("list_tool_performance requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                rows = await conn.execute(
+                    "SELECT tool_name, vuln_type, "
+                    "CASE WHEN runs_total > 0 "
+                    "     THEN runs_success::float / runs_total "
+                    "     ELSE 0.0 END AS ema, "
+                    "runs_total, findings_total "
+                    "FROM tool_performance ORDER BY findings_total DESC"
+                )
+                result = []
+                async for row in rows:
+                    result.append({
+                        "tool_name":      row[0],
+                        "vuln_type":      row[1],
+                        "ema":            row[2],
+                        "runs_total":     row[3],
+                        "findings_total": row[4],
+                    })
+                return result
+        except Exception as exc:
+            log.warning("DBManager.list_tool_performance failed: %s", exc)
+            return []
+
     # ── Sync wrappers for CLI ─────────────────────────────────────────────────
 
     @staticmethod
