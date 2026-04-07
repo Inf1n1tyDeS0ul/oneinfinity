@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import {
   ShieldAlert, History, Search, ChevronDown, ChevronUp,
   CheckCircle2, XCircle, StopCircle, RefreshCw, Trash2, X
@@ -28,10 +28,22 @@ function FindingsTab({ scanFilter, onClearFilter }) {
   const [statusFilter, setStatusFilter] = useState('')
   const [search, setSearch] = useState('')
   const [expanded, setExpanded] = useState(null)
+  const [scanFindings, setScanFindings] = useState(null) // null = not loaded, [] = loaded
+  const [loadingFindings, setLoadingFindings] = useState(false)
 
-  // When a scan filter is active, scope to that scan first
+  // When a scan filter is set, fetch findings directly from the per-scan endpoint
+  useEffect(() => {
+    if (!scanFilter) { setScanFindings(null); return }
+    setLoadingFindings(true)
+    endpoints.getScanFindings(scanFilter.id)
+      .then(r => setScanFindings(r.data))
+      .catch(() => setScanFindings([]))
+      .finally(() => setLoadingFindings(false))
+  }, [scanFilter?.id])
+
+  // When filtered: use fetched per-scan findings; otherwise use global store
   const scoped = scanFilter
-    ? vulnerabilities.filter(v => v.scan_id === scanFilter.id)
+    ? (scanFindings ?? [])
     : vulnerabilities
 
   const filtered = scoped.filter(v => {
@@ -78,6 +90,7 @@ function FindingsTab({ scanFilter, onClearFilter }) {
           <span className="text-slate-300">
             Findings for <span className="text-slate-100 font-medium">{scanFilter.target}</span>
             <span className="text-slate-500 ml-1">({scanFilter.id})</span>
+            {loadingFindings && <span className="text-slate-500 ml-2">Loading…</span>}
           </span>
           <button
             className="ml-auto flex items-center gap-1 text-slate-400 hover:text-slate-200 transition-colors"

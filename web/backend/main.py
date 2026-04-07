@@ -670,6 +670,45 @@ async def get_scan(scan_id: str):
         raise HTTPException(404, "Scan not found")
     return _scan_response(SCANS[scan_id])
 
+@app.get("/api/scans/{scan_id}/findings")
+async def get_scan_findings(scan_id: str):
+    """Return findings for a specific scan, reading from per-scan JSON files."""
+    import glob as _glob
+    scan_dir = Path.home() / ".oneinfinity" / scan_id / "full_scan"
+    if not scan_dir.exists():
+        # Fallback: query ingestion engine
+        try:
+            from result_ingestion_engine import get_ingestion_engine
+            raw = get_ingestion_engine().get_findings(scan_id=scan_id)
+            vulns = [_finding_to_api(f) for f in raw]
+        except Exception:
+            vulns = [v for v in VULNERABILITIES.values() if v.get("scan_id") == scan_id]
+        return sorted(vulns, key=lambda v: {"critical":0,"high":1,"medium":2,"low":3,"info":4}.get(v.get("severity","info"),5))
+
+    # Read all *_findings.json files from the per-scan directory
+    seen_ids: set = set()
+    vulns: list = []
+    for fpath in sorted(scan_dir.glob("*findings*.json")):
+        try:
+            data = json.loads(fpath.read_text())
+            items = data if isinstance(data, list) else data.get("findings", [])
+            for raw in items:
+                if not isinstance(raw, dict):
+                    continue
+                raw.setdefault("scan_id", scan_id)
+                raw.setdefault("target", raw.get("url", raw.get("endpoint", "")))
+                raw.setdefault("title", raw.get("vulnerability", raw.get("vuln_type", raw.get("type", "Finding"))))
+                fid = raw.get("finding_id") or raw.get("id") or f"{fpath.stem}-{len(vulns)}"
+                if fid in seen_ids:
+                    continue
+                seen_ids.add(fid)
+                v = _finding_to_api(raw)
+                v["id"] = fid
+                vulns.append(v)
+        except Exception:
+            continue
+    return sorted(vulns, key=lambda v: {"critical":0,"high":1,"medium":2,"low":3,"info":4}.get(v.get("severity","info"),5))
+
 @app.post("/api/scans", dependencies=[Depends(_require_auth)])
 async def launch_scan(req: ScanRequest, background_tasks: BackgroundTasks):
     import threading as _threading
