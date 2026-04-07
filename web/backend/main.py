@@ -67,6 +67,7 @@ sys.path.insert(0, str(ROOT))
 
 from path_manager import raw_dir, db_path as _db_path
 from core.scan_state import BoundedScanCache
+from core.target_repository import TargetRepository, get_target_repo
 
 log = logging.getLogger("oneinfinity.api")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -79,6 +80,14 @@ _event_loop: Optional[asyncio.AbstractEventLoop] = None
 async def _lifespan(application):
     global _event_loop
     _event_loop = asyncio.get_running_loop()
+    # Fail fast if PostgreSQL is not available
+    from core.db_manager import get_db_manager as _get_dbm_check
+    _startup_check = await _get_dbm_check()
+    if _startup_check.mode not in ("distributed", "postgres"):
+        raise RuntimeError(
+            f"OneInfinity requires PostgreSQL (got mode={_startup_check.mode!r}). "
+            "Set DISTRIBUTED_MODE=true and configure DB_HOST/DB_NAME/DB_USER/DB_PASSWORD."
+        )
     # Startup
     try:
         from result_ingestion_engine import get_ingestion_engine
@@ -173,92 +182,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── SQLite helpers ───────────────────────────────────────────────────────────
-
-def _db_connect(db_path):
-    """Open a SQLite connection with WAL mode and busy_timeout to prevent
-    'database is locked' errors under concurrent writes."""
-    import sqlite3
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA busy_timeout=10000")  # wait 10s before raising locked
-    return conn
-
-# ── SQLite-backed target store ────────────────────────────────────────────────
-
-class TargetDB:
-    """SQLite-backed target store. Replaces in-memory TARGETS dict."""
-
-    def __init__(self, db_path: Path):
-        self._db = db_path
-        self._init()
-
-    def _init(self):
-        with _db_connect(self._db) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS targets (
-                    target_id TEXT PRIMARY KEY,
-                    target_value TEXT NOT NULL,
-                    target_type TEXT DEFAULT 'web',
-                    name TEXT DEFAULT '',
-                    platform TEXT DEFAULT 'hackerone',
-                    scope_json TEXT DEFAULT '[]',
-                    status TEXT DEFAULT 'pending',
-                    created_at TEXT,
-                    last_scan_time TEXT,
-                    vuln_count INTEGER DEFAULT 0,
-                    severity_json TEXT DEFAULT '{}'
-                )
-            """)
-            conn.commit()
-
-    def add(self, target_id: str, target_value: str, name: str = "", platform: str = "hackerone", target_type: str = "web") -> dict:
-        now = datetime.utcnow().isoformat()
-        with _db_connect(self._db) as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO targets VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (target_id, target_value, target_type, name or target_value,
-                 platform, "[]", "pending", now, None, 0, "{}")
-            )
-            conn.commit()
-        return self.get(target_id)
-
-    def get(self, target_id: str) -> Optional[dict]:
-        with _db_connect(self._db) as conn:
-            row = conn.execute("SELECT * FROM targets WHERE target_id=?", (target_id,)).fetchone()
-        return self._row_to_dict(row) if row else None
-
-    def list_all(self) -> List[dict]:
-        with _db_connect(self._db) as conn:
-            rows = conn.execute("SELECT * FROM targets ORDER BY created_at DESC").fetchall()
-        return [self._row_to_dict(r) for r in rows]
-
-    def delete(self, target_id: str) -> bool:
-        with _db_connect(self._db) as conn:
-            conn.execute("DELETE FROM targets WHERE target_id=?", (target_id,))
-            conn.commit()
-        return True
-
-    def update_status(self, target_id: str, status: str, last_scan_time: str = None):
-        with _db_connect(self._db) as conn:
-            conn.execute("UPDATE targets SET status=?, last_scan_time=? WHERE target_id=?",
-                        (status, last_scan_time or datetime.utcnow().isoformat(), target_id))
-            conn.commit()
-
-    def _row_to_dict(self, row) -> dict:
-        cols = ["target_id", "target_value", "target_type", "name", "platform", "scope",
-                "status", "created_at", "last_scan_time", "vuln_count", "severity_counts"]
-        d = dict(zip(cols, row))
-        d["scope"] = json.loads(d.get("scope") or "[]")
-        d["severity_counts"] = json.loads(d.get("severity_counts") or "{}")
-        # Backwards compat: keep old field names too
-        d["id"] = d["target_id"]
-        d["domain"] = d["target_value"]
-        return d
-
-
-_target_db = TargetDB(_db_path("metadata.db"))
 
 # ── Wire ResultIngestionEngine broadcast ─────────────────────────────────────
 
@@ -505,12 +428,12 @@ async def get_auth_token():
 
 # Prometheus metrics endpoint
 @app.get("/metrics", include_in_schema=False)
-async def metrics():
+async def metrics(repo: TargetRepository = Depends(get_target_repo)):
     from fastapi.responses import PlainTextResponse
     active_scans = sum(1 for s in SCANS.values() if s.get("status") == "running")
     total_vulns  = len(VULNERABILITIES)
     total_scans  = len(SCANS)
-    total_targets = len(_target_db.list_all())
+    total_targets = len(await repo.list_all())
     sev = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
     for v in VULNERABILITIES.values():
         k = v.get("severity", "info").lower()
@@ -540,7 +463,7 @@ async def metrics():
 
 # Dashboard stats
 @app.get("/api/stats")
-async def get_stats():
+async def get_stats(repo: TargetRepository = Depends(get_target_repo)):
     active_scans = sum(1 for s in SCANS.values() if s["status"] == "running")
     total_vulns = len(VULNERABILITIES)
     sev_dist = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
@@ -576,7 +499,7 @@ async def get_stats():
     except Exception:
         neo4j_connected = False
 
-    all_targets = _target_db.list_all()
+    all_targets = await repo.list_all()
     return {
         "active_scans": active_scans,
         "total_targets": len(all_targets),
@@ -595,18 +518,19 @@ async def get_stats():
 
 # Targets
 @app.get("/api/targets")
-async def list_targets():
-    return _target_db.list_all()
+async def list_targets(repo: TargetRepository = Depends(get_target_repo)):
+    return await repo.list_all()
 
 @app.get("/api/targets/{target_id}")
-async def get_target(target_id: str):
-    t = _target_db.get(target_id)
+async def get_target(target_id: str, repo: TargetRepository = Depends(get_target_repo)):
+    t = await repo.get(target_id)
     if not t:
         raise HTTPException(404, "Target not found")
     return t
 
 @app.post("/api/targets", dependencies=[Depends(_require_auth)])
-async def create_target(body: Dict[str, Any], background_tasks: BackgroundTasks):
+async def create_target(body: Dict[str, Any], background_tasks: BackgroundTasks,
+                        repo: TargetRepository = Depends(get_target_repo)):
     target_id = str(uuid.uuid4())[:8]
     domain = _validate_target(body.get("domain", ""))
     name = body.get("name", domain)
@@ -621,7 +545,7 @@ async def create_target(body: Dict[str, Any], background_tasks: BackgroundTasks)
         ttype = "ai"
     else:
         ttype = "web"
-    t = _target_db.add(target_id, domain, name, platform, ttype)
+    t = await repo.add(target_id, domain, name, platform, ttype)
     _add_log(f"Target added: {domain} (type={ttype})", "info", "system")
     # Auto-start scan
     import threading as _threading
@@ -641,10 +565,10 @@ async def create_target(body: Dict[str, Any], background_tasks: BackgroundTasks)
     return {**t, "scan_id": scan_id}
 
 @app.delete("/api/targets/{target_id}", dependencies=[Depends(_require_auth)])
-async def delete_target(target_id: str):
-    if not _target_db.get(target_id):
+async def delete_target(target_id: str, repo: TargetRepository = Depends(get_target_repo)):
+    if not await repo.get(target_id):
         raise HTTPException(404, "Target not found")
-    _target_db.delete(target_id)
+    await repo.delete(target_id)
     _add_log(f"Target removed: {target_id}", "warn", "system")
     return {"ok": True}
 
@@ -1019,7 +943,8 @@ async def test_ai_prompt(body: Dict[str, Any]):
 
 # Attack Graph
 @app.get("/api/attack-graph")
-async def get_attack_graph(target: Optional[str] = None):
+async def get_attack_graph(target: Optional[str] = None,
+                           repo: TargetRepository = Depends(get_target_repo)):
     """Return attack graph nodes and edges."""
     nodes = []
     edges = []
@@ -1069,7 +994,7 @@ async def get_attack_graph(target: Optional[str] = None):
     else:
         # Global graph
         added_domains = set()
-        for t in _target_db.list_all():
+        for t in await repo.list_all():
             d = t["domain"].replace("https://","").replace("http://","").split("/")[0]
             nid = f"d_{d}"
             if nid not in added_domains:
@@ -1082,7 +1007,7 @@ async def get_attack_graph(target: Optional[str] = None):
         else:
             vuln_list = list(VULNERABILITIES.values())
 
-        # Create domain nodes for any targets not already in _target_db
+        # Create domain nodes for any targets not already in repo
         for v in vuln_list:
             tgt = v.get("target","").replace("https://","").replace("http://","").split("/")[0]
             if tgt:
@@ -1265,7 +1190,8 @@ class SimpleScanRequest(BaseModel):
 
 @app.post("/api/scan", dependencies=[Depends(_require_auth)])
 @app.post("/api/scan/start", dependencies=[Depends(_require_auth)])  # Makefile / distributed-compose alias
-async def simple_scan(req: SimpleScanRequest, background_tasks: BackgroundTasks):
+async def simple_scan(req: SimpleScanRequest, background_tasks: BackgroundTasks,
+                      repo: TargetRepository = Depends(get_target_repo)):
     """Simplified scan endpoint - just provide a target, everything is auto."""
     target = req.validated_target  # raises 400 if target contains shell metacharacters
     import threading as _threading
@@ -1281,10 +1207,10 @@ async def simple_scan(req: SimpleScanRequest, background_tasks: BackgroundTasks)
     SCANS[scan_id] = scan
 
     # Auto-add target if not exists
-    existing = [t for t in _target_db.list_all() if t["target_value"] == req.target]
+    existing = [t for t in await repo.list_all() if t["target_value"] == req.target]
     if not existing:
         tid = str(uuid.uuid4())[:8]
-        _target_db.add(tid, req.target)
+        await repo.add(tid, req.target)
 
     background_tasks.add_task(_run_scan_via_engine, scan_id, req.target, "full")
     _add_log(f"Auto-scan queued: {req.target}", "info", "scanner", scan_id)
@@ -1294,15 +1220,16 @@ async def simple_scan(req: SimpleScanRequest, background_tasks: BackgroundTasks)
 
 async def _run_scan_via_engine(scan_id: str, target: str, scan_type: str, auth_config: dict = None):
     """Run a scan. For full scans, prefer the canonical pipeline for CLI/Docker parity."""
+    repo = await get_target_repo()
     scan = SCANS[scan_id]
     scan["status"] = "running"
     _add_log(f"Scan started: {scan_type} on {target}", "info", "scanner", scan_id)
     if auth_config and any(auth_config.values()):
         _add_log("Authenticated scan mode active — using provided credentials", "info", "scanner", scan_id)
     # Update target status to scanning
-    existing = [t for t in _target_db.list_all() if t["target_value"] == target]
+    existing = [t for t in await repo.list_all() if t["target_value"] == target]
     if existing:
-        _target_db.update_status(existing[0]["target_id"], "scanning", datetime.utcnow().isoformat())
+        await repo.update_status(existing[0]["target_id"], "scanning", datetime.utcnow().isoformat())
     # Full scans must run the canonical pipeline to preserve CLI/Docker parity.
     if scan_type in ("full", "full_scan", "full-scan"):
         try:
@@ -1346,13 +1273,11 @@ async def _run_scan_via_engine(scan_id: str, target: str, scan_type: str, auth_c
                 except Exception as _pe:
                     log.warning("persist_finding failed: %s", _pe)
 
-            existing = [t for t in _target_db.list_all() if t["target_value"] == target]
+            existing = [t for t in await repo.list_all() if t["target_value"] == target]
             if existing:
                 tid = existing[0]["target_id"]
-                _target_db.update_status(tid, scan["status"], datetime.utcnow().isoformat())
-                with _db_connect(_db_path("metadata.db")) as conn:
-                    conn.execute("UPDATE targets SET vuln_count=? WHERE target_id=?", (len(result.findings), tid))
-                    conn.commit()
+                await repo.update_status(tid, scan["status"], datetime.utcnow().isoformat())
+                await repo.update_vuln_count(tid, len(result.findings))
 
             _add_log(
                 f"Scan completed (canonical): {target} — {len(result.findings)} findings (status={result.status})",
