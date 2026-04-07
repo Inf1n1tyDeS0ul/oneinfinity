@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import {
   ShieldAlert, History, Search, ChevronDown, ChevronUp,
-  CheckCircle2, XCircle, StopCircle, RefreshCw
+  CheckCircle2, XCircle, StopCircle, RefreshCw, Trash2
 } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { endpoints } from '../utils/api'
@@ -257,24 +257,90 @@ function FindingsTab() {
 // ─── Scan History Tab ─────────────────────────────────────────────────────────
 
 function ScanHistoryTab() {
-  const { scans } = useStore()
-  const { addNotification, setScans } = useStore()
+  const { scans, addNotification, setScans } = useStore()
+  const [selected, setSelected] = useState(new Set())
+  const [deleting, setDeleting] = useState(false)
+
+  const allIds = scans.map(s => s.id)
+  const allSelected = allIds.length > 0 && allIds.every(id => selected.has(id))
+
+  const toggleAll = () => {
+    setSelected(allSelected ? new Set() : new Set(allIds))
+  }
+
+  const toggleOne = (id) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  const refreshScans = () =>
+    endpoints.scans().then(r => setScans(r.data)).catch(e => addNotification(`Could not refresh scans: ${e.message}`, 'error'))
 
   const handleStop = async (id) => {
     try {
       await endpoints.stopScan(id)
       addNotification('Scan stopped', 'success')
-      endpoints.scans().then(r => setScans(r.data)).catch(e => addNotification(`Could not refresh scans: ${e.message}`, 'error'))
+      refreshScans()
     } catch (e) {
       addNotification(`Error: ${e.message}`, 'error')
     }
   }
 
+  const handleDeleteSelected = async () => {
+    if (selected.size === 0) return
+    setDeleting(true)
+    try {
+      await endpoints.deleteScans([...selected])
+      addNotification(`Deleted ${selected.size} scan${selected.size > 1 ? 's' : ''}`, 'success')
+      setSelected(new Set())
+      refreshScans()
+    } catch (e) {
+      addNotification(`Delete failed: ${e.message}`, 'error')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <div className="card overflow-hidden">
+      {/* Bulk action toolbar — visible only when rows are selected */}
+      {selected.size > 0 && (
+        <div className="flex items-center gap-3 px-3 py-2 bg-red-500/10 border-b border-red-500/20">
+          <span className="text-xs text-red-400 font-medium">
+            {selected.size} selected
+          </span>
+          <button
+            className="flex items-center gap-1.5 px-3 py-1 rounded text-xs bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-50"
+            onClick={handleDeleteSelected}
+            disabled={deleting}
+          >
+            <Trash2 size={11} />
+            {deleting ? 'Deleting…' : `Delete ${selected.size}`}
+          </button>
+          <button
+            className="text-xs text-slate-500 hover:text-slate-300 transition-colors ml-auto"
+            onClick={() => setSelected(new Set())}
+          >
+            Clear selection
+          </button>
+        </div>
+      )}
+
       <table className="w-full text-xs">
         <thead>
           <tr className="border-b border-bg-border text-slate-500 text-left">
+            <th className="px-3 py-2">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                onChange={toggleAll}
+                className="accent-accent-primary cursor-pointer"
+                title="Select all"
+              />
+            </th>
             <th className="px-3 py-2 font-medium">Target</th>
             <th className="px-3 py-2 font-medium">Type</th>
             <th className="px-3 py-2 font-medium">Status</th>
@@ -288,48 +354,66 @@ function ScanHistoryTab() {
         <tbody className="divide-y divide-bg-border">
           {scans.length === 0 && (
             <tr>
-              <td colSpan={8} className="px-3 py-8 text-center text-slate-500">
+              <td colSpan={9} className="px-3 py-8 text-center text-slate-500">
                 No scan history yet.
               </td>
             </tr>
           )}
-          {scans.map(s => (
-            <tr key={s.id} className="hover:bg-white/3 transition-colors">
-              <td className="px-3 py-2.5 text-slate-200 max-w-[160px] truncate">{s.target}</td>
-              <td className="px-3 py-2.5 text-slate-400">{s.scan_type || s.type || '—'}</td>
-              <td className="px-3 py-2.5">
-                <span className={`badge-${s.status}`}>{s.status}</span>
-              </td>
-              <td className="px-3 py-2.5 text-slate-500">{relativeTime(s.started_at)}</td>
-              <td className="px-3 py-2.5 text-slate-500">
-                {s.completed_at ? relativeTime(s.completed_at) : '—'}
-              </td>
-              <td className="px-3 py-2.5 text-slate-400">{s.findings_count ?? s.findings ?? 0}</td>
-              <td className="px-3 py-2.5 w-28">
-                {s.status === 'running' ? (
-                  <div className="w-full h-1.5 bg-bg-border rounded overflow-hidden">
-                    <div
-                      className="h-full bg-accent-primary rounded transition-all"
-                      style={{ width: `${s.progress ?? 0}%` }}
-                    />
-                  </div>
-                ) : (
-                  <span className="text-slate-600">—</span>
+          {scans.map(s => {
+            const isSelected = selected.has(s.id)
+            return (
+              <tr
+                key={s.id}
+                className={clsx(
+                  'transition-colors cursor-pointer',
+                  isSelected ? 'bg-accent-primary/10' : 'hover:bg-white/3'
                 )}
-              </td>
-              <td className="px-3 py-2.5">
-                {s.status === 'running' && (
-                  <button
-                    className="btn-danger flex items-center gap-1 text-[11px] py-0.5 px-2"
-                    onClick={() => handleStop(s.id)}
-                  >
-                    <StopCircle size={10} />
-                    Stop
-                  </button>
-                )}
-              </td>
-            </tr>
-          ))}
+                onClick={() => toggleOne(s.id)}
+              >
+                <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => toggleOne(s.id)}
+                    className="accent-accent-primary cursor-pointer"
+                  />
+                </td>
+                <td className="px-3 py-2.5 text-slate-200 max-w-[160px] truncate">{s.target}</td>
+                <td className="px-3 py-2.5 text-slate-400">{s.scan_type || s.type || '—'}</td>
+                <td className="px-3 py-2.5">
+                  <span className={`badge-${s.status}`}>{s.status}</span>
+                </td>
+                <td className="px-3 py-2.5 text-slate-500">{relativeTime(s.started_at)}</td>
+                <td className="px-3 py-2.5 text-slate-500">
+                  {s.completed_at ? relativeTime(s.completed_at) : '—'}
+                </td>
+                <td className="px-3 py-2.5 text-slate-400">{s.findings_count ?? s.findings ?? 0}</td>
+                <td className="px-3 py-2.5 w-28">
+                  {s.status === 'running' ? (
+                    <div className="w-full h-1.5 bg-bg-border rounded overflow-hidden">
+                      <div
+                        className="h-full bg-accent-primary rounded transition-all"
+                        style={{ width: `${s.progress ?? 0}%` }}
+                      />
+                    </div>
+                  ) : (
+                    <span className="text-slate-600">—</span>
+                  )}
+                </td>
+                <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
+                  {s.status === 'running' && (
+                    <button
+                      className="btn-danger flex items-center gap-1 text-[11px] py-0.5 px-2"
+                      onClick={() => handleStop(s.id)}
+                    >
+                      <StopCircle size={10} />
+                      Stop
+                    </button>
+                  )}
+                </td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>
@@ -340,6 +424,14 @@ function ScanHistoryTab() {
 
 export default function Results() {
   const [tab, setTab] = useState('findings')
+  const [scanFilter, setScanFilter] = useState(null) // { id, target } | null
+
+  const handleViewFindings = (scan) => {
+    setScanFilter({ id: scan.id, target: scan.target })
+    setTab('findings')
+  }
+
+  const handleClearFilter = () => setScanFilter(null)
 
   return (
     <div className="flex flex-col gap-4">
@@ -377,7 +469,10 @@ export default function Results() {
         </div>
       </div>
 
-      {tab === 'findings' ? <FindingsTab /> : <ScanHistoryTab />}
+      {tab === 'findings'
+        ? <FindingsTab scanFilter={scanFilter} onClearFilter={handleClearFilter} />
+        : <ScanHistoryTab onViewFindings={handleViewFindings} />
+      }
     </div>
   )
 }
