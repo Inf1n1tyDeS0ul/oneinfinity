@@ -588,23 +588,23 @@ class UnifiedScanEngine:
 
         # ── Priority 2: Knowledge Base — start session + target profile ────
         try:
-            from learning.knowledge_base import KnowledgeBase
+            from core.learning_repository import get_learning_repo_sync
             from urllib.parse import urlparse as _urlparse
-            kb = KnowledgeBase()
+            kb = get_learning_repo_sync()
             ctx["kb"] = kb
             ctx["kb_session_id"] = session.scan_id
-            kb.start_session(
+            kb.start_session_sync(
                 session_id=session.scan_id,
                 target=session.target,
                 phases=list(_PHASES),
             )
             domain = _urlparse(session.target).netloc or session.target
-            prior = kb.get_target_profile(domain)
+            prior = kb.get_target_profile_sync(domain)
             if prior:
                 log.info("KB: prior profile found for %s — waf=%s", domain, prior.get("waf"))
             # Refresh tech profile in KB
             tech_stack = getattr(intel.tech_profile, "raw_tech", []) or []
-            kb.upsert_target_profile(domain, tech_stack=tech_stack)
+            kb.upsert_target_profile_sync(domain, tech_stack=tech_stack)
         except Exception as exc:
             log.warning("KnowledgeBase init failed (non-fatal): %s", exc)
 
@@ -988,7 +988,7 @@ class UnifiedScanEngine:
             insight = ctx.get("pattern_insight")
             if kb and insight:
                 for vp in insight.predicted_vulns[:5]:
-                    best = kb.best_tool_for_vuln(vp.vuln_type, top_n=1)
+                    best = kb.best_tool_for_vuln_sync(vp.vuln_type, top_n=1)
                     if best:
                         t = best[0].get("tool_name", "")
                         if t:
@@ -1324,7 +1324,7 @@ class UnifiedScanEngine:
                 try:
                     _kb = ctx.get("kb")
                     if _kb:
-                        _kb.record_tool_run(
+                        _kb.record_tool_run_sync(
                             tool_name=tool_name,
                             target_type=session.target_type or "web",
                             success=_tool_success,
@@ -2287,8 +2287,8 @@ class UnifiedScanEngine:
             try:
                 _kb = ctx.get("kb")
                 if _kb:
-                    _kb.finish_session(ctx.get("kb_session_id", session.scan_id),
-                                       total_findings=0, tools_used=[])
+                    _kb.finish_session_sync(ctx.get("kb_session_id", session.scan_id),
+                                            total_findings=0, tools_used=[])
             except Exception as _exc:
                 log.warning('Non-fatal exception suppressed: %s', _exc)
             return
@@ -2338,11 +2338,11 @@ class UnifiedScanEngine:
                 _kb = ctx.get("kb")
                 if _kb:
                     _kb_sid = ctx.get("kb_session_id", session.scan_id)
-                    _kb.record_findings_bulk(_kb_sid, findings)
+                    _kb.record_findings_bulk_sync(_kb_sid, findings)
                     _tools_used = list({f.get("tool", "unknown") for f in findings})
-                    _kb.finish_session(_kb_sid,
-                                       total_findings=len(ingested),
-                                       tools_used=_tools_used)
+                    _kb.finish_session_sync(_kb_sid,
+                                            total_findings=len(ingested),
+                                            tools_used=_tools_used)
                     log.info("KB: session %s closed (%d findings, tools=%s)",
                              _kb_sid, len(ingested), _tools_used)
             except Exception as exc:
