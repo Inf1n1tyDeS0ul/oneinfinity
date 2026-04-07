@@ -85,7 +85,7 @@ class GapCheckResult:
 | WSTG-SESS-05 | CSRF token validation | Detect forms/state-change endpoints without CSRF token | Replay POST without token — confirm 200/302 vs 403 |
 | WSTG-SESS-03 | Session fixation | Detect if session ID changes after login | Login twice, compare pre/post-login session IDs |
 | WSTG-SESS-07 | Session timeout | — | Re-use session after idle — confirm still valid or expired |
-| WSTG-IDNT-04 | Account enumeration (timing) | — | Valid vs invalid username to login/reset; flag if time delta >100ms |
+| WSTG-IDNT-04 | Account enumeration (timing) | — | Send 10 requests each for valid and invalid usernames; flag if mean response time differs by >100ms (statistical, not absolute latency) |
 | WSTG-ATHN-07 | Password policy testing | — | Attempt registration with `a`, `aa`, `password`, `12345` — observe acceptance |
 | WSTG-ATHN-10 | SAML assertion validation | Check for unsigned assertions in SAML responses | Modify assertion, replay — confirm accepted or rejected |
 
@@ -191,7 +191,7 @@ OWASP Juice Shop: `docker run -p 3000:3000 bkimminich/juice-shop`
 | Cookie attrs | Flag missing `HttpOnly` on session cookie |
 | Session fixation | Flag if session ID unchanged post-login |
 | Account enumeration | Flag timing delta on `/rest/user/login` |
-| LDAP injection | Flag LDAP login endpoint |
+| LDAP injection | Flag LDAP login endpoint (conditional: requires Juice Shop LDAP mode enabled via `LDAP_SERVER` env var) |
 | Backup files | Flag `main.js.map` source map exposure |
 | CSV injection | Flag `/api/Complaints` export |
 | postMessage | Flag Juice Shop postMessage usage |

@@ -123,3 +123,13 @@ data/.gf/.src/
 data/
 oi-backtests/
 .worktrees/
+node_modules/
+dist/
+build/
+.cache/
+logs/
+.worktrees/
+web/backend/.venv/
+web/frontend/node_modules/
+web/frontend/dist/
+web/frontend/build/
