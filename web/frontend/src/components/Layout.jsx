@@ -11,7 +11,6 @@ import {
   MemoryStick, Flame
 } from 'lucide-react'
 import { useStore } from '../store/useStore'
-import ScanLauncher from './ScanLauncher'
 import LogConsole from './LogConsole'
 import clsx from 'clsx'
 
@@ -20,7 +19,7 @@ const NAV_GROUPS = [
     label: 'Operations',
     items: [
       { path: '/dashboard',    label: 'Dashboard',      icon: LayoutDashboard },
-      { path: '/god-mode',     label: 'GOD MODE',       icon: Flame, accent: true },
+      { path: '/god-mode',     label: 'Scan',           icon: Flame, accent: true },
       { path: '/targets',      label: 'Targets',        icon: Target },
       { path: '/hunter',       label: 'Bounty Hunter',  icon: Trophy },
     ],
@@ -74,7 +73,6 @@ const NAV_GROUPS = [
 
 export default function Layout({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [launcherOpen, setLauncherOpen] = useState(false)
   const [consoleOpen, setConsoleOpen] = useState(false)
   const { targets, selectedTarget, setSelectedTarget, notifications, stats } = useStore()
 
@@ -111,14 +109,14 @@ export default function Layout({ children }) {
           </select>
         </div>
 
-        {/* Launch Scan */}
-        <button
-          className="btn-primary btn-sm ml-1 h-7"
-          onClick={() => setLauncherOpen(true)}
+        {/* Launch Scan → goes to GOD MODE page */}
+        <NavLink
+          to="/god-mode"
+          className="btn-primary btn-sm ml-1 h-7 flex items-center gap-1.5 no-underline"
         >
           <Play size={10} />
           Launch Scan
-        </button>
+        </NavLink>
 
         {/* Autonomous mode badge */}
         <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-accent-primary/20 bg-accent-primary/5">
@@ -269,8 +267,6 @@ export default function Layout({ children }) {
         <span className="font-mono">One&amp;Infinity v2.0</span>
       </div>
 
-      {/* Scan Launcher modal */}
-      {launcherOpen && <ScanLauncher onClose={() => setLauncherOpen(false)} />}
     </div>
   )
 }

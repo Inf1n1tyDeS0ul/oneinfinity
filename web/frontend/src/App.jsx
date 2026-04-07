@@ -62,6 +62,7 @@ export default function App() {
     const interval = setInterval(() => {
       endpoints.stats().then(r => setStats(r.data)).catch(() => {})
       endpoints.scans().then(r => setScans(r.data)).catch(() => {})
+      endpoints.vulnerabilities().then(r => setVulnerabilities(r.data)).catch(() => {})
     }, 10000)
     return () => clearInterval(interval)
   }, [])

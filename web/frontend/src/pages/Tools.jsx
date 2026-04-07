@@ -16,7 +16,7 @@ export default function Tools() {
   const loadToolCheck = async () => {
     setLoading(true)
     try {
-      const r = await endpoints.launchScan({ scan_type: 'toolcheck' })
+      const r = await endpoints.toolsStatus()
       setToolStatus(r.data)
     } catch (e) {
       addNotification('Could not load tool status: ' + e.message, 'error')
@@ -26,7 +26,7 @@ export default function Tools() {
   const loadCapMap = async () => {
     setLoading(true)
     try {
-      const r = await endpoints.launchScan({ scan_type: 'capmap' })
+      const r = await endpoints.toolsCapmap()
       setCapMap(r.data)
     } catch (e) {
       addNotification('Could not load capability map: ' + e.message, 'error')
@@ -80,9 +80,9 @@ export default function Tools() {
                 {Object.entries(toolStatus?.tools || {}).map(([name, info]) => (
                   <div key={name} className={clsx(
                     'flex items-center gap-3 p-3 rounded-lg border',
-                    info?.installed ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-red-500/20 bg-red-500/5'
+                    info?.available ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-red-500/20 bg-red-500/5'
                   )}>
-                    {info?.installed
+                    {info?.available
                       ? <CheckCircle2 size={14} className="text-emerald-400 flex-shrink-0" />
                       : <XCircle size={14} className="text-red-400 flex-shrink-0" />}
                     <div className="min-w-0">

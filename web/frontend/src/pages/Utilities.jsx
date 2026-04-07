@@ -15,7 +15,7 @@ const CVSS_METRICS = {
   A:  { label: 'Availability', options: ['N', 'L', 'H'], labels: ['None', 'Low', 'High'] },
 }
 
-const METHODOLOGY_CLASSES = ['sqli', 'idor', 'xss', 'ssrf', 'cors', 'jwt', 'auth']
+const METHODOLOGY_CLASSES = ['xss', 'sqli', 'nosqli', 'ssrf', 'cors', 'jwt', 'auth', 'idor']
 const WAF_TYPES = ['cloudflare', 'akamai', 'imperva', 'modsecurity', 'aws_waf', 'f5', 'sucuri']
 const VULN_TYPES = ['xss', 'sqli', 'ssrf', 'lfi', 'rce', 'xxe', 'ssti', 'idor', 'open_redirect']
 const PAYLOAD_TYPES = ['xss', 'sqli', 'xxe', 'ssti', 'ssrf', 'lfi', 'rce', 'open_redirect']
@@ -42,7 +42,7 @@ export default function Utilities() {
   const calcCVSS = async () => {
     setCvssLoading(true)
     try {
-      const r = await endpoints.launchScan({ scan_type: 'cvss', vector: buildVector(), describe: cvssDesc })
+      const r = await endpoints.utilsCvss(buildVector(), cvssDesc)
       setCvssResult(r.data)
     } catch (e) { setCvssResult({ vector: buildVector(), error: e.message }) }
     finally { setCvssLoading(false) }
@@ -51,7 +51,7 @@ export default function Utilities() {
   const checkDedup = async () => {
     if (!dedupTitle.trim()) return
     try {
-      const r = await endpoints.launchScan({ scan_type: 'dedup', title: dedupTitle.trim() })
+      const r = await endpoints.utilsDedup(dedupTitle.trim())
       setDedupResult(r.data)
     } catch (e) { addNotification('Error: ' + e.message, 'error') }
   }
@@ -65,14 +65,14 @@ export default function Utilities() {
 
   const loadWafBypass = async () => {
     try {
-      const r = await endpoints.launchScan({ scan_type: 'waf_bypass', waf, vuln_type: vulnType })
+      const r = await endpoints.utilsWafBypass(waf, vulnType)
       setWafPayloads(r.data?.payloads || [])
     } catch (e) { addNotification('Error: ' + e.message, 'error') }
   }
 
   const loadMethodology = async () => {
     try {
-      const r = await endpoints.launchScan({ scan_type: 'methodology', vuln_class: methodology })
+      const r = await endpoints.utilsMethodology(methodology)
       setMethResult(r.data)
     } catch (e) { addNotification('Error: ' + e.message, 'error') }
   }
@@ -265,6 +265,16 @@ export default function Utilities() {
             {methResult ? (
               <div className="flex flex-col gap-3">
                 <h3 className="text-sm font-semibold text-slate-200">{methResult?.title || methodology.toUpperCase()} Methodology</h3>
+                {methResult?.wstg_ids?.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {methResult.wstg_ids.map(id => (
+                      <span key={id} className="badge badge-info text-[10px] px-2 py-0.5">{id}</span>
+                    ))}
+                  </div>
+                )}
+                {methResult?.tools?.length > 0 && (
+                  <div className="text-xs text-slate-500">Tools: {methResult.tools.join(', ')}</div>
+                )}
                 {(methResult?.steps || []).map((step, i) => (
                   <div key={i} className="flex gap-3">
                     <span className="w-6 h-6 rounded-full bg-accent-primary/15 border border-accent-primary/20 flex items-center justify-center text-xs text-accent-primary font-bold flex-shrink-0">{i + 1}</span>

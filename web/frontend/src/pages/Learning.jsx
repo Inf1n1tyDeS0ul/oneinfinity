@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { BookOpen, BarChart2, RefreshCw, TrendingUp, Target } from 'lucide-react'
+import { BookOpen, BarChart2, RefreshCw, TrendingUp, Target, Wrench, ShieldAlert, Database } from 'lucide-react'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
@@ -7,21 +7,21 @@ import clsx from 'clsx'
 
 export default function Learning() {
   const { addNotification } = useStore()
-  const [tab, setTab] = useState('stats')
-  const [stats, setStats] = useState(null)
-  const [plan, setPlan] = useState(null)
+  const [tab, setTab]             = useState('stats')
+  const [stats, setStats]         = useState(null)
+  const [plan, setPlan]           = useState(null)
   const [planTarget, setPlanTarget] = useState('')
-  const [planTech, setPlanTech] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [planTech, setPlanTech]   = useState('')
+  const [loading, setLoading]     = useState(false)
   const [planLoading, setPlanLoading] = useState(false)
 
   const loadStats = async () => {
     setLoading(true)
     try {
-      const r = await endpoints.launchScan({ scan_type: 'learn_stats' })
+      const r = await endpoints.learningStats()
       setStats(r.data)
     } catch (e) {
-      // fallback placeholder
+      addNotification('Could not load learning stats: ' + e.message, 'error')
       setStats(null)
     } finally { setLoading(false) }
   }
@@ -32,16 +32,23 @@ export default function Learning() {
     if (!planTarget.trim()) return
     setPlanLoading(true)
     try {
-      const r = await endpoints.launchScan({ scan_type: 'learn_plan', target: planTarget.trim(), tech: planTech })
+      const r = await endpoints.learningPlan(planTarget.trim(), planTech.trim())
       setPlan(r.data)
     } catch (e) {
       addNotification('Error: ' + e.message, 'error')
     } finally { setPlanLoading(false) }
   }
 
+  // Chart data: vuln types by EMA score
   const chartData = stats?.vuln_type_stats
-    ? Object.entries(stats.vuln_type_stats).map(([k, v]) => ({ name: k, score: Math.round((v?.ema_score || 0) * 100), count: v?.count || 0 }))
+    ? Object.entries(stats.vuln_type_stats)
+        .map(([k, v]) => ({ name: k, score: Math.round((v?.ema_score || 0) * 100), count: v?.count || 0 }))
+        .sort((a, b) => b.score - a.score)
     : []
+
+  const avgEma = chartData.length > 0
+    ? Math.round(chartData.reduce((a, b) => a + b.score, 0) / chartData.length)
+    : 0
 
   return (
     <div className="flex flex-col gap-5">
@@ -51,9 +58,9 @@ export default function Learning() {
             <BookOpen size={18} className="text-emerald-400" />
             Learning System
           </div>
-          <div className="section-sub">Continuous learning stats and adaptive scan planning via EMA</div>
+          <div className="section-sub">Continuous learning via EMA — adapts scan strategy based on past findings</div>
         </div>
-        <button className="btn-secondary" onClick={loadStats}>
+        <button className="btn-secondary" onClick={loadStats} disabled={loading}>
           <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
           Refresh
         </button>
@@ -67,47 +74,105 @@ export default function Learning() {
 
       {tab === 'stats' && (
         <>
+          {/* Summary stats */}
+          <div className="grid grid-cols-4 gap-3">
+            <div className="stat-card">
+              <span className="stat-label">Confirmed Findings</span>
+              <span className="stat-value">{stats?.total_findings ?? 0}</span>
+            </div>
+            <div className="stat-card">
+              <span className="stat-label">Scans Completed</span>
+              <span className="stat-value text-cyan-400">{stats?.sessions ?? 0}</span>
+            </div>
+            <div className="stat-card">
+              <span className="stat-label">Unique Targets</span>
+              <span className="stat-value text-indigo-400">{stats?.unique_targets ?? 0}</span>
+            </div>
+            <div className="stat-card">
+              <span className="stat-label">Avg EMA Score</span>
+              <span className="stat-value text-yellow-400">{avgEma}%</span>
+            </div>
+          </div>
+
           {stats ? (
-            <div className="grid grid-cols-3 gap-3">
-              <div className="stat-card">
-                <span className="stat-label">Total Findings</span>
-                <span className="stat-value">{stats?.total_findings ?? 0}</span>
+            <div className="grid grid-cols-2 gap-4">
+              {/* EMA bar chart */}
+              <div className="card col-span-2">
+                <div className="card-header">
+                  <span className="card-title"><TrendingUp size={14} className="text-cyan-400" />EMA Score by Vulnerability Type</span>
+                </div>
+                {chartData.length > 0 ? (
+                  <div className="p-4 h-56">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={chartData.slice(0, 15)}>
+                        <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#6b7280' }} angle={-30} textAnchor="end" height={50} />
+                        <YAxis tick={{ fontSize: 9, fill: '#6b7280' }} domain={[0, 100]} unit="%" />
+                        <Tooltip
+                          contentStyle={{ background: '#0f1523', border: '1px solid #1c2a42', borderRadius: 8, fontSize: 11 }}
+                          itemStyle={{ color: '#e2e8f0' }}
+                          formatter={(v, n, p) => [`${v}% (${p.payload.count} findings)`, 'EMA Score']}
+                        />
+                        <Bar dataKey="score" name="EMA Score">
+                          {chartData.slice(0, 15).map((_, i) => (
+                            <Cell key={i} fill={i % 3 === 0 ? '#00d9ff' : i % 3 === 1 ? '#6366f1' : '#10b981'} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div className="empty-state">
+                    <div className="empty-icon"><TrendingUp size={20} /></div>
+                    <div className="empty-title">No EMA data yet</div>
+                    <div className="empty-sub">EMA scores build up as scans complete and findings are recorded</div>
+                  </div>
+                )}
               </div>
-              <div className="stat-card">
-                <span className="stat-label">Vuln Types Tracked</span>
-                <span className="stat-value text-emerald-400">{Object.keys(stats?.vuln_type_stats || {}).length}</span>
+
+              {/* Top vuln types */}
+              <div className="card">
+                <div className="card-header">
+                  <span className="card-title"><ShieldAlert size={14} className="text-red-400" />Top Vulnerability Types</span>
+                </div>
+                <div className="card-body flex flex-col gap-1">
+                  {(stats.top_vuln_types || []).length > 0 ? (
+                    stats.top_vuln_types.map((v, i) => (
+                      <div key={i} className="flex items-center gap-3 py-1.5 border-b border-bg-border last:border-0">
+                        <span className="w-5 h-5 rounded-full bg-accent-primary/15 flex items-center justify-center text-[10px] text-accent-primary font-bold flex-shrink-0">{i + 1}</span>
+                        <span className="flex-1 text-sm text-slate-300 font-mono">{v.vuln_type}</span>
+                        <span className="badge badge-info">{v.count} findings</span>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-xs text-slate-600 py-4 text-center">No data yet</div>
+                  )}
+                </div>
               </div>
-              <div className="stat-card">
-                <span className="stat-label">Avg EMA Score</span>
-                <span className="stat-value text-yellow-400">
-                  {chartData.length > 0 ? Math.round(chartData.reduce((a, b) => a + b.score, 0) / chartData.length) : 0}%
-                </span>
-              </div>
-              <div className="card col-span-3">
-                <div className="card-header"><span className="card-title"><TrendingUp size={14} className="text-cyan-400" />EMA Scores by Vuln Type</span></div>
-                <div className="p-4 h-52">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={chartData.slice(0, 15)}>
-                      <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#6b7280' }} angle={-30} textAnchor="end" height={50} />
-                      <YAxis tick={{ fontSize: 9, fill: '#6b7280' }} domain={[0, 100]} />
-                      <Tooltip
-                        contentStyle={{ background: '#0f1523', border: '1px solid #1c2a42', borderRadius: 8, fontSize: 11 }}
-                        itemStyle={{ color: '#e2e8f0' }}
-                      />
-                      <Bar dataKey="score" name="EMA Score %">
-                        {chartData.slice(0, 15).map((_, i) => (
-                          <Cell key={i} fill={i % 3 === 0 ? '#00d9ff' : i % 3 === 1 ? '#6366f1' : '#10b981'} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
+
+              {/* Top tools */}
+              <div className="card">
+                <div className="card-header">
+                  <span className="card-title"><Wrench size={14} className="text-orange-400" />Top Performing Tools</span>
+                </div>
+                <div className="card-body flex flex-col gap-1">
+                  {(stats.top_tools || []).length > 0 ? (
+                    stats.top_tools.map((t, i) => (
+                      <div key={i} className="flex items-center gap-3 py-1.5 border-b border-bg-border last:border-0">
+                        <span className="w-5 h-5 rounded-full bg-orange-500/15 flex items-center justify-center text-[10px] text-orange-400 font-bold flex-shrink-0">{i + 1}</span>
+                        <span className="flex-1 text-sm text-slate-300 font-mono">{t.tool}</span>
+                        <span className="badge badge-warn">{t.findings} findings</span>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-xs text-slate-600 py-4 text-center">No data yet</div>
+                  )}
                 </div>
               </div>
             </div>
-          ) : (
+          ) : !loading && (
             <div className="card">
               <div className="empty-state">
-                <div className="empty-icon"><BookOpen size={20} /></div>
+                <div className="empty-icon"><Database size={20} /></div>
                 <div className="empty-title">No learning data yet</div>
                 <div className="empty-sub">Run scans to build the learning database</div>
               </div>
@@ -118,7 +183,9 @@ export default function Learning() {
 
       {tab === 'plan' && (
         <div className="card">
-          <div className="card-header"><span className="card-title"><Target size={14} className="text-cyan-400" />Adaptive Scan Plan</span></div>
+          <div className="card-header">
+            <span className="card-title"><Target size={14} className="text-cyan-400" />Adaptive Scan Plan</span>
+          </div>
           <div className="card-body flex flex-col gap-4">
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -134,9 +201,54 @@ export default function Learning() {
               <BarChart2 size={13} />
               {planLoading ? 'Generating...' : 'Generate Adaptive Plan'}
             </button>
+
             {plan && (
-              <div className="terminal mt-2">
-                <pre className="text-xs">{JSON.stringify(plan, null, 2)}</pre>
+              <div className="flex flex-col gap-3 mt-1">
+                <div className="text-xs text-slate-500 leading-relaxed whitespace-pre-wrap border border-bg-border rounded-xl p-3 bg-bg-secondary font-mono">
+                  {plan.description}
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  {plan.priority_phases?.length > 0 && (
+                    <div>
+                      <div className="label mb-2">Priority Phases</div>
+                      <div className="flex flex-wrap gap-1">
+                        {plan.priority_phases.map(p => (
+                          <span key={p} className="badge badge-info">{p}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {plan.focus_vulns?.length > 0 && (
+                    <div>
+                      <div className="label mb-2">Focus Vulnerabilities</div>
+                      <div className="flex flex-wrap gap-1">
+                        {plan.focus_vulns.map(v => (
+                          <span key={v} className="badge badge-warn">{v}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {plan.skip_phases?.length > 0 && (
+                    <div>
+                      <div className="label mb-2">Skipped Phases</div>
+                      <div className="flex flex-wrap gap-1">
+                        {plan.skip_phases.map(p => (
+                          <span key={p} className="badge badge-error">{p}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {Object.keys(plan.tool_overrides || {}).length > 0 && (
+                    <div>
+                      <div className="label mb-2">Tool Overrides</div>
+                      <div className="flex flex-col gap-1">
+                        {Object.entries(plan.tool_overrides).map(([k, v]) => (
+                          <div key={k} className="text-xs text-slate-400"><span className="text-slate-500">{k}:</span> {v}</div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
