@@ -137,3 +137,60 @@ def test_delete_target_returns_true_on_success():
     mgr, _ = pg_mgr_with_mock_pool()
     result = run(mgr.delete_target("t1"))
     assert result is True
+
+
+def test_save_target_in_pg_mode_returns_dict():
+    """save_target in postgres mode must return a dict with target_id and aliases."""
+    import datetime as dt
+    now = dt.datetime.now()
+    # The save_target implementation calls get_target after inserting,
+    # so we need to return a row from the SELECT as well.
+    row = ("t3", "new.com", "web", "New", "hackerone", [], "pending", now, None, 0, {})
+
+    call_count = [0]
+
+    async def fake_execute(sql, params=None):
+        cursor = MagicMock()
+        if "SELECT" in sql:
+            async def _aiter():
+                yield row
+            cursor.__aiter__ = lambda self=cursor: _aiter()
+        else:
+            async def _empty():
+                return
+                yield
+            cursor.__aiter__ = lambda self=cursor: _empty()
+        return cursor
+
+    import core.db_manager as dm
+    dm._manager = None
+    mgr = dm.DBManager()
+    mgr.mode = "postgres"
+
+    mock_conn = AsyncMock()
+    mock_conn.execute = fake_execute
+    mock_conn.commit = AsyncMock()
+    mock_pool = MagicMock()
+    mock_pool.connection.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_pool.connection.return_value.__aexit__ = AsyncMock(return_value=False)
+    mgr._pg_pool = mock_pool
+
+    result = run(mgr.save_target({"target_id": "t3", "target_value": "new.com"}))
+    assert result["target_id"] == "t3"
+    assert result["id"] == "t3"
+    assert result["domain"] == "new.com"
+
+
+def test_update_target_status_does_not_raise_in_pg_mode():
+    """update_target_status must not raise when in postgres mode."""
+    mgr, mock_conn = pg_mgr_with_mock_pool()
+    run(mgr.update_target_status("t1", "scanning", "2026-04-07T12:00:00"))
+    # commit is an AsyncMock and is always called after a successful execute
+    assert mock_conn.commit.called
+
+
+def test_update_target_vuln_count_does_not_raise_in_pg_mode():
+    """update_target_vuln_count must not raise when in postgres mode."""
+    mgr, mock_conn = pg_mgr_with_mock_pool()
+    run(mgr.update_target_vuln_count("t1", 7))
+    assert mock_conn.commit.called

@@ -528,10 +528,14 @@ class DBManager:
         for ts_field in ("created_at", "last_scan_time"):
             if hasattr(d.get(ts_field), "isoformat"):
                 d[ts_field] = d[ts_field].isoformat()
-        if not isinstance(d.get("scope"), list):
-            d["scope"] = d.get("scope") or []
-        if not isinstance(d.get("severity_counts"), dict):
-            d["severity_counts"] = d.get("severity_counts") or {}
+        if isinstance(d.get("scope"), str):
+            d["scope"] = json.loads(d["scope"])
+        elif d.get("scope") is None:
+            d["scope"] = []
+        if isinstance(d.get("severity_counts"), str):
+            d["severity_counts"] = json.loads(d["severity_counts"])
+        elif d.get("severity_counts") is None:
+            d["severity_counts"] = {}
         d["id"] = d["target_id"]
         d["domain"] = d["target_value"]
         return d
@@ -559,7 +563,7 @@ class DBManager:
                         data.get("target_type", "web"),
                         data.get("name", data["target_value"]),
                         data.get("platform", "hackerone"),
-                        json.dumps(data.get("scope", [])),
+                        data.get("scope", []),
                         data.get("status", "pending"),
                     ),
                 )
