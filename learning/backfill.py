@@ -40,7 +40,8 @@ class LearningBackfill:
                     key=_CHECKPOINT_KEY,
                 ).single()
                 return int(row["v"]) if row and row["v"] else 0
-        except Exception:
+        except Exception as exc:
+            log.debug("_get_checkpoint failed, restarting from 0: %s", exc)
             return 0
 
     def _save_checkpoint(self, last_id: int) -> None:
@@ -71,18 +72,20 @@ class LearningBackfill:
                 async with mgr._pg_pool.acquire() as conn:
                     rows = await conn.fetch(
                         "SELECT id, target, vuln_type, severity, source_tool, cvss_score "
-                        "FROM findings_history WHERE confirmed=1 AND id > $1 ORDER BY id",
+                        "FROM findings_history WHERE confirmed = TRUE AND id > $1 ORDER BY id",
                         after_id,
                     )
                     return [dict(r) for r in rows]
-            rows = loop.run_until_complete(_fetch())
-            loop.close()
+            try:
+                rows = loop.run_until_complete(_fetch())
+            finally:
+                loop.close()
             yield from rows
         except Exception as exc:
             log.warning("Backfill _fetch_findings failed: %s", exc)
 
     def _fetch_from_sqlite(self, after_id: int = 0) -> Iterator[dict]:
-        """Fallback: read from SQLite findings table."""
+        """Fallback: read from SQLite findings table. Returns all findings (no confirmed filter)."""
         try:
             import sqlite3
             import path_manager

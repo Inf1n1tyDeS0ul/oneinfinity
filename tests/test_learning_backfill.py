@@ -12,7 +12,6 @@ def _make_backfill(findings: list[dict]) -> LearningBackfill:
     mock_kb = MagicMock()
     mock_kb._available = True
     bf._kb = mock_kb
-    bf._findings = findings  # injected test data
     return bf
 
 
@@ -46,7 +45,7 @@ class TestLearningBackfillUnit:
         assert bf._kb.record_finding.call_count == 2
 
     def test_run_is_idempotent(self):
-        """Calling run() twice should produce the same state — all writes are MERGE."""
+        """run() re-processes same findings on second call; MERGE in Neo4j guarantees graph idempotency."""
         findings = [{"vuln_type": "XSS", "target": "a.com"}]
         bf = _make_backfill(findings)
         bf._fetch_findings = MagicMock(return_value=iter(findings))
