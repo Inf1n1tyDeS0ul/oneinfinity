@@ -6,10 +6,8 @@ and select optimal tools for a given target.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from learning.knowledge_base import KnowledgeBase
+from learning.neo4j_knowledge_base import Neo4jKnowledgeBase as KnowledgeBase
 from learning.pattern_miner import PatternMiner, TargetInsight
-
-from path_manager import db_path as db_path_fn
 
 @dataclass
 class AdaptivePlan:
@@ -194,8 +192,8 @@ class LearningSystem:
     Used by AgentCoordinator and CLI commands.
     """
 
-    def __init__(self, db_path: str = str(db_path_fn("knowledge_base.db"))):
-        self.kb = KnowledgeBase(db_path)
+    def __init__(self, db_path: str = ""):  # db_path retained for interface compat; Neo4j config auto-loaded
+        self.kb = KnowledgeBase()
         self.miner = PatternMiner(self.kb)
         self.planner = AdaptivePlanner(self.kb)
 
