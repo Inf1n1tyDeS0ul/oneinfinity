@@ -28,7 +28,7 @@ class ResearchRepository:
             "output_dir":         session.output_dir,
             "platform":           session.platform,
             "started_at":         session.started_at,
-            "ended_at":           session.ended_at if session.ended_at else None,
+            "ended_at":           session.ended_at or None,  # 0.0 = "not ended" → store NULL
             "status":             session.status,
             "iteration":          session.iteration,
             "theories_generated": session.theories_generated,

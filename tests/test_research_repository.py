@@ -72,6 +72,14 @@ def test_finish_session_includes_ended_at():
     assert d["ended_at"] is not None
 
 
+def test_save_session_stores_null_for_zero_ended_at():
+    repo, db = make_repo()
+    session = make_session(ended_at=0.0)
+    run(repo.save_session(session))
+    d = db.save_research_session.call_args[0][0]
+    assert d["ended_at"] is None  # 0.0 sentinel (not yet ended) maps to NULL
+
+
 def test_save_session_sync_works_synchronously():
     repo, db = make_repo()
     session = make_session()
