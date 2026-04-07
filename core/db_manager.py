@@ -645,6 +645,302 @@ class DBManager:
         except Exception as exc:
             log.warning("DBManager.update_target_vuln_count failed: %s", exc)
 
+    # ── Research ──────────────────────────────────────────────────────────────
+
+    async def save_research_session(self, data: dict) -> None:
+        """Upsert a research session row."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("save_research_session requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO research_sessions (
+                        session_id, target, output_dir, platform, started_at, ended_at,
+                        status, iteration, theories_generated, tests_executed,
+                        anomalies_found, confirmed_vulns
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (session_id) DO UPDATE SET
+                        target             = EXCLUDED.target,
+                        output_dir         = EXCLUDED.output_dir,
+                        platform           = EXCLUDED.platform,
+                        started_at         = EXCLUDED.started_at,
+                        ended_at           = EXCLUDED.ended_at,
+                        status             = EXCLUDED.status,
+                        iteration          = EXCLUDED.iteration,
+                        theories_generated = EXCLUDED.theories_generated,
+                        tests_executed     = EXCLUDED.tests_executed,
+                        anomalies_found    = EXCLUDED.anomalies_found,
+                        confirmed_vulns    = EXCLUDED.confirmed_vulns
+                    """,
+                    (
+                        data["session_id"],
+                        data["target"],
+                        data.get("output_dir", ""),
+                        data.get("platform", ""),
+                        data.get("started_at"),
+                        data.get("ended_at"),
+                        data.get("status", "running"),
+                        data.get("iteration", 0),
+                        data.get("theories_generated", 0),
+                        data.get("tests_executed", 0),
+                        data.get("anomalies_found", 0),
+                        data.get("confirmed_vulns", 0),
+                    ),
+                )
+                await conn.commit()
+        except Exception as exc:
+            log.warning("DBManager.save_research_session failed: %s", exc)
+            raise
+
+    async def get_research_session(self, session_id: str) -> Optional[dict]:
+        """Return one research session row as a dict, or None."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("get_research_session requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                rows = await conn.execute(
+                    "SELECT * FROM research_sessions WHERE session_id = %s",
+                    (session_id,),
+                )
+                async for row in rows:
+                    return dict(row)
+            return None
+        except Exception as exc:
+            log.warning("DBManager.get_research_session failed: %s", exc)
+            return None
+
+    async def list_research_sessions(self, target: str = None) -> list:
+        """List research sessions, optionally filtered by target."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("list_research_sessions requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                if target:
+                    rows = await conn.execute(
+                        "SELECT * FROM research_sessions WHERE target = %s "
+                        "ORDER BY started_at DESC",
+                        (target,),
+                    )
+                else:
+                    rows = await conn.execute(
+                        "SELECT * FROM research_sessions ORDER BY started_at DESC"
+                    )
+                result = []
+                async for row in rows:
+                    result.append(dict(row))
+                return result
+        except Exception as exc:
+            log.warning("DBManager.list_research_sessions failed: %s", exc)
+            return []
+
+    async def save_research_theory(self, data: dict) -> None:
+        """Insert a vulnerability theory (idempotent — ON CONFLICT DO NOTHING)."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("save_research_theory requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO vuln_theories (
+                        theory_id, session_id, target, endpoint, vuln_type,
+                        severity, confidence, reasoning, status, created_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (theory_id) DO NOTHING
+                    """,
+                    (
+                        data["theory_id"],
+                        data["session_id"],
+                        data["target"],
+                        data.get("endpoint", ""),
+                        data["vuln_type"],
+                        data.get("severity", "medium"),
+                        data.get("confidence", 0.0),
+                        data.get("reasoning", ""),
+                        data.get("status", "pending"),
+                        data.get("created_at"),
+                        data.get("updated_at"),
+                    ),
+                )
+                await conn.commit()
+        except Exception as exc:
+            log.warning("DBManager.save_research_theory failed: %s", exc)
+
+    async def update_research_theory_status(
+        self, theory_id: str, status: str, updated_at: float
+    ) -> None:
+        """Update the status and updated_at timestamp of a vulnerability theory."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("update_research_theory_status requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE vuln_theories SET status = %s, updated_at = %s "
+                    "WHERE theory_id = %s",
+                    (status, updated_at, theory_id),
+                )
+                await conn.commit()
+        except Exception as exc:
+            log.warning("DBManager.update_research_theory_status failed: %s", exc)
+
+    async def save_test_outcome(self, data: dict) -> None:
+        """Insert one test outcome row (every outcome is a new row — no upsert)."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("save_test_outcome requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO test_outcomes (
+                        session_id, theory_id, target, endpoint, vuln_type, payload,
+                        status_code, response_size, response_time_ms, anomaly_score,
+                        confirmed, evidence, tested_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        data["session_id"],
+                        data.get("theory_id"),
+                        data["target"],
+                        data.get("endpoint", ""),
+                        data["vuln_type"],
+                        data.get("payload", ""),
+                        data.get("status_code"),
+                        data.get("response_size"),
+                        data.get("response_time_ms"),
+                        data.get("anomaly_score", 0.0),
+                        data.get("confirmed", 0),
+                        data.get("evidence", ""),
+                        data.get("tested_at"),
+                    ),
+                )
+                await conn.commit()
+        except Exception as exc:
+            log.warning("DBManager.save_test_outcome failed: %s", exc)
+
+    async def save_research_discovery(self, data: dict) -> None:
+        """Upsert a confirmed vulnerability discovery."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("save_research_discovery requires Postgres mode")
+        import json as _json
+        try:
+            steps = data.get("steps", [])
+            if isinstance(steps, str):
+                steps = _json.loads(steps)
+            async with self._pg_pool.connection() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO research_discoveries (
+                        report_id, session_id, target, vuln_type, title, severity,
+                        confidence, endpoint, description, impact, steps, poc,
+                        remediation, evidence, cvss_score, discovered_at, reported
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (report_id) DO UPDATE SET
+                        title       = EXCLUDED.title,
+                        severity    = EXCLUDED.severity,
+                        confidence  = EXCLUDED.confidence,
+                        description = EXCLUDED.description,
+                        impact      = EXCLUDED.impact,
+                        steps       = EXCLUDED.steps,
+                        poc         = EXCLUDED.poc,
+                        remediation = EXCLUDED.remediation,
+                        evidence    = EXCLUDED.evidence,
+                        cvss_score  = EXCLUDED.cvss_score
+                    """,
+                    (
+                        data["report_id"],
+                        data["session_id"],
+                        data["target"],
+                        data["vuln_type"],
+                        data.get("title", ""),
+                        data.get("severity", "medium"),
+                        data.get("confidence", 0.0),
+                        data.get("endpoint", ""),
+                        data.get("description", ""),
+                        data.get("impact", ""),
+                        steps,
+                        data.get("poc", ""),
+                        data.get("remediation", ""),
+                        data.get("evidence", ""),
+                        data.get("cvss_score", 0.0),
+                        data.get("discovered_at"),
+                        data.get("reported", 0),
+                    ),
+                )
+                await conn.commit()
+        except Exception as exc:
+            log.warning("DBManager.save_research_discovery failed: %s", exc)
+            raise
+
+    async def list_research_discoveries(self, session_id: str = None) -> list:
+        """List confirmed discoveries, optionally filtered by session_id."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("list_research_discoveries requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                if session_id:
+                    rows = await conn.execute(
+                        "SELECT * FROM research_discoveries WHERE session_id = %s "
+                        "ORDER BY discovered_at DESC",
+                        (session_id,),
+                    )
+                else:
+                    rows = await conn.execute(
+                        "SELECT * FROM research_discoveries ORDER BY discovered_at DESC"
+                    )
+                result = []
+                async for row in rows:
+                    result.append(dict(row))
+                return result
+        except Exception as exc:
+            log.warning("DBManager.list_research_discoveries failed: %s", exc)
+            return []
+
+    async def upsert_cross_target_pattern(self, data: dict) -> None:
+        """Insert or atomically increment success_count for a cross-target pattern."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("upsert_cross_target_pattern requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO cross_target_patterns (
+                        vuln_type, endpoint_pattern, parameter_pattern, last_seen
+                    ) VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (vuln_type, endpoint_pattern, parameter_pattern)
+                    DO UPDATE SET
+                        success_count = cross_target_patterns.success_count + 1,
+                        last_seen     = EXCLUDED.last_seen
+                    """,
+                    (
+                        data["vuln_type"],
+                        data.get("endpoint_pattern", ""),
+                        data.get("parameter_pattern", ""),
+                        data.get("last_seen"),
+                    ),
+                )
+                await conn.commit()
+        except Exception as exc:
+            log.warning("DBManager.upsert_cross_target_pattern failed: %s", exc)
+
+    async def get_cross_target_patterns(self, min_count: int = 2) -> list:
+        """Return patterns with success_count >= min_count, ordered by frequency."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("get_cross_target_patterns requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                rows = await conn.execute(
+                    "SELECT * FROM cross_target_patterns WHERE success_count >= %s "
+                    "ORDER BY success_count DESC",
+                    (min_count,),
+                )
+                result = []
+                async for row in rows:
+                    result.append(dict(row))
+                return result
+        except Exception as exc:
+            log.warning("DBManager.get_cross_target_patterns failed: %s", exc)
+            return []
+
     # ── Sync wrappers for CLI ─────────────────────────────────────────────────
 
     @staticmethod
