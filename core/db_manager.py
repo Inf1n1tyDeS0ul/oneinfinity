@@ -306,6 +306,10 @@ class DBManager:
         try:
             with _sq.connect(str(self._sqlite_path), timeout=30) as conn:
                 conn.execute("PRAGMA journal_mode=WAL;")
+                # SQLite dedup: exact match within scan OR same (vuln_type, url) within 24h.
+                # The 24h cross-scan arm is intentionally more conservative than PG
+                # (which deduplicates strictly on scan_id+vuln_type+url) to prevent
+                # duplicate findings from rapid re-scans in offline/fallback mode.
                 row = conn.execute(
                     "SELECT 1 FROM findings "
                     "WHERE (scan_id=? AND vuln_type=? AND url=?) "
@@ -316,7 +320,7 @@ class DBManager:
                 if row is not None:
                     return False
                 conn.execute(
-                    "INSERT OR REPLACE INTO findings "
+                    "INSERT OR IGNORE INTO findings "
                     "(finding_id, scan_id, target, title, severity, vuln_type, "
                     " evidence, payload, url, tool, confidence, cvss, status, "
                     " source_type, created_at, raw_json) "
