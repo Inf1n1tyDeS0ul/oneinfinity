@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
 
 log = logging.getLogger("oneinfinity.learning.neo4j_kb")
 
@@ -27,7 +26,7 @@ def _load_neo4j_config() -> dict:
         if p.exists():
             return yaml.safe_load(p.read_text()) or {}
     except Exception:
-        pass
+        log.warning("Neo4j config not found, using defaults")
     return {"uri": "bolt://localhost:7687", "user": "neo4j",
             "password": "neo4j123", "database": "neo4j"}
 
@@ -176,7 +175,7 @@ class Neo4jKnowledgeBase:
                     ON MATCH  SET t.runs_total = t.runs_total + 1,
                                   t.runs_success = t.runs_success + $succ_int,
                                   t.findings_total = t.findings_total + $fc,
-                                  t.avg_duration_s = (t.avg_duration_s * (t.runs_total - 1) + $dur) / t.runs_total,
+                                  t.avg_duration_s = (t.avg_duration_s * t.runs_total + $dur) / (t.runs_total + 1),
                                   t.last_updated = $ts
                     """,
                     tool=tool_name, succ_int=1 if success else 0,
@@ -297,7 +296,7 @@ class Neo4jKnowledgeBase:
                         ON MATCH  SET r.hits = r.hits + 1,
                                       r.total_seen = r.total_seen + 1,
                                       r.probability = toFloat(r.hits) / r.total_seen,
-                                      r.avg_cvss = (r.avg_cvss * (r.hits - 1) + $cvss) / r.hits,
+                                      r.avg_cvss = (r.avg_cvss * r.hits + $cvss) / (r.hits + 1),
                                       r.best_tool = $tool,
                                       r.last_seen = $ts
                         """,
@@ -319,7 +318,7 @@ class Neo4jKnowledgeBase:
                     RETURN v.name AS vuln_type,
                            avg(r.probability) AS probability,
                            avg(r.avg_cvss) AS avg_cvss,
-                           r.best_tool AS best_tool,
+                           collect(r.best_tool)[0] AS best_tool,
                            sum(r.hits) AS occurrence_count
                     ORDER BY probability DESC
                     LIMIT 20
