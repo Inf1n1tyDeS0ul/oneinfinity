@@ -29,6 +29,15 @@ def _get_db_manager_sync():
     except Exception:
         return None
 
+
+def _get_graph_learning_writer():
+    """Lazy import to avoid circular import at module load."""
+    try:
+        from learning.graph_learning_writer import get_graph_learning_writer
+        return get_graph_learning_writer()
+    except Exception:
+        return None
+
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
@@ -442,6 +451,12 @@ class ResultIngestionEngine:
             return None
 
         self._broadcast(finding)           # fire immediately — UI gets the event
+
+        # Fire learning graph update (async, non-blocking, non-fatal)
+        _glw = _get_graph_learning_writer()
+        if _glw is not None:
+            _glw.write_finding_async(finding.to_dict())
+
         import threading
         threading.Thread(
             target=self._update_graph,
