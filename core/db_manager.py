@@ -208,11 +208,13 @@ class DBManager:
         severity: Optional[str] = None,
         limit: int = 1000,
     ) -> list:
-        if self.mode in ("distributed", "postgres"):
-            return await self._pg_get_findings(scan_id=scan_id, target=target,
-                                                severity=severity, limit=limit)
-        return self._sqlite_get_findings(scan_id=scan_id, target=target,
-                                          severity=severity, limit=limit)
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError(
+                f"get_findings requires Postgres mode (current mode: {self.mode!r}). "
+                "Ensure PostgreSQL is configured and DISTRIBUTED_MODE=true."
+            )
+        return await self._pg_get_findings(scan_id=scan_id, target=target,
+                                           severity=severity, limit=limit)
 
     async def _pg_get_findings(self, scan_id=None, target=None, severity=None, limit=1000) -> list:
         conditions, params = [], []
@@ -249,14 +251,6 @@ class DBManager:
             log.warning("DBManager._pg_get_findings failed: %s", exc)
             return []
 
-    def _sqlite_get_findings(self, scan_id=None, target=None, severity=None, limit=1000) -> list:
-        try:
-            from result_ingestion_engine import get_ingestion_engine
-            ie = get_ingestion_engine()
-            return ie.get_findings(scan_id=scan_id, target=target, severity=severity) or []
-        except Exception as exc:
-            log.warning("DBManager._sqlite_get_findings failed: %s", exc)
-            return []
 
     # ── Scans ─────────────────────────────────────────────────────────────────
 
