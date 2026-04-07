@@ -40,7 +40,7 @@ def _validate_target(domain: str) -> str:
         raise HTTPException(status_code=400, detail=f"Invalid target — contains disallowed characters: {domain!r}")
     return domain.strip()
 import uvicorn
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException, UploadFile, File, Depends, Body
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
@@ -770,37 +770,6 @@ async def delete_scan(scan_id: str):
         "warn", "scanner", scan_id,
     )
     return {"ok": True, "findings_removed": len(to_remove) + db_deleted}
-
-@app.delete("/api/scans", dependencies=[Depends(_require_auth)])
-async def delete_scans_bulk(scan_ids: List[str] = Body(..., embed=True)):
-    """Delete multiple scans at once. Returns count deleted and total findings removed."""
-    deleted = 0
-    findings_removed = 0
-    for scan_id in scan_ids:
-        if scan_id not in SCANS:
-            continue
-        scan = SCANS[scan_id]
-        if scan.get("status") == "running":
-            pid = scan.get("pid")
-            if pid:
-                try:
-                    psutil.Process(pid).terminate()
-                except Exception:
-                    pass
-        SCANS.delete(scan_id)
-        await (await get_mgr()).delete_scan(scan_id)
-        to_remove = [fid for fid, v in VULNERABILITIES.items() if v.get("scan_id") == scan_id]
-        for fid in to_remove:
-            VULNERABILITIES.delete(fid)
-        findings_removed += len(to_remove)
-        try:
-            from result_ingestion_engine import get_ingestion_engine
-            findings_removed += get_ingestion_engine().delete_findings_for_scan(scan_id)
-        except Exception:
-            pass
-        deleted += 1
-    _add_log(f"Bulk delete: {deleted} scans removed, {findings_removed} findings purged", "warn", "scanner")
-    return {"ok": True, "deleted": deleted, "findings_removed": findings_removed}
 
 # Vulnerabilities
 @app.get("/api/findings")
