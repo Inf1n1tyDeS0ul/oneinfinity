@@ -8,7 +8,7 @@ enabling predictive tool selection for future scans.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from learning.knowledge_base import KnowledgeBase
+from learning.neo4j_knowledge_base import Neo4jKnowledgeBase as KnowledgeBase
 
 
 @dataclass
@@ -70,7 +70,7 @@ class PatternMiner:
         (["django"],            "SSRF",               "nuclei"),
     ]
 
-    def __init__(self, kb: KnowledgeBase):
+    def __init__(self, kb: "KnowledgeBase"):
         self.kb = kb
         self._seed_patterns()
 
