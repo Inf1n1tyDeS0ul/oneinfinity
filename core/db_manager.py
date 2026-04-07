@@ -18,6 +18,7 @@ Usage (CLI sync):
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 import logging
 import os
@@ -516,6 +517,135 @@ class DBManager:
         except Exception as exc:
             log.warning("DBManager.get_knowledge failed: %s", exc)
             return []
+
+    # ── Targets ──────────────────────────────────────────────────────────────
+
+    def _target_row_to_dict(self, row) -> dict:
+        """Convert a targets table row tuple to API dict."""
+        cols = ["target_id", "target_value", "target_type", "name", "platform", "scope",
+                "status", "created_at", "last_scan_time", "vuln_count", "severity_counts"]
+        d = dict(zip(cols, row))
+        for ts_field in ("created_at", "last_scan_time"):
+            if hasattr(d.get(ts_field), "isoformat"):
+                d[ts_field] = d[ts_field].isoformat()
+        if not isinstance(d.get("scope"), list):
+            d["scope"] = d.get("scope") or []
+        if not isinstance(d.get("severity_counts"), dict):
+            d["severity_counts"] = d.get("severity_counts") or {}
+        d["id"] = d["target_id"]
+        d["domain"] = d["target_value"]
+        return d
+
+    async def save_target(self, data: dict) -> dict:
+        """Upsert a target row. Returns the stored dict."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("save_target requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO targets
+                        (target_id, target_value, target_type, name, platform,
+                         scope, status, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (target_id) DO UPDATE SET
+                        target_value = EXCLUDED.target_value,
+                        name         = EXCLUDED.name,
+                        platform     = EXCLUDED.platform
+                    """,
+                    (
+                        data["target_id"],
+                        data["target_value"],
+                        data.get("target_type", "web"),
+                        data.get("name", data["target_value"]),
+                        data.get("platform", "hackerone"),
+                        json.dumps(data.get("scope", [])),
+                        data.get("status", "pending"),
+                    ),
+                )
+                await conn.commit()
+        except Exception as exc:
+            log.warning("DBManager.save_target failed: %s", exc)
+            raise
+        return await self.get_target(data["target_id"]) or data
+
+    async def get_target(self, target_id: str) -> Optional[dict]:
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("get_target requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                rows = await conn.execute(
+                    "SELECT target_id, target_value, target_type, name, platform, scope, "
+                    "status, created_at, last_scan_time, vuln_count, severity_counts "
+                    "FROM targets WHERE target_id = %s",
+                    (target_id,),
+                )
+                async for row in rows:
+                    return self._target_row_to_dict(row)
+            return None
+        except Exception as exc:
+            log.warning("DBManager.get_target failed: %s", exc)
+            return None
+
+    async def list_targets(self) -> list:
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("list_targets requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                rows = await conn.execute(
+                    "SELECT target_id, target_value, target_type, name, platform, scope, "
+                    "status, created_at, last_scan_time, vuln_count, severity_counts "
+                    "FROM targets ORDER BY created_at DESC",
+                )
+                results = []
+                async for row in rows:
+                    results.append(self._target_row_to_dict(row))
+                return results
+        except Exception as exc:
+            log.warning("DBManager.list_targets failed: %s", exc)
+            return []
+
+    async def delete_target(self, target_id: str) -> bool:
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("delete_target requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                await conn.execute(
+                    "DELETE FROM targets WHERE target_id = %s", (target_id,)
+                )
+                await conn.commit()
+            return True
+        except Exception as exc:
+            log.warning("DBManager.delete_target failed: %s", exc)
+            return False
+
+    async def update_target_status(self, target_id: str, status: str,
+                                   last_scan_time: str = None) -> None:
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("update_target_status requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE targets SET status = %s, last_scan_time = %s "
+                    "WHERE target_id = %s",
+                    (status, last_scan_time or datetime.utcnow().isoformat(), target_id),
+                )
+                await conn.commit()
+        except Exception as exc:
+            log.warning("DBManager.update_target_status failed: %s", exc)
+
+    async def update_target_vuln_count(self, target_id: str, count: int) -> None:
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("update_target_vuln_count requires Postgres mode")
+        try:
+            async with self._pg_pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE targets SET vuln_count = %s WHERE target_id = %s",
+                    (count, target_id),
+                )
+                await conn.commit()
+        except Exception as exc:
+            log.warning("DBManager.update_target_vuln_count failed: %s", exc)
 
     # ── Sync wrappers for CLI ─────────────────────────────────────────────────
 

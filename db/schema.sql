@@ -94,3 +94,20 @@ CREATE TABLE IF NOT EXISTS recon_assets (
 );
 CREATE INDEX IF NOT EXISTS idx_recon_assets_scan_id ON recon_assets(scan_id);
 CREATE INDEX IF NOT EXISTS idx_recon_assets_type    ON recon_assets(asset_type);
+
+-- ── Targets ──────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS targets (
+    target_id       TEXT PRIMARY KEY,
+    target_value    TEXT NOT NULL,
+    target_type     TEXT NOT NULL DEFAULT 'web',
+    name            TEXT NOT NULL DEFAULT '',
+    platform        TEXT NOT NULL DEFAULT 'hackerone',
+    scope           JSONB NOT NULL DEFAULT '[]',
+    status          TEXT NOT NULL DEFAULT 'pending',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_scan_time  TIMESTAMPTZ,
+    vuln_count      INTEGER NOT NULL DEFAULT 0,
+    severity_counts JSONB NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_targets_status     ON targets(status);
+CREATE INDEX IF NOT EXISTS idx_targets_created_at ON targets(created_at);
