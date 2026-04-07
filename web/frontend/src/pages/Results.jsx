@@ -256,7 +256,7 @@ function FindingsTab() {
 
 // ─── Scan History Tab ─────────────────────────────────────────────────────────
 
-function ScanHistoryTab() {
+function ScanHistoryTab({ onViewFindings }) {
   const { scans, addNotification, setScans } = useStore()
   const [selected, setSelected] = useState(new Set())
   const [deleting, setDeleting] = useState(false)
@@ -387,7 +387,18 @@ function ScanHistoryTab() {
                 <td className="px-3 py-2.5 text-slate-500">
                   {s.completed_at ? relativeTime(s.completed_at) : '—'}
                 </td>
-                <td className="px-3 py-2.5 text-slate-400">{s.findings_count ?? s.findings ?? 0}</td>
+                <td className="px-3 py-2.5 text-slate-400">
+                  {(s.findings_count ?? s.findings ?? 0) > 0 ? (
+                    <button
+                      className="text-accent-primary hover:underline tabular-nums"
+                      onClick={e => { e.stopPropagation(); onViewFindings(s) }}
+                    >
+                      {s.findings_count ?? s.findings}
+                    </button>
+                  ) : (
+                    <span>0</span>
+                  )}
+                </td>
                 <td className="px-3 py-2.5 w-28">
                   {s.status === 'running' ? (
                     <div className="w-full h-1.5 bg-bg-border rounded overflow-hidden">
