@@ -50,11 +50,11 @@ except ImportError:
     EdgeType = None           # type: ignore
 
 try:
-    from learning.knowledge_base import KnowledgeBase
+    from core.learning_repository import get_learning_repo_sync as _get_learning_repo_sync
     _KB_AVAILABLE = True
 except ImportError:
     _KB_AVAILABLE = False
-    KnowledgeBase = None  # type: ignore
+    _get_learning_repo_sync = None  # type: ignore
 
 try:
     from modules.tool_wrappers import ToolRegistry, ToolResult
@@ -433,12 +433,12 @@ class SwarmAgent(ABC):
             session_id = self.shared_state.get("session_id", self.agent_id)
             for f in findings:
                 try:
-                    self.knowledge_base.record_finding(
+                    self.knowledge_base.record_finding_sync(
                         session_id=session_id,
                         finding=f.to_kb_dict(),
                         confirmed=f.reproduced,
                     )
-                    self.knowledge_base.record_tool_run(
+                    self.knowledge_base.record_tool_run_sync(
                         tool_name=self.agent_type.value,
                         vuln_type=f.vuln_type,
                         target_type="web",

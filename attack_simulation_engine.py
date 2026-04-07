@@ -50,10 +50,11 @@ except ImportError:
     _GRAPH_AVAILABLE = False
 
 try:
-    from learning.knowledge_base import KnowledgeBase
+    from core.learning_repository import get_learning_repo_sync as _get_learning_repo_sync
     _KB_AVAILABLE = True
 except ImportError:
     _KB_AVAILABLE = False
+    _get_learning_repo_sync = None  # type: ignore
 
 
 # ── Data models ───────────────────────────────────────────────────────────────
@@ -413,7 +414,7 @@ class AttackSimulationEngine:
             for attack_type, _, _, _, _ in ATTACK_PATH_CATALOG:
                 # Normalise to base vuln type (strip suffix)
                 base_type = attack_type.split("_")[0]
-                tools = self.knowledge_base.best_tool_for_vuln(base_type, top_n=1)
+                tools = self.knowledge_base.best_tool_for_vuln_sync(base_type, top_n=1)
                 if tools:
                     t = tools[0]
                     total = t.get("runs_total", 0)

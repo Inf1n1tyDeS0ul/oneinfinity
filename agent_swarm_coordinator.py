@@ -45,10 +45,11 @@ except ImportError:
     _GRAPH_AVAILABLE = False
 
 try:
-    from learning.knowledge_base import KnowledgeBase
+    from core.learning_repository import get_learning_repo_sync as _get_learning_repo_sync
     _KB_AVAILABLE = True
 except ImportError:
     _KB_AVAILABLE = False
+    _get_learning_repo_sync = None  # type: ignore
 
 try:
     from attack_graph_core.graph_query_engine import GraphQueryEngine
@@ -92,6 +93,10 @@ class SharedSwarmState:
     agent_results: Dict[str, List]    = field(default_factory=dict)  # agent_id → findings
     graph_nodes_added: int            = 0
     started_at:    float              = field(default_factory=time.time)
+
+    def claim_task(self, task_id: str, agent_id: str) -> None:
+        """Mark a task as claimed by an agent (in-memory)."""
+        self.claimed_tasks[task_id] = agent_id
 
     def to_dict(self) -> Dict:
         return {
@@ -509,7 +514,7 @@ class AgentSwarmCoordinator:
         if self.knowledge_base and _KB_AVAILABLE:
             try:
                 for f in unique:
-                    self.knowledge_base.record_finding(
+                    self.knowledge_base.record_finding_sync(
                         session_id=session_id,
                         finding=f.to_kb_dict(),
                         confirmed=f.reproduced,
@@ -602,7 +607,7 @@ class AgentSwarmCoordinator:
         if not _KB_AVAILABLE:
             return None
         try:
-            return KnowledgeBase()
+            return _get_learning_repo_sync()
         except Exception:
             return None
 

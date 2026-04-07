@@ -2875,19 +2875,16 @@ async def learning_stats():
         ls = LearningSystem()
         raw = ls.stats()
         ls.close()
-        # Also pull per-agent EMA rates from KnowledgeBase tool_performance table
-        from learning.knowledge_base import KnowledgeBase
-        from path_manager import db_path as _db_path_fn
-        kb = KnowledgeBase(str(_db_path_fn("knowledge_base.db")))
-        rows = kb._conn.execute(
-            "SELECT tool_name, vuln_type, "
-            "CASE WHEN runs_total > 0 THEN CAST(runs_success AS REAL)/runs_total ELSE 0 END as ema, "
-            "runs_total, findings_total "
-            "FROM tool_performance ORDER BY findings_total DESC"
-        ).fetchall()
-        kb.close()
+        # Pull per-agent EMA rates from tool_performance via DBManager
+        from core.learning_repository import get_learning_repo_sync
+        _repo = get_learning_repo_sync()
+        perf_rows = _repo.get_tool_performance_stats_sync()
         vuln_type_stats: dict = {}
-        for tool, vtype, ema, runs, findings in rows:
+        for _row in perf_rows:
+            tool, vtype, ema, runs, findings = (
+                _row["tool_name"], _row["vuln_type"], _row["ema"],
+                _row["runs_total"], _row["findings_total"],
+            )
             if not vtype:
                 continue
             if vtype not in vuln_type_stats:

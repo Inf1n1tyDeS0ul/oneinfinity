@@ -78,7 +78,7 @@ class PatternMiner:
         """Insert seed patterns into the KB if they don't exist yet."""
         for tech_stack, vuln_type, tool in self.SEED_PATTERNS:
             try:
-                self.kb.upsert_pattern(tech_stack, vuln_type, cvss=5.0, best_tool=tool)
+                self.kb.upsert_pattern_sync(tech_stack, vuln_type, cvss=5.0, best_tool=tool)
             except Exception:
                 pass
 
@@ -102,7 +102,7 @@ class PatternMiner:
         # Record tool performance
         if tool_results:
             for tool_name, perf in tool_results.items():
-                self.kb.record_tool_run(
+                self.kb.record_tool_run_sync(
                     tool_name=tool_name,
                     vuln_type=perf.get("vuln_type", ""),
                     target_type=self._classify_target(tech),
@@ -117,10 +117,10 @@ class PatternMiner:
             cvss = f.get("cvss_score", 0.0) or 0.0
             source = f.get("source_tool", "")
             if vuln_type and tech:
-                self.kb.upsert_pattern(tech, vuln_type, cvss=cvss, best_tool=source)
+                self.kb.upsert_pattern_sync(tech, vuln_type, cvss=cvss, best_tool=source)
 
         # Update target profile
-        self.kb.upsert_target_profile(target, tech_stack=tech)
+        self.kb.upsert_target_profile_sync(target, tech_stack=tech)
 
     def extract_tech_stack(self, raw_tech_data: str | list | dict) -> list[str]:
         """
@@ -141,10 +141,10 @@ class PatternMiner:
         """
         Predict likely vulnerabilities and suggest tools for a new target.
         """
-        profile = self.kb.get_target_profile(target)
+        profile = self.kb.get_target_profile_sync(target)
         tech = tech_stack or (profile.get("tech_stack") if profile else None) or []
 
-        patterns_raw = self.kb.patterns_for_tech_stack(tech)
+        patterns_raw = self.kb.patterns_for_tech_stack_sync(tech)
         patterns: list[VulnPattern] = []
         for p in patterns_raw:
             prob = min(p["occurrence_count"] / max(1, p["occurrence_count"] + 2), 0.95)

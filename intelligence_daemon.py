@@ -735,11 +735,11 @@ class LearningWorker(WorkerEngine):
     def _learn(self, event: BusEvent):
         d = event.data
         try:
-            from learning.knowledge_base import KnowledgeBase
-            kb = KnowledgeBase()
+            from core.learning_repository import get_learning_repo_sync
+            kb = get_learning_repo_sync()
             if event.event_type == EventType.NEW_VULNERABILITY:
                 sid = d.get("session_id", f"daemon_{int(time.time())}")
-                kb.record_finding(sid, {
+                kb.record_finding_sync(sid, {
                     "vuln_type":   d.get("vuln_type", "unknown"),
                     "severity":    d.get("severity", "info"),
                     "cvss_score":  d.get("cvss", 0.0),
@@ -748,7 +748,7 @@ class LearningWorker(WorkerEngine):
                     "target":      d.get("target", ""),
                 }, confirmed=True)
             elif event.event_type == EventType.EXPLOIT_ATTEMPTED:
-                kb.record_tool_run(
+                kb.record_tool_run_sync(
                     tool_name=d.get("tool", "exploit_engine"),
                     vuln_type=d.get("vuln_type", ""),
                     target_type="web",
