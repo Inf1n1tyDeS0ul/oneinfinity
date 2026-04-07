@@ -729,6 +729,7 @@ class ResearchModeController:
         passive_only: bool = True,
         tool_registry=None,
         min_confidence: float = 0.60,
+        auth_config: Optional[dict] = None,
     ):
         # Strip scheme from target if present
         _t = target
@@ -746,6 +747,7 @@ class ResearchModeController:
         self.passive_only = passive_only
         self.tool_registry = tool_registry
         self.min_confidence = min_confidence
+        self.auth_config = auth_config or {}
 
         # Sub-engines (lazy-initialized)
         self._app_engine = None
@@ -753,7 +755,9 @@ class ResearchModeController:
         self._test_engine = None
         self._zd_engine = None
         self._report_gen = ResearchReportGenerator()
-        self._kb = ResearchKnowledgeBase()
+        from core.research_repository import ResearchRepository
+        from core.db_manager import get_db_manager_sync
+        self._kb = ResearchRepository(get_db_manager_sync())
 
         # Integration
         self.attack_graph = attack_graph
@@ -780,16 +784,16 @@ class ResearchModeController:
         """
         self._start_time = time.time()
         self._log(f"Research session {self._session.session_id} started — target: {self.target}")
-        self._kb.save_session(self._session)
+        self._kb.save_session_sync(self._session)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Seed from prior session history
-        prior = self._kb.get_session_history(self.target)
+        prior = self._kb.get_session_history_sync(self.target)
         if prior:
             self._log(f"Prior sessions for {self.target}: {len(prior)} (leveraging institutional knowledge)")
 
         # Seed from cross-target patterns (global KB)
-        patterns = self._kb.get_known_patterns(min_count=1)
+        patterns = self._kb.get_known_patterns_sync(min_count=1)
         if patterns:
             self._log(f"Cross-target patterns available: {len(patterns)} historical successes")
 
@@ -804,7 +808,7 @@ class ResearchModeController:
                     f"═══ Iteration {self._session.iteration}/{self._session.max_iterations} ═══"
                 )
                 self._run_iteration()
-                self._kb.save_session(self._session)
+                self._kb.save_session_sync(self._session)
 
                 # Early convergence: stop if discoveries are accumulating
                 if self._session.confirmed_vulns >= 10:
@@ -820,7 +824,7 @@ class ResearchModeController:
         finally:
             self._session.ended_at = time.time()
             self._session.status = "completed" if not self._aborted else "aborted"
-            self._kb.save_session(self._session)
+            self._kb.finish_session_sync(self._session)
             self._finalize()
 
         return self._discoveries
@@ -891,7 +895,7 @@ class ResearchModeController:
         theory_set = self._theory_engine.generate_vulnerability_theories(app_model)
 
         # Apply confidence boosting from cross-target patterns
-        patterns = self._kb.get_known_patterns()
+        patterns = self._kb.get_known_patterns_sync()
         pattern_map: dict[str, int] = {p["vuln_type"]: p["success_count"] for p in patterns}
         for theory in theory_set.theories:
             if theory.vuln_type in pattern_map:
@@ -903,7 +907,10 @@ class ResearchModeController:
 
         # Store theories in KB
         for t in theory_set.theories:
-            self._kb.record_theory(self._session.session_id, t, self.target)
+            self._kb.record_theory_sync(
+                t.theory_id, self._session.session_id, self.target,
+                t.endpoint, t.vuln_type, t.severity, t.confidence, t.reasoning,
+            )
 
         # Filter by confidence threshold
         viable = [t for t in theory_set.theories if t.confidence >= self.min_confidence]
@@ -940,7 +947,12 @@ class ResearchModeController:
 
         # Store outcomes in KB
         for r in results:
-            self._kb.record_test_outcome(self._session.session_id, r, self.target)
+            self._kb.record_test_outcome_sync(
+                self._session.session_id, r.theory_id, self.target,
+                r.endpoint, r.vuln_type, r.payload_used,
+                r.status_code, r.response_size, r.response_time_ms,
+                r.anomaly_score, int(r.confirmed), r.evidence, time.time(),
+            )
 
         # ── Phase 4: Zero-Day Anomaly Detection ────────────────────────────────
         if time.time() < deadline:
@@ -972,7 +984,7 @@ class ResearchModeController:
             if not theory:
                 continue
 
-            self._kb.update_theory_status(theory.theory_id, "confirmed")
+            self._kb.update_theory_status_sync(theory.theory_id, "confirmed")
             theory.status = "confirmed"
 
             # Find matching anomaly if any
@@ -986,7 +998,13 @@ class ResearchModeController:
             )
             self._discoveries.append(report)
             self._session.confirmed_vulns += 1
-            self._kb.save_discovery(report)
+            self._kb.save_discovery_sync(
+                report.report_id, report.session_id, report.target, report.vuln_type,
+                report.title, report.severity, report.confidence, report.endpoint,
+                report.description, report.impact, report.steps_to_reproduce,
+                report.proof_of_concept, report.remediation, report.evidence,
+                report.cvss_score, report.discovered_at,
+            )
 
             # Save report to disk
             report_path = self.output_dir / f"report_{report.report_id}.md"
