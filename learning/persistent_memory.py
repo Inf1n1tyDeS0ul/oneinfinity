@@ -51,6 +51,23 @@ _HISTORY_FILE   = None
 _HISTORY_LIMIT  = 100    # keep last N run summaries
 
 
+def _get_neo4j_driver():
+    """Return (driver, database) or (None, 'neo4j') if unavailable.
+    Reads from the Neo4jKnowledgeBase singleton if already initialised."""
+    try:
+        from learning.neo4j_knowledge_base import _load_neo4j_config
+        from neo4j import GraphDatabase
+        cfg = _load_neo4j_config()
+        driver = GraphDatabase.driver(
+            cfg.get("uri", "bolt://localhost:7687"),
+            auth=(cfg.get("user", "neo4j"), cfg.get("password", "neo4j123")),
+        )
+        driver.verify_connectivity()
+        return driver, cfg.get("database", "neo4j")
+    except Exception:
+        return None, "neo4j"
+
+
 def _mem_path() -> Path:
     global _MEMORY_FILE
     if _MEMORY_FILE is None:
@@ -161,14 +178,30 @@ class PersistentMemory:
                 if entry["payload"] == payload and entry["vuln_type"] == vuln_type:
                     entry["hits"] += 1
                     self._dirty = True
-                    return
-            self._data["successful_payloads"].append(
-                {"payload": payload, "vuln_type": vuln_type, "hits": 1}
-            )
-            # Sort by hits desc, cap
-            self._data["successful_payloads"].sort(key=lambda x: -x["hits"])
-            self._data["successful_payloads"] = self._data["successful_payloads"][:self._MAX_PAYLOADS]
-            self._dirty = True
+                    break
+            else:
+                self._data["successful_payloads"].append(
+                    {"payload": payload, "vuln_type": vuln_type, "hits": 1}
+                )
+                # Sort by hits desc, cap
+                self._data["successful_payloads"].sort(key=lambda x: -x["hits"])
+                self._data["successful_payloads"] = self._data["successful_payloads"][:self._MAX_PAYLOADS]
+                self._dirty = True
+        # Mirror to Neo4j (non-fatal)
+        try:
+            driver, database = _get_neo4j_driver()
+            if driver:
+                key = f"{vuln_type}::{payload[:200]}"
+                with driver.session(database=database) as s:
+                    s.run(
+                        "MERGE (p:LN_Payload {key: $key}) "
+                        "ON CREATE SET p.value=$payload, p.vuln_type=$vtype, p.hits=1, p.fails=0 "
+                        "ON MATCH  SET p.hits = p.hits + 1",
+                        key=key, payload=payload[:200], vtype=vuln_type,
+                    )
+                driver.close()
+        except Exception as exc:
+            log.debug("record_successful_payload Neo4j mirror failed: %s", exc)
 
     def record_failed_payload(self, payload: str, vuln_type: str) -> None:
         if not payload:
@@ -178,13 +211,29 @@ class PersistentMemory:
                 if entry["payload"] == payload and entry["vuln_type"] == vuln_type:
                     entry["fails"] += 1
                     self._dirty = True
-                    return
-            self._data["failed_payloads"].append(
-                {"payload": payload, "vuln_type": vuln_type, "fails": 1}
-            )
-            self._data["failed_payloads"].sort(key=lambda x: -x["fails"])
-            self._data["failed_payloads"] = self._data["failed_payloads"][:self._MAX_PAYLOADS]
-            self._dirty = True
+                    break
+            else:
+                self._data["failed_payloads"].append(
+                    {"payload": payload, "vuln_type": vuln_type, "fails": 1}
+                )
+                self._data["failed_payloads"].sort(key=lambda x: -x["fails"])
+                self._data["failed_payloads"] = self._data["failed_payloads"][:self._MAX_PAYLOADS]
+                self._dirty = True
+        # Mirror to Neo4j (non-fatal)
+        try:
+            driver, database = _get_neo4j_driver()
+            if driver:
+                key = f"{vuln_type}::{payload[:200]}"
+                with driver.session(database=database) as s:
+                    s.run(
+                        "MERGE (p:LN_Payload {key: $key}) "
+                        "ON CREATE SET p.value=$payload, p.vuln_type=$vtype, p.hits=0, p.fails=1 "
+                        "ON MATCH  SET p.fails = p.fails + 1",
+                        key=key, payload=payload[:200], vtype=vuln_type,
+                    )
+                driver.close()
+        except Exception as exc:
+            log.debug("record_failed_payload Neo4j mirror failed: %s", exc)
 
     def get_payload_boost(self, payload: str) -> float:
         """
