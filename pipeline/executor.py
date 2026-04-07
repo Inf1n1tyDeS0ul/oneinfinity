@@ -290,7 +290,15 @@ class CanonicalExecutor:
             self._emit(pname, max(phase_cfg.pct_complete - 5, 0), f"Starting: {phase_cfg.display_name}")
 
             try:
-                findings = self._run_phase(phase_cfg, target, output_dir, result)
+                # OPTIMIZATION: If output file already exists (seeded or prior run), read it and skip execution
+                fpath = out_path / phase_cfg.output_file
+                if fpath.exists() and fpath.stat().st_size > 0:
+                    log.info("[pipeline] Phase %s output file exists — skipping execution and reading findings", pname)
+                    self._emit(pname, phase_cfg.pct_complete, f"Skipped: {phase_cfg.display_name} (using existing output)")
+                    findings = self._read_output_file(phase_cfg, out_path)
+                else:
+                    findings = self._run_phase(phase_cfg, target, output_dir, result)
+
                 # Normalize findings from this phase
                 normalized = [
                     normalize_finding(f, source_type=phase_cfg.source_type)
@@ -419,15 +427,17 @@ class CanonicalExecutor:
         """
         Run phase by executing oneinfinity.py as a subprocess.
         Used by CLI mode — identical CLI args as Docker exec.
-        Internal phases (_internal_*) run inline even in subprocess mode.
+        Internal phases (_internal_*) run inline even in subprocess mode
+        because they have no CLI equivalent (and god mode threads are non-daemon,
+        so interpreter-shutdown issues don't apply).
         """
-        # Internal phases always run inline (no CLI equivalent needed)
+        # Internal phases always run inline (no CLI equivalent)
         if phase.cli_command.startswith("_internal_"):
             return self._run_phase_inline(phase, target, output_dir, result)
 
         # Build args — same as canonical.phase_cli_args()
         # Commands fall into three categories for --output:
-        #   _no_output_flag   — no --output flag at all (_internal_*)
+        #   _no_output_flag   — no --output flag at all
         #   _file_output_cmds — write a single JSON file; pass full file path
         #   everything else   — resolve_output_dir(path, target); pass directory
         _file_output_cmds = {
@@ -444,6 +454,7 @@ class CanonicalExecutor:
         else:
             # Directory-based commands (adaptive-recon, vuln-scan, chains, attack-graph)
             cmd_args += ["--output", output_dir]
+
         full_cmd = [sys.executable, CLI_SCRIPT] + cmd_args
 
         # Apply WAF rate limiting via environment

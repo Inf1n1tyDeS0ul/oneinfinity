@@ -30,8 +30,8 @@ log = logging.getLogger("oneinfinity.god_mode")
 GOD_MODE_DIR = Path.home() / ".oneinfinity"
 GOD_MODE_LOG_DIR = GOD_MODE_DIR / "logs"
 CONVERGENCE_EMPTY_ITERS_REQUIRED = 2   # 2 consecutive research iters with 0 new findings
-EVENT_UNLOCK_VULN_THRESHOLD = 3        # NEW_VULNERABILITY events to start ResearchMission
-EVENT_UNLOCK_ENDPOINT_THRESHOLD = 10   # NEW_ENDPOINT events to start SwarmMission
+EVENT_UNLOCK_VULN_THRESHOLD = 1        # Reduced from 3 — unlock Research earlier in God Mode
+EVENT_UNLOCK_ENDPOINT_THRESHOLD = 5   # Reduced from 10 — unlock Swarm earlier in God Mode
 
 
 class FoundationError(RuntimeError):
@@ -264,11 +264,14 @@ class FoundationMission(Mission):
             _ws = os.getcwd()
             _report = _asyncio.run(DoctorOrchestrator(_ws).run(quick=True))
             _score = _report.get("score", 10.0) if isinstance(_report, dict) else _report.score
-            if _score < 10.0:
+            if _score < 9.0:
                 raise FoundationError(
-                    f"Doctor score {_score:.1f}/10.0 — fix environment before GOD MODE"
+                    f"Doctor score {_score:.1f}/10.0 — fix environment before GOD MODE (minimum 9.0 required)"
                 )
-            log.info("[GOD MODE] Doctor: %.1f/10.0 — OK", _score)
+            if _score < 10.0:
+                log.warning("[GOD MODE] Doctor: %.1f/10.0 — Proceeding with caution", _score)
+            else:
+                log.info("[GOD MODE] Doctor: %.1f/10.0 — OK", _score)
         except FoundationError:
             raise
         except Exception as exc:
@@ -278,7 +281,8 @@ class FoundationMission(Mission):
         log.info("[GOD MODE] Foundation Step 2: adaptive-recon --depth deep")
         try:
             from adaptive_recon_engine import AdaptiveReconEngine
-            self.recon = AdaptiveReconEngine(session.target, depth="deep").run()
+            recon_out = str(GOD_MODE_DIR / session.scan_id / "recon")
+            self.recon = AdaptiveReconEngine(session.target, output_dir=recon_out, depth="deep").run()
             log.info("[GOD MODE] Recon complete — subdomains=%s apis=%s",
                      len(getattr(self.recon, "subdomains", []) or []),
                      len(getattr(getattr(self.recon, "api_map", None), "endpoints", []) or []))
@@ -330,16 +334,19 @@ class FullScanMission(Mission):
 
         # Output dir: ~/.oneinfinity/<scan_id>/full_scan/
         out_dir = str(GOD_MODE_DIR / session.scan_id / "full_scan")
+        recon_dir = str(GOD_MODE_DIR / session.scan_id / "recon")
         Path(out_dir).mkdir(parents=True, exist_ok=True)
 
         def _on_progress(phase: str, pct: int, msg: str) -> None:
             log.info("[GOD MODE] full_scan [%d%%] [%s] %s", pct, phase, msg)
 
+        # Uses Foundation recon results (seeded via prior_results_dir) to speed up deep_recon phase
         result = run_canonical_pipeline(
             target=session.target,
             output_dir=out_dir,
             mode="subprocess",
             on_progress=_on_progress,
+            prior_results_dir=recon_dir if self._foundation.recon else None,
             auth_config=self._auth_config if self._auth_config else None,
         )
 
@@ -403,6 +410,7 @@ class ResearchMission(Mission):
             output_dir=out_dir,
             max_iterations=5,
             passive_only=False,
+            auth_config=session.auth_config,
         )
         discoveries = ctrl.run_research()
 
@@ -435,9 +443,14 @@ class SwarmMission(Mission):
 
         log.info("[GOD MODE] SwarmMission: deploying 8 agents against %s", session.target)
 
+        # Build context including auth
+        ctx = {}
+        if session.auth_config:
+            ctx["auth_sessions"] = [session.auth_config]
+
         result = _asyncio.run(run_swarm(
             target=session.target,
-            context={},
+            context=ctx,
             concurrency=4,
             agent_types=None,   # all 8 agent types
         ))
@@ -928,16 +941,16 @@ class GodModeConductor:
                     if m._thread.is_alive():
                         log.warning("[GOD MODE] Mission '%s' still running after stop timeout — proceeding", m.name)
 
-            # ── Also start ChainsMission if research ran ───────────────────────
-            if research and research.status == "done" and chains.status == "pending":
-                log.info("[GOD MODE] Triggering ChainsMission post-convergence")
+            # ── Also start ChainsMission if findings were found but it hasn't run ──────
+            if (session.finding_count > 0) and chains.status == "pending":
+                log.info("[GOD MODE] Triggering ChainsMission post-convergence (findings found)")
                 chains.start(session)
                 if chains._thread is not None:
                     chains._thread.join(timeout=120)  # wait up to 2 min for chains
 
             self._unsubscribe_from_event_bus()
 
-            # ── Stage 5: ReportMission (always) ────────────────────────────────
+            # Stage 5: ReportMission (always)
             print(f"\n[*] Stage 5: Finalization...")
             report.run_sync(session)
             self._update_session_missions()
@@ -949,6 +962,15 @@ class GodModeConductor:
             print(f"    Findings:      {session.finding_count}")
             print(f"    Phases:        {', '.join(session.phases_complete)}")
             print(f"    Report:        {GOD_MODE_DIR / session.scan_id}")
+
+            # ── Cleanup connection pools ───────────────────────────────────────
+            try:
+                import asyncio as _asyncio
+                from core.pg_client import close_pg
+                # Since we are in a non-async thread, use a small run to close pool
+                _asyncio.run(close_pg())
+            except Exception as exc:
+                log.debug("[GOD MODE] pg_client cleanup failed: %s", exc)
 
             self._teardown_logging()
 
