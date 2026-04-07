@@ -593,6 +593,7 @@ class GodModeConductor:
         self._missions: list[Mission] = []
         self._lock = threading.Lock()
         self._log_handler: Optional[logging.FileHandler] = None
+        self._wakeup = threading.Event()  # set by stop() to interrupt convergence loop sleep
 
         # Event bus counters (guarded by _lock)
         self._vuln_count: int = 0
@@ -700,6 +701,8 @@ class GodModeConductor:
         sentinel = GodModeStateFile.stop_sentinel_path(scan_id)
         sentinel.touch()
         log.info("[GOD MODE] Stop sentinel written for %s", scan_id)
+        # Wake up the convergence loop immediately instead of waiting for the next 30s tick
+        self._wakeup.set()
         return True
 
     # ── Logging setup ─────────────────────────────────────────────────────────
@@ -736,10 +739,17 @@ class GodModeConductor:
         session = self._session
 
         while True:
-            time.sleep(30)
-
-            # Stop sentinel
+            # Check stop sentinel immediately before waiting (catches stop written before loop starts)
             sentinel = GodModeStateFile.stop_sentinel_path(session.scan_id)
+            if sentinel.exists():
+                log.info("[GOD MODE] Stop sentinel detected — finalizing")
+                return "stop"
+
+            # Wait up to 30s, but wake immediately if stop() signals _wakeup
+            self._wakeup.wait(timeout=30)
+            self._wakeup.clear()
+
+            # Re-check sentinel right after wakeup (could be a stop signal)
             if sentinel.exists():
                 log.info("[GOD MODE] Stop sentinel detected — finalizing")
                 return "stop"
@@ -908,6 +918,16 @@ class GodModeConductor:
                 if not m.is_done():
                     m.stop()
 
+            # Wait up to 15s for missions to stop; they run blocking calls so they
+            # may not honour the stop event — we proceed regardless after the timeout.
+            _stop_deadline = time.time() + 15
+            for m in self._missions:
+                if m._thread is not None and m._thread.is_alive():
+                    remaining = max(0.1, _stop_deadline - time.time())
+                    m._thread.join(timeout=remaining)
+                    if m._thread.is_alive():
+                        log.warning("[GOD MODE] Mission '%s' still running after stop timeout — proceeding", m.name)
+
             # ── Also start ChainsMission if research ran ───────────────────────
             if research and research.status == "done" and chains.status == "pending":
                 log.info("[GOD MODE] Triggering ChainsMission post-convergence")
@@ -931,6 +951,15 @@ class GodModeConductor:
             print(f"    Report:        {GOD_MODE_DIR / session.scan_id}")
 
             self._teardown_logging()
+
+            # If stopped manually, force-exit after finalization.
+            # Mission threads are daemon=False and blocking calls (subprocesses, asyncio)
+            # cannot be interrupted — os._exit ensures the process terminates cleanly.
+            if session.terminated_by == "stop":
+                _still_alive = [m.name for m in self._missions if m._thread and m._thread.is_alive()]
+                if _still_alive:
+                    log.info("[GOD MODE] Force-exiting; missions still running: %s", _still_alive)
+                os._exit(0)
         finally:
             if _enforcement is not None:
                 _enforcement.stop_recursive_watch(session.scan_id)
