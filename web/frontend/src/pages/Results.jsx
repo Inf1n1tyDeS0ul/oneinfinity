@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import {
   ShieldAlert, History, Search, ChevronDown, ChevronUp,
-  CheckCircle2, XCircle, StopCircle, RefreshCw, Trash2
+  CheckCircle2, XCircle, StopCircle, RefreshCw, Trash2, X
 } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { endpoints } from '../utils/api'
@@ -22,14 +22,19 @@ function relativeTime(iso) {
 
 // ─── Findings Tab ────────────────────────────────────────────────────────────
 
-function FindingsTab() {
+function FindingsTab({ scanFilter, onClearFilter }) {
   const { vulnerabilities, setVulnerabilities, addNotification } = useStore()
   const [sevFilter, setSevFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [search, setSearch] = useState('')
   const [expanded, setExpanded] = useState(null)
 
-  const filtered = vulnerabilities.filter(v => {
+  // When a scan filter is active, scope to that scan first
+  const scoped = scanFilter
+    ? vulnerabilities.filter(v => v.scan_id === scanFilter.id)
+    : vulnerabilities
+
+  const filtered = scoped.filter(v => {
     if (sevFilter && v.severity !== sevFilter) return false
     if (statusFilter && v.status !== statusFilter) return false
     if (search) {
@@ -43,10 +48,10 @@ function FindingsTab() {
     return true
   })
 
-  const total = vulnerabilities.length
-  const critical = vulnerabilities.filter(v => v.severity === 'critical').length
-  const high = vulnerabilities.filter(v => v.severity === 'high').length
-  const confirmed = vulnerabilities.filter(v => v.status === 'confirmed').length
+  const total = scoped.length
+  const critical = scoped.filter(v => v.severity === 'critical').length
+  const high = scoped.filter(v => v.severity === 'high').length
+  const confirmed = scoped.filter(v => v.status === 'confirmed').length
 
   const handleStatusChange = async (id, status) => {
     try {
@@ -66,6 +71,24 @@ function FindingsTab() {
 
   return (
     <div className="flex flex-col gap-4">
+      {/* Scan context banner — shown when filtered to a specific scan */}
+      {scanFilter && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded bg-accent-primary/10 border border-accent-primary/20 text-xs">
+          <ShieldAlert size={11} className="text-accent-primary flex-shrink-0" />
+          <span className="text-slate-300">
+            Findings for <span className="text-slate-100 font-medium">{scanFilter.target}</span>
+            <span className="text-slate-500 ml-1">({scanFilter.id})</span>
+          </span>
+          <button
+            className="ml-auto flex items-center gap-1 text-slate-400 hover:text-slate-200 transition-colors"
+            onClick={onClearFilter}
+          >
+            <X size={11} />
+            All Scans
+          </button>
+        </div>
+      )}
+
       {/* Stats cards */}
       <div className="grid grid-cols-4 gap-3">
         <div className="stat-card">
