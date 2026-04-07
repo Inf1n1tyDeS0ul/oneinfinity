@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -30,7 +29,7 @@ from typing import Any, Optional
 
 log = logging.getLogger("oneinfinity.research")
 
-from path_manager import research_db_path, resolve_output_dir
+from path_manager import resolve_output_dir
 
 # ── Data models ───────────────────────────────────────────────────────────────
 
@@ -134,293 +133,6 @@ class DiscoveryReport:
 ---
 *Discovered by Autonomous Vulnerability Research — {self.target}*
 """
-
-
-# ── Knowledge Base ────────────────────────────────────────────────────────────
-
-class ResearchKnowledgeBase:
-    """
-    SQLite-backed store for research sessions, tested endpoints,
-    confirmed vulnerabilities, and cross-session insights.
-    """
-    DB_PATH = research_db_path()
-
-    def __init__(self, db_path: str | Path | None = None):
-        self.path = Path(db_path or self.DB_PATH)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn: Optional[sqlite3.Connection] = None
-        self._init_schema()
-
-    def _connect(self) -> sqlite3.Connection:
-        if self._conn is None:
-            self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
-        return self._conn
-
-    def _init_schema(self):
-        conn = self._connect()
-        conn.executescript("""
-        CREATE TABLE IF NOT EXISTS research_sessions (
-            session_id   TEXT PRIMARY KEY,
-            target       TEXT NOT NULL,
-            output_dir   TEXT,
-            platform     TEXT DEFAULT 'HackerOne',
-            started_at   REAL NOT NULL,
-            ended_at     REAL DEFAULT 0,
-            status       TEXT DEFAULT 'running',
-            iteration    INTEGER DEFAULT 0,
-            theories_generated INTEGER DEFAULT 0,
-            tests_executed INTEGER DEFAULT 0,
-            anomalies_found INTEGER DEFAULT 0,
-            confirmed_vulns INTEGER DEFAULT 0
-        );
-
-        CREATE TABLE IF NOT EXISTS endpoint_insights (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id   TEXT NOT NULL,
-            target       TEXT NOT NULL,
-            endpoint     TEXT NOT NULL,
-            method       TEXT DEFAULT 'GET',
-            parameters   TEXT DEFAULT '[]',
-            auth_required INTEGER DEFAULT 0,
-            sensitivity_score REAL DEFAULT 0,
-            tags         TEXT DEFAULT '[]',
-            tested_at    REAL DEFAULT 0,
-            FOREIGN KEY (session_id) REFERENCES research_sessions(session_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS vuln_theories (
-            theory_id    TEXT PRIMARY KEY,
-            session_id   TEXT NOT NULL,
-            target       TEXT NOT NULL,
-            endpoint     TEXT NOT NULL,
-            vuln_type    TEXT NOT NULL,
-            severity     TEXT NOT NULL,
-            confidence   REAL DEFAULT 0,
-            reasoning    TEXT DEFAULT '',
-            status       TEXT DEFAULT 'pending',
-            created_at   REAL NOT NULL,
-            updated_at   REAL DEFAULT 0,
-            FOREIGN KEY (session_id) REFERENCES research_sessions(session_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS test_outcomes (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id   TEXT NOT NULL,
-            theory_id    TEXT,
-            target       TEXT NOT NULL,
-            endpoint     TEXT NOT NULL,
-            vuln_type    TEXT,
-            payload      TEXT DEFAULT '',
-            status_code  INTEGER DEFAULT 0,
-            response_size INTEGER DEFAULT 0,
-            response_time_ms REAL DEFAULT 0,
-            anomaly_score REAL DEFAULT 0,
-            confirmed    INTEGER DEFAULT 0,
-            evidence     TEXT DEFAULT '',
-            tested_at    REAL NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES research_sessions(session_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS discoveries (
-            report_id    TEXT PRIMARY KEY,
-            session_id   TEXT NOT NULL,
-            target       TEXT NOT NULL,
-            vuln_type    TEXT NOT NULL,
-            title        TEXT NOT NULL,
-            severity     TEXT NOT NULL,
-            confidence   REAL DEFAULT 0,
-            endpoint     TEXT NOT NULL,
-            description  TEXT DEFAULT '',
-            impact       TEXT DEFAULT '',
-            steps        TEXT DEFAULT '[]',
-            poc          TEXT DEFAULT '',
-            remediation  TEXT DEFAULT '',
-            evidence     TEXT DEFAULT '',
-            cvss_score   REAL DEFAULT 0,
-            discovered_at REAL NOT NULL,
-            reported     INTEGER DEFAULT 0,
-            FOREIGN KEY (session_id) REFERENCES research_sessions(session_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS cross_target_patterns (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            vuln_type    TEXT NOT NULL,
-            endpoint_pattern TEXT NOT NULL,
-            parameter_pattern TEXT DEFAULT '',
-            success_count INTEGER DEFAULT 1,
-            last_seen    REAL NOT NULL,
-            notes        TEXT DEFAULT ''
-        );
-        """)
-        conn.commit()
-
-    def save_session(self, session: ResearchSession):
-        conn = self._connect()
-        conn.execute("""
-        INSERT OR REPLACE INTO research_sessions VALUES (
-            :session_id, :target, :output_dir, :platform, :started_at,
-            :ended_at, :status, :iteration, :theories_generated,
-            :tests_executed, :anomalies_found, :confirmed_vulns
-        )
-        """, {
-            "session_id": session.session_id,
-            "target": session.target,
-            "output_dir": session.output_dir,
-            "platform": session.platform,
-            "started_at": session.started_at,
-            "ended_at": session.ended_at,
-            "status": session.status,
-            "iteration": session.iteration,
-            "theories_generated": session.theories_generated,
-            "tests_executed": session.tests_executed,
-            "anomalies_found": session.anomalies_found,
-            "confirmed_vulns": session.confirmed_vulns,
-        })
-        conn.commit()
-
-    def record_theory(self, session_id: str, theory, target: str):
-        conn = self._connect()
-        conn.execute("""
-        INSERT OR IGNORE INTO vuln_theories VALUES (
-            :theory_id, :session_id, :target, :endpoint, :vuln_type,
-            :severity, :confidence, :reasoning, :status, :created_at, :updated_at
-        )
-        """, {
-            "theory_id": theory.theory_id,
-            "session_id": session_id,
-            "target": target,
-            "endpoint": theory.endpoint,
-            "vuln_type": theory.vuln_type,
-            "severity": theory.severity,
-            "confidence": theory.confidence,
-            "reasoning": theory.reasoning,
-            "status": theory.status,
-            "created_at": time.time(),
-            "updated_at": 0.0,
-        })
-        conn.commit()
-
-    def update_theory_status(self, theory_id: str, status: str):
-        conn = self._connect()
-        conn.execute(
-            "UPDATE vuln_theories SET status=?, updated_at=? WHERE theory_id=?",
-            (status, time.time(), theory_id)
-        )
-        conn.commit()
-
-    def record_test_outcome(self, session_id: str, result, target: str):
-        conn = self._connect()
-        conn.execute("""
-        INSERT INTO test_outcomes (
-            session_id, theory_id, target, endpoint, vuln_type, payload,
-            status_code, response_size, response_time_ms, anomaly_score,
-            confirmed, evidence, tested_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            session_id,
-            result.theory_id,
-            target,
-            result.endpoint,
-            result.vuln_type,
-            result.payload_used,
-            result.status_code,
-            result.response_size,
-            result.response_time_ms,
-            result.anomaly_score,
-            int(result.confirmed),
-            result.evidence,
-            time.time(),
-        ))
-        conn.commit()
-
-    def save_discovery(self, report: DiscoveryReport):
-        conn = self._connect()
-        conn.execute("""
-        INSERT OR REPLACE INTO discoveries VALUES (
-            :report_id, :session_id, :target, :vuln_type, :title, :severity,
-            :confidence, :endpoint, :description, :impact, :steps, :poc,
-            :remediation, :evidence, :cvss_score, :discovered_at, :reported
-        )
-        """, {
-            "report_id": report.report_id,
-            "session_id": report.session_id,
-            "target": report.target,
-            "vuln_type": report.vuln_type,
-            "title": report.title,
-            "severity": report.severity,
-            "confidence": report.confidence,
-            "endpoint": report.endpoint,
-            "description": report.description,
-            "impact": report.impact,
-            "steps": json.dumps(report.steps_to_reproduce),
-            "poc": report.proof_of_concept,
-            "remediation": report.remediation,
-            "evidence": report.evidence,
-            "cvss_score": report.cvss_score,
-            "discovered_at": report.discovered_at,
-            "reported": 0,
-        })
-        conn.commit()
-        # Update cross-target pattern table
-        self._update_pattern(report.vuln_type, report.endpoint)
-
-    def _update_pattern(self, vuln_type: str, endpoint: str):
-        import re
-        pattern = re.sub(r"\d+", "{id}", endpoint)
-        conn = self._connect()
-        row = conn.execute(
-            "SELECT id, success_count FROM cross_target_patterns WHERE vuln_type=? AND endpoint_pattern=?",
-            (vuln_type, pattern)
-        ).fetchone()
-        if row:
-            conn.execute(
-                "UPDATE cross_target_patterns SET success_count=?, last_seen=? WHERE id=?",
-                (row["success_count"] + 1, time.time(), row["id"])
-            )
-        else:
-            conn.execute(
-                "INSERT INTO cross_target_patterns (vuln_type, endpoint_pattern, last_seen) VALUES (?,?,?)",
-                (vuln_type, pattern, time.time())
-            )
-        conn.commit()
-
-    def get_known_patterns(self, min_count: int = 2) -> list[dict]:
-        conn = self._connect()
-        rows = conn.execute(
-            "SELECT * FROM cross_target_patterns WHERE success_count >= ? ORDER BY success_count DESC",
-            (min_count,)
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def get_session_history(self, target: str) -> list[dict]:
-        conn = self._connect()
-        rows = conn.execute(
-            "SELECT * FROM research_sessions WHERE target=? ORDER BY started_at DESC LIMIT 10",
-            (target,)
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def get_confirmed_discoveries(self) -> list[dict]:
-        conn = self._connect()
-        rows = conn.execute(
-            "SELECT * FROM discoveries ORDER BY discovered_at DESC"
-        ).fetchall()
-        result = []
-        for r in rows:
-            d = dict(r)
-            try:
-                d["steps"] = json.loads(d.get("steps", "[]"))
-            except Exception:
-                d["steps"] = []
-            result.append(d)
-        return result
-
-    def close(self):
-        if self._conn:
-            self._conn.close()
-            self._conn = None
-
 
 # ── Report Generator ──────────────────────────────────────────────────────────
 
@@ -1137,13 +849,21 @@ class ResearchModeController:
 
 # ── Statistics / history ──────────────────────────────────────────────────────
 
-def show_research_stats():
-    """Print cross-session research statistics from the knowledge base."""
-    kb = ResearchKnowledgeBase()
-    discoveries = kb.get_confirmed_discoveries()
-    patterns = kb.get_known_patterns(min_count=1)
+async def _fetch_research_stats():
+    from core.research_repository import get_research_repo
+    repo = await get_research_repo()
+    sessions = await repo.get_session_history(target=None)
+    discoveries = await repo.get_confirmed_discoveries()
+    patterns = await repo.get_known_patterns(min_count=1)
+    return sessions, discoveries, patterns
 
-    from modules.utils import banner, section, ok, info
+
+def show_research_stats():
+    """Print cross-session research statistics from PostgreSQL."""
+    import asyncio
+    sessions, discoveries, patterns = asyncio.run(_fetch_research_stats())
+    from modules.utils import banner, section, ok
+
     banner("Research Knowledge Base")
     ok(f"Confirmed discoveries: {len(discoveries)}")
     ok(f"Cross-target patterns : {len(patterns)}")
@@ -1161,7 +881,6 @@ def show_research_stats():
         for p in patterns[:10]:
             print(f"  [{p['success_count']}x] {p['vuln_type']} → {p['endpoint_pattern']}")
     print()
-    kb.close()
 
 
 # ── CLI entry point ───────────────────────────────────────────────────────────
