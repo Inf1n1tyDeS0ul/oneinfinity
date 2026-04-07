@@ -7,6 +7,7 @@ All labels are prefixed LN_ to avoid collision with attack graph (OI_Node / OI_R
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 log = logging.getLogger("oneinfinity.learning.graph_schema")
 
@@ -27,7 +28,7 @@ _INDEXES = [
 ]
 
 
-def bootstrap_learning_schema(driver, database: str = "neo4j") -> None:
+def bootstrap_learning_schema(driver: Any, database: str = "neo4j") -> None:
     """Apply constraints and indexes. Safe to call multiple times."""
     if driver is None:
         return
@@ -37,5 +38,5 @@ def bootstrap_learning_schema(driver, database: str = "neo4j") -> None:
                 sess.run(stmt)
         log.info("Learning graph schema bootstrapped (%d constraints, %d indexes)",
                  len(_CONSTRAINTS), len(_INDEXES))
-    except Exception as exc:
-        log.warning("bootstrap_learning_schema failed (non-fatal): %s", exc)
+    except Exception:
+        log.warning("bootstrap_learning_schema failed (non-fatal)", exc_info=True)
