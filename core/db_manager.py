@@ -251,6 +251,100 @@ class DBManager:
             log.warning("DBManager._pg_get_findings failed: %s", exc)
             return []
 
+    async def check_and_save_finding(self, finding: dict) -> bool:
+        """Dedup-aware insert. Returns True if stored (new), False if duplicate."""
+        fid = finding.get("finding_id") or str(uuid.uuid4())[:12]
+        finding = {**finding, "finding_id": fid}
+        if self.mode in ("distributed", "postgres"):
+            return await self._pg_check_and_save_finding(finding)
+        return self._sqlite_check_and_save_finding(finding)
+
+    async def _pg_check_and_save_finding(self, finding: dict) -> bool:
+        data = {
+            k: finding.get(k, "")
+            for k in ("evidence", "payload", "raw", "poc_steps", "reproduction_cmd")
+        }
+        try:
+            async with self._pg_pool.connection() as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO findings
+                        (finding_id, scan_id, target, title, severity, vuln_type, url,
+                         tool, confidence, cvss, status, source_type, created_at, data)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s)
+                    ON CONFLICT (scan_id, vuln_type, url) DO NOTHING
+                    RETURNING finding_id
+                    """,
+                    (
+                        finding["finding_id"],
+                        finding.get("scan_id", ""),
+                        finding.get("target", ""),
+                        finding.get("title", ""),
+                        finding.get("severity", "info"),
+                        finding.get("vuln_type", ""),
+                        finding.get("url", ""),
+                        finding.get("tool", ""),
+                        float(finding.get("confidence", 0.8)),
+                        float(finding.get("cvss", 0.0)),
+                        finding.get("status", "new"),
+                        finding.get("source_type", "tool"),
+                        json.dumps(data, default=str),
+                    ),
+                )
+                row = await result.fetchone()
+                await conn.commit()
+                return row is not None
+        except Exception as exc:
+            log.warning("DBManager._pg_check_and_save_finding failed: %s", exc)
+            raise
+
+    def _sqlite_check_and_save_finding(self, finding: dict) -> bool:
+        import sqlite3 as _sq
+        scan_id = finding.get("scan_id", "")
+        vuln_type = finding.get("vuln_type", "")
+        url = finding.get("url", "")
+        try:
+            with _sq.connect(str(self._sqlite_path), timeout=30) as conn:
+                conn.execute("PRAGMA journal_mode=WAL;")
+                row = conn.execute(
+                    "SELECT 1 FROM findings "
+                    "WHERE (scan_id=? AND vuln_type=? AND url=?) "
+                    "OR (vuln_type=? AND url=? AND created_at > datetime('now', '-1 day')) "
+                    "LIMIT 1",
+                    (scan_id, vuln_type, url, vuln_type, url),
+                ).fetchone()
+                if row is not None:
+                    return False
+                conn.execute(
+                    "INSERT OR REPLACE INTO findings "
+                    "(finding_id, scan_id, target, title, severity, vuln_type, "
+                    " evidence, payload, url, tool, confidence, cvss, status, "
+                    " source_type, created_at, raw_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        finding.get("finding_id", ""),
+                        scan_id,
+                        finding.get("target", ""),
+                        finding.get("title", ""),
+                        finding.get("severity", "info"),
+                        vuln_type,
+                        finding.get("evidence", ""),
+                        finding.get("payload", ""),
+                        url,
+                        finding.get("tool", ""),
+                        float(finding.get("confidence", 0.8)),
+                        float(finding.get("cvss", 0.0)),
+                        finding.get("status", "new"),
+                        finding.get("source_type", "tool"),
+                        finding.get("created_at", datetime.utcnow().isoformat()),
+                        json.dumps(finding.get("raw", {}), default=str),
+                    ),
+                )
+                conn.commit()
+                return True
+        except Exception as exc:
+            log.warning("DBManager._sqlite_check_and_save_finding failed: %s", exc)
+            raise
 
     # ── Scans ─────────────────────────────────────────────────────────────────
 
@@ -1346,3 +1440,6 @@ class DBManager:
 
     def sync_get_findings(self, **kwargs) -> list:
         return self._run_sync(self.get_findings(**kwargs))
+
+    def sync_check_and_save_finding(self, finding: dict) -> bool:
+        return self._run_sync(self.check_and_save_finding(finding))
