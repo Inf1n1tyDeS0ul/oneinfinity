@@ -46,6 +46,11 @@ import sys
 import os
 import argparse
 from pathlib import Path
+import urllib3
+
+# Suppress InsecureRequestWarning — verify=False is intentional throughout this
+# security-testing tool (targets are typically lab/vulnerable hosts with self-signed certs).
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from path_manager import findings_db_path, raw_dir, resolve_output_dir, workspace_root
 
@@ -2001,10 +2006,15 @@ def cmd_learn(args):
         banner("Continuous Learning System")
         ls.show_stats()
 
+    elif subcommand == "backfill":
+        from learning.backfill import main as backfill_main
+        backfill_main()
+
     else:
         warn(f"Unknown subcommand: {subcommand}")
         print("  Usage: oneinfinity learn stats")
         print("         oneinfinity learn plan <target> [--tech php,mysql] [--quick]")
+        print("         oneinfinity learn backfill")
 
     ls.close()
 
@@ -2435,6 +2445,7 @@ def build_parser():
                     help="Comma-separated tech stack (e.g. wordpress,mysql,nginx)")
     ll.add_argument("--quick", action="store_true",
                     help="Quick mode: skip recon, focus on known vuln types")
+    pl2sub.add_parser("backfill", help="Backfill Neo4j learning graph from existing PG findings (idempotent)")
 
     # ── Autonomous Vulnerability Research commands ────────────────────────────
 
@@ -4191,6 +4202,9 @@ def main():
         "brain-decide":       cmd_brain_decide,
         "brain-triggers":     cmd_brain_triggers,
         "god-mode":           cmd_god_mode,
+        "_internal_register": cmd__internal_register,
+        "_internal_deep_recon": cmd__internal_deep_recon,
+        "_internal_auth_session": cmd__internal_auth_session,
     }
 
     handler = handlers.get(args.command)
@@ -5103,7 +5117,7 @@ def cmd_god_mode(args):
     # a bare subcommand keyword (e.g. "stop") may be consumed as target.
     # Detect and re-route: if target holds a subcommand keyword, shift it.
     target_val = getattr(args, "target", None) or ""
-    if not sub and target_val in ("status", "logs", "stop"):
+    if not sub and target_val in ("status", "logs", "stop", "run"):
         sub = target_val
         args.target = ""
 
@@ -5158,7 +5172,17 @@ def cmd_god_mode(args):
         return
 
     # ── run (default) ─────────────────────────────────────────────────────────
-    target = getattr(args, "target", None)
+    if sub == "run":
+        raw = getattr(args, "args", [])
+        if raw:
+            target = raw[0].strip()
+        else:
+            target = getattr(args, "target", None)
+            if not target or target == "run":
+                target = getattr(args, "scan_id", None) # argparse might have shifted it
+    else:
+        target = getattr(args, "target", None)
+
     if not target:
         print("Usage: oneinfinity god-mode <target> [options]")
         print("       oneinfinity god-mode status [scan-id]")
@@ -5166,16 +5190,47 @@ def cmd_god_mode(args):
         print("       oneinfinity god-mode stop [scan-id]")
         return
 
+    background = getattr(args, "background", False)
     conductor = get_god_mode_conductor()
     conductor.run(
         target=target,
         max_time=getattr(args, "max_time", "2h") or "2h",
         max_findings=getattr(args, "max_findings", 100) or 100,
-        background=getattr(args, "background", False),
+        background=background,
         no_swarm=getattr(args, "no_swarm", False),
         no_research=getattr(args, "no_research", False),
         report_fmt=getattr(args, "report_fmt", "markdown") or "markdown",
     )
+
+    # Non-daemon background threads (daemon=False in GodModeConductor) keep
+    # the process alive until the scan finishes — no need for a busy-wait loop here.
+
+
+def cmd__internal_register(args):
+    """oneinfinity _internal_register <target> — internal phase."""
+    from pipeline.executor import CanonicalExecutor
+    from pathlib import Path
+    out = getattr(args, "output", ".") or "."
+    exec = CanonicalExecutor()
+    exec._inline_target_registration(args.target, Path(out))
+
+
+def cmd__internal_deep_recon(args):
+    """oneinfinity _internal_deep_recon <target> — internal phase."""
+    from pipeline.executor import CanonicalExecutor
+    from pathlib import Path
+    out = getattr(args, "output", ".") or "."
+    exec = CanonicalExecutor()
+    exec._inline_deep_recon(args.target, Path(out), {})
+
+
+def cmd__internal_auth_session(args):
+    """oneinfinity _internal_auth_session <target> — internal phase."""
+    from pipeline.executor import CanonicalExecutor
+    from pathlib import Path
+    out = getattr(args, "output", ".") or "."
+    exec = CanonicalExecutor()
+    exec._inline_auth_session(args.target, Path(out), {})
 
 
 if __name__ == "__main__":
