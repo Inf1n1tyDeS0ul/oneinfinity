@@ -215,3 +215,71 @@ CREATE TABLE IF NOT EXISTS endpoint_insights (
     tested_at         DOUBLE PRECISION
 );
 CREATE INDEX IF NOT EXISTS idx_endpoint_insights_session ON endpoint_insights(session_id);
+
+-- ── Learning Scan Sessions ───────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS learning_scan_sessions (
+    session_id      TEXT PRIMARY KEY,
+    target          TEXT NOT NULL,
+    started_at      DOUBLE PRECISION NOT NULL DEFAULT 0,
+    finished_at     DOUBLE PRECISION,
+    phases          JSONB NOT NULL DEFAULT '[]',
+    total_findings  INTEGER NOT NULL DEFAULT 0,
+    tools_used      JSONB NOT NULL DEFAULT '[]',
+    notes           TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_learning_sessions_target ON learning_scan_sessions(target);
+
+-- ── Learning Findings History ────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS learning_findings (
+    id            BIGSERIAL PRIMARY KEY,
+    session_id    TEXT NOT NULL,
+    target        TEXT NOT NULL,
+    vuln_type     TEXT NOT NULL,
+    severity      TEXT NOT NULL DEFAULT 'info',
+    cvss_score    DOUBLE PRECISION,
+    endpoint      TEXT NOT NULL DEFAULT '',
+    parameter     TEXT NOT NULL DEFAULT '',
+    source_tool   TEXT NOT NULL DEFAULT '',
+    confirmed     INTEGER NOT NULL DEFAULT 1,
+    chain_id      TEXT NOT NULL DEFAULT '',
+    discovered_at DOUBLE PRECISION NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_learning_findings_session ON learning_findings(session_id);
+CREATE INDEX IF NOT EXISTS idx_learning_findings_target  ON learning_findings(target);
+CREATE INDEX IF NOT EXISTS idx_learning_findings_vuln    ON learning_findings(vuln_type);
+
+-- ── Tool Performance ─────────────────────────────────────────────────────────
+-- Composite PK enables atomic ON CONFLICT DO UPDATE for EMA accumulation.
+CREATE TABLE IF NOT EXISTS tool_performance (
+    tool_name      TEXT NOT NULL,
+    vuln_type      TEXT NOT NULL DEFAULT '',
+    target_type    TEXT NOT NULL DEFAULT '',
+    runs_total     INTEGER NOT NULL DEFAULT 0,
+    runs_success   INTEGER NOT NULL DEFAULT 0,
+    findings_total INTEGER NOT NULL DEFAULT 0,
+    avg_duration_s DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    last_updated   DOUBLE PRECISION,
+    PRIMARY KEY (tool_name, vuln_type, target_type)
+);
+
+-- ── Target Profiles ──────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS target_profiles (
+    domain           TEXT PRIMARY KEY,
+    tech_stack       JSONB NOT NULL DEFAULT '[]',
+    waf_detected     TEXT NOT NULL DEFAULT '',
+    scope_notes      TEXT NOT NULL DEFAULT '',
+    historical_vulns JSONB NOT NULL DEFAULT '{}',
+    last_scanned     DOUBLE PRECISION,
+    scan_count       INTEGER NOT NULL DEFAULT 0
+);
+
+-- ── Pattern Library ──────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS pattern_library (
+    tech_stack_key   TEXT NOT NULL,
+    vuln_type        TEXT NOT NULL,
+    occurrence_count INTEGER NOT NULL DEFAULT 1,
+    avg_cvss         DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    best_tool        TEXT NOT NULL DEFAULT '',
+    last_seen        DOUBLE PRECISION,
+    PRIMARY KEY (tech_stack_key, vuln_type)
+);
