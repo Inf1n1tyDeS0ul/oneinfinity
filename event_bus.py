@@ -298,25 +298,33 @@ class EventBus:
         self._loop.run_until_complete(self._dispatch_loop())
 
     async def _dispatch_loop(self):
-        while self._running:
-            try:
-                # Pull from priority queue (non-blocking, poll every 5ms)
+        try:
+            while self._running:
                 try:
-                    _pri, _ts, _eid, event = self._inbox.get_nowait()
-                except queue.Empty:
-                    await asyncio.sleep(0.005)
-                    continue
+                    # Pull from priority queue (non-blocking, poll every 5ms)
+                    try:
+                        _pri, _ts, _eid, event = self._inbox.get_nowait()
+                    except queue.Empty:
+                        await asyncio.sleep(0.005)
+                        continue
 
-                if event is None:
-                    break
+                    if event is None:
+                        break
 
-                # Skip expired events
-                if event.is_expired():
-                    continue
+                    # Skip expired events
+                    if event.is_expired():
+                        continue
 
-                await self._dispatch(event)
-            except Exception as exc:
-                log.exception("Dispatch loop error: %s", exc)
+                    await self._dispatch(event)
+                except Exception as exc:
+                    log.exception("Dispatch loop error: %s", exc)
+        finally:
+            # Close the pg pool opened in this loop to avoid "Task was destroyed" warnings
+            try:
+                from core.pg_client import close_pg
+                await close_pg()
+            except Exception:
+                pass
 
     async def _dispatch(self, event: BusEvent):
         self._dispatched += 1
@@ -359,7 +367,7 @@ class EventBus:
         if self._persist:
             try:
                 d = event.to_dict()
-                _persist_event_async(d)
+                await _persist_event_coro(d)
             except Exception:
                 pass
             if self._db:
@@ -572,25 +580,13 @@ class EventBus:
         return list(reversed(self._dlq))[:limit]
 
 
-def _persist_event_async(event_dict: dict) -> None:
-    """Fire-and-forget event persistence — tries Postgres first, falls back to SQLite."""
+async def _persist_event_coro(event_dict: dict) -> None:
+    """Persist an event to Postgres if available. Called from within the event bus async loop."""
     try:
-        from core.db_manager import get_db_manager_sync
-        mgr = get_db_manager_sync()
+        from core.db_manager import get_db_manager
+        mgr = await get_db_manager()
         if mgr and mgr.mode in ("distributed", "postgres"):
-            import asyncio
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(mgr.save_event(event_dict))
-                return
-            except RuntimeError:
-                # No running loop — run synchronously
-                try:
-                    import asyncio
-                    asyncio.run(mgr.save_event(event_dict))
-                except Exception:
-                    pass
-                return
+            await mgr.save_event(event_dict)
     except Exception:
         pass
     # SQLite fallback handled by caller
