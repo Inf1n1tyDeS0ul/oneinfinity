@@ -38,28 +38,6 @@ class FoundationError(RuntimeError):
     """Raised when doctor --quick fails. Only hard-abort in GOD MODE."""
 
 
-def _parse_max_time(s: str) -> int:
-    """Parse '30m', '2h', '4h' → seconds. Returns 0 (no limit) on '0' or error."""
-    s = str(s).strip().lower()
-    if s in ("0", "0h", "0m", "none", "unlimited", ""):
-        return 0
-    if s.endswith("h"):
-        try:
-            result = int(s[:-1]) * 3600
-            return result if result > 0 else 0
-        except ValueError:
-            return 0
-    if s.endswith("m"):
-        try:
-            result = int(s[:-1]) * 60
-            return result if result > 0 else 0
-        except ValueError:
-            return 0
-    try:
-        result = int(s)
-        return result if result > 0 else 0
-    except ValueError:
-        return 0
 
 
 # ── GodModeSession ─────────────────────────────────────────────────────────────
@@ -69,12 +47,10 @@ class GodModeSession:
     scan_id: str
     target: str
     start_time: float
-    max_time_sec: int = 0   # 0 = no time limit
-    max_findings: int = 0   # 0 = no finding cap
     phases_complete: list = field(default_factory=list)
     finding_count: int = 0  # Mutations from multiple threads; relies on CPython GIL atomicity for single += ops
     missions: dict = field(default_factory=dict)   # name → status str
-    terminated_by: Optional[str] = None            # "convergence"|"time"|"cap"|"stop"|"error"
+    terminated_by: Optional[str] = None            # "convergence"|"stop"|"error"
     log_path: str = ""
     background: bool = False
     auth_config: dict = field(default_factory=dict)  # session_cookie/bearer_token/auth_header
@@ -224,7 +200,7 @@ class Mission(ABC):
             target=self._safe_run,
             args=(session,),
             name=f"god-mode-{self.name}",
-            daemon=True,
+            daemon=False,
         )
         self._thread.start()
 
@@ -677,7 +653,7 @@ class GodModeConductor:
         if self._session is None:
             return
         for m in self._missions:
-            if m.name == name and m.status == "pending":
+            if m.name == name and m.status in ("pending", "failed"):
                 log.info("[GOD MODE] Starting mission: %s", name)
                 m.start(self._session)
                 self._update_session_missions()
@@ -768,16 +744,6 @@ class GodModeConductor:
                 log.info("[GOD MODE] Stop sentinel detected — finalizing")
                 return "stop"
 
-            # Time cap (only enforced if max_time_sec > 0)
-            if session.max_time_sec > 0 and session.elapsed() >= session.max_time_sec:
-                log.info("[GOD MODE] Time cap reached (%.0fs) — finalizing", session.elapsed())
-                return "time"
-
-            # Finding cap (only enforced if max_findings > 0)
-            if session.max_findings > 0 and session.finding_count >= session.max_findings:
-                log.info("[GOD MODE] Finding cap reached (%d) — finalizing", session.finding_count)
-                return "cap"
-
             # Convergence
             found_types: list[str] = []
             try:
@@ -806,8 +772,6 @@ class GodModeConductor:
     def run(
         self,
         target: str,
-        max_time: str = "0",
-        max_findings: int = 0,
         background: bool = False,
         no_swarm: bool = False,
         no_research: bool = False,
@@ -826,8 +790,6 @@ class GodModeConductor:
             scan_id=scan_id,
             target=target,
             start_time=time.time(),
-            max_time_sec=_parse_max_time(max_time),
-            max_findings=max_findings,
             log_path=log_path,
             background=background,
             auth_config=auth_config or {},
@@ -836,13 +798,9 @@ class GodModeConductor:
         self._state_file = GodModeStateFile(scan_id)
         self._state_file.write(session)
 
-        _time_str = max_time if max_time not in ("0", "0h", "0m") else "unlimited"
-        _find_str = str(max_findings) if max_findings > 0 else "unlimited"
-        log.info("[GOD MODE] Session %s started — target=%s max_time=%s max_findings=%s",
-                 scan_id, target, _time_str, _find_str)
+        log.info("[GOD MODE] Session %s started — target=%s", scan_id, target)
         print(f"\n[*] GOD MODE — Session: {scan_id}")
         print(f"    Target:    {target}")
-        print(f"    Max time:  {_time_str}  |  Max findings: {_find_str}")
         print(f"    Log:       {log_path}")
 
         # ── Stage 1: Foundation (blocking) ─────────────────────────────────

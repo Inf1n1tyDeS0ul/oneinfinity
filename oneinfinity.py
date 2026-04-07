@@ -2958,10 +2958,6 @@ def build_parser():
                     help="Session ID for status/logs/stop (default: most recent)")
     gm.add_argument("--follow", "-f", action="store_true",
                     help="Follow log output (like tail -f) — used with 'logs'")
-    gm.add_argument("--max-time", default="0", metavar="DURATION",
-                    help="Time cap: '30m', '2h', '4h' — default: no limit")
-    gm.add_argument("--max-findings", type=int, default=0, metavar="N",
-                    help="Finding cap — default: no limit")
     gm.add_argument("--background", action="store_true",
                     help="Detach to background after Stage 1 (foundation)")
     gm.add_argument("--no-swarm", action="store_true",
@@ -5131,8 +5127,8 @@ def cmd_god_mode(args):
             return
         print(f"\n  GOD MODE Session: {data.get('scan_id')}")
         print(f"  Target:     {data.get('target')}")
-        print(f"  Elapsed:    {data.get('elapsed_seconds', 0):.0f}s / {data.get('max_time_sec', 0)}s")
-        print(f"  Findings:   {data.get('finding_count', 0)} / {data.get('max_findings', 0)}")
+        print(f"  Elapsed:    {data.get('elapsed_seconds', 0):.0f}s")
+        print(f"  Findings:   {data.get('finding_count', 0)}")
         print(f"  Terminated: {data.get('terminated_by') or 'running'}")
         print(f"  Missions:")
         for name, status in (data.get("missions") or {}).items():
@@ -5194,8 +5190,6 @@ def cmd_god_mode(args):
     conductor = get_god_mode_conductor()
     conductor.run(
         target=target,
-        max_time=getattr(args, "max_time", "2h") or "2h",
-        max_findings=getattr(args, "max_findings", 100) or 100,
         background=background,
         no_swarm=getattr(args, "no_swarm", False),
         no_research=getattr(args, "no_research", False),
