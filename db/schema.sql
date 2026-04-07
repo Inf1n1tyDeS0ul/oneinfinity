@@ -43,6 +43,10 @@ CREATE INDEX IF NOT EXISTS idx_findings_severity   ON findings(severity);
 CREATE INDEX IF NOT EXISTS idx_findings_target     ON findings(target);
 CREATE INDEX IF NOT EXISTS idx_findings_created_at ON findings(created_at);
 CREATE INDEX IF NOT EXISTS idx_findings_data       ON findings USING GIN(data);
+-- Dedup constraint: same (scan_id, vuln_type, url) is a duplicate within a scan.
+-- Enables ON CONFLICT (scan_id, vuln_type, url) DO NOTHING RETURNING finding_id.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_findings_dedup
+    ON findings(scan_id, vuln_type, url);
 
 -- ── Agents (historical execution records) ────────────────────────────────────
 CREATE TABLE IF NOT EXISTS agents (
@@ -283,3 +287,13 @@ CREATE TABLE IF NOT EXISTS pattern_library (
     last_seen        DOUBLE PRECISION,
     PRIMARY KEY (tech_stack_key, vuln_type)
 );
+
+-- ── Raw Findings (pre-validation staging) ────────────────────────────────────
+CREATE TABLE IF NOT EXISTS raw_findings (
+    id         BIGSERIAL PRIMARY KEY,
+    tool       TEXT NOT NULL DEFAULT '',
+    raw_json   JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_raw_findings_tool       ON raw_findings(tool);
+CREATE INDEX IF NOT EXISTS idx_raw_findings_created_at ON raw_findings(created_at);
