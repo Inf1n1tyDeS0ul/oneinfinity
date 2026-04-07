@@ -111,3 +111,107 @@ CREATE TABLE IF NOT EXISTS targets (
 );
 CREATE INDEX IF NOT EXISTS idx_targets_status     ON targets(status);
 CREATE INDEX IF NOT EXISTS idx_targets_created_at ON targets(created_at);
+
+-- ── Research Sessions ────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS research_sessions (
+    session_id         TEXT PRIMARY KEY,
+    target             TEXT NOT NULL,
+    output_dir         TEXT NOT NULL DEFAULT '',
+    platform           TEXT NOT NULL DEFAULT '',
+    started_at         DOUBLE PRECISION,
+    ended_at           DOUBLE PRECISION,
+    status             TEXT NOT NULL DEFAULT 'running',
+    iteration          INTEGER NOT NULL DEFAULT 0,
+    theories_generated INTEGER NOT NULL DEFAULT 0,
+    tests_executed     INTEGER NOT NULL DEFAULT 0,
+    anomalies_found    INTEGER NOT NULL DEFAULT 0,
+    confirmed_vulns    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_research_sessions_target ON research_sessions(target);
+
+-- ── Vulnerability Theories ───────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS vuln_theories (
+    theory_id   TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    target      TEXT NOT NULL,
+    endpoint    TEXT NOT NULL DEFAULT '',
+    vuln_type   TEXT NOT NULL,
+    severity    TEXT NOT NULL DEFAULT 'medium',
+    confidence  DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    reasoning   TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'pending',
+    created_at  DOUBLE PRECISION,
+    updated_at  DOUBLE PRECISION
+);
+CREATE INDEX IF NOT EXISTS idx_vuln_theories_session ON vuln_theories(session_id);
+CREATE INDEX IF NOT EXISTS idx_vuln_theories_target  ON vuln_theories(target);
+
+-- ── Test Outcomes ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS test_outcomes (
+    id               BIGSERIAL PRIMARY KEY,
+    session_id       TEXT NOT NULL,
+    theory_id        TEXT,
+    target           TEXT NOT NULL,
+    endpoint         TEXT NOT NULL DEFAULT '',
+    vuln_type        TEXT NOT NULL,
+    payload          TEXT NOT NULL DEFAULT '',
+    status_code      INTEGER,
+    response_size    INTEGER,
+    response_time_ms DOUBLE PRECISION,
+    anomaly_score    DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    confirmed        INTEGER NOT NULL DEFAULT 0,
+    evidence         TEXT NOT NULL DEFAULT '',
+    tested_at        DOUBLE PRECISION
+);
+CREATE INDEX IF NOT EXISTS idx_test_outcomes_session ON test_outcomes(session_id);
+CREATE INDEX IF NOT EXISTS idx_test_outcomes_theory  ON test_outcomes(theory_id);
+
+-- ── Research Discoveries ─────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS research_discoveries (
+    report_id     TEXT PRIMARY KEY,
+    session_id    TEXT NOT NULL,
+    target        TEXT NOT NULL,
+    vuln_type     TEXT NOT NULL,
+    title         TEXT NOT NULL DEFAULT '',
+    severity      TEXT NOT NULL DEFAULT 'medium',
+    confidence    DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    endpoint      TEXT NOT NULL DEFAULT '',
+    description   TEXT NOT NULL DEFAULT '',
+    impact        TEXT NOT NULL DEFAULT '',
+    steps         JSONB NOT NULL DEFAULT '[]',
+    poc           TEXT NOT NULL DEFAULT '',
+    remediation   TEXT NOT NULL DEFAULT '',
+    evidence      TEXT NOT NULL DEFAULT '',
+    cvss_score    DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    discovered_at DOUBLE PRECISION,
+    reported      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_research_discoveries_session ON research_discoveries(session_id);
+CREATE INDEX IF NOT EXISTS idx_research_discoveries_target  ON research_discoveries(target);
+
+-- ── Cross-Target Patterns ────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS cross_target_patterns (
+    id                BIGSERIAL PRIMARY KEY,
+    vuln_type         TEXT NOT NULL,
+    endpoint_pattern  TEXT NOT NULL DEFAULT '',
+    parameter_pattern TEXT NOT NULL DEFAULT '',
+    success_count     INTEGER NOT NULL DEFAULT 1,
+    last_seen         DOUBLE PRECISION,
+    notes             TEXT NOT NULL DEFAULT '',
+    UNIQUE(vuln_type, endpoint_pattern, parameter_pattern)
+);
+
+-- ── Endpoint Insights (schema present; no active write path) ─────────────────
+CREATE TABLE IF NOT EXISTS endpoint_insights (
+    id                BIGSERIAL PRIMARY KEY,
+    session_id        TEXT NOT NULL,
+    target            TEXT NOT NULL,
+    endpoint          TEXT NOT NULL DEFAULT '',
+    method            TEXT NOT NULL DEFAULT 'GET',
+    parameters        JSONB NOT NULL DEFAULT '[]',
+    auth_required     INTEGER NOT NULL DEFAULT 0,
+    sensitivity_score DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    tags              JSONB NOT NULL DEFAULT '[]',
+    tested_at         DOUBLE PRECISION
+);
+CREATE INDEX IF NOT EXISTS idx_endpoint_insights_session ON endpoint_insights(session_id);
