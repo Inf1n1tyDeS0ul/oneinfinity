@@ -504,7 +504,7 @@ export default function Results() {
       </div>
 
       {tab === 'findings'
-        ? <FindingsTab scanFilter={scanFilter} onClearFilter={handleClearFilter} />
+        ? <FindingsTab key={scanFilter?.id ?? 'all'} scanFilter={scanFilter} onClearFilter={handleClearFilter} />
         : <ScanHistoryTab onViewFindings={handleViewFindings} />
       }
     </div>
