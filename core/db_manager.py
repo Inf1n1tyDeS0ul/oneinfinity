@@ -765,6 +765,7 @@ class DBManager:
                 await conn.commit()
         except Exception as exc:
             log.warning("DBManager.save_research_theory failed: %s", exc)
+            raise
 
     async def update_research_theory_status(
         self, theory_id: str, status: str, updated_at: float
@@ -782,6 +783,7 @@ class DBManager:
                 await conn.commit()
         except Exception as exc:
             log.warning("DBManager.update_research_theory_status failed: %s", exc)
+            raise
 
     async def save_test_outcome(self, data: dict) -> None:
         """Insert one test outcome row (every outcome is a new row — no upsert)."""
@@ -816,16 +818,16 @@ class DBManager:
                 await conn.commit()
         except Exception as exc:
             log.warning("DBManager.save_test_outcome failed: %s", exc)
+            raise
 
     async def save_research_discovery(self, data: dict) -> None:
         """Upsert a confirmed vulnerability discovery."""
         if self.mode not in ("distributed", "postgres"):
             raise RuntimeError("save_research_discovery requires Postgres mode")
-        import json as _json
         try:
             steps = data.get("steps", [])
             if isinstance(steps, str):
-                steps = _json.loads(steps)
+                steps = json.loads(steps)
             async with self._pg_pool.connection() as conn:
                 await conn.execute(
                     """
@@ -921,6 +923,7 @@ class DBManager:
                 await conn.commit()
         except Exception as exc:
             log.warning("DBManager.upsert_cross_target_pattern failed: %s", exc)
+            raise
 
     async def get_cross_target_patterns(self, min_count: int = 2) -> list:
         """Return patterns with success_count >= min_count, ordered by frequency."""
