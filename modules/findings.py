@@ -4,6 +4,7 @@ import json
 import csv
 import logging
 import uuid
+import asyncio as _asyncio
 from datetime import datetime, timezone
 from result_ingestion_engine import get_ingestion_engine
 from modules.utils import (banner, section, ok, info, warn, err, ask,
@@ -11,77 +12,53 @@ from modules.utils import (banner, section, ok, info, warn, err, ask,
 
 log = logging.getLogger("oneinfinity.findings")
 
+
+async def _save_audit_event(event: dict) -> None:
+    """Persist an audit event to the Postgres events table via DBManager."""
+    try:
+        from core.db_manager import get_db_manager
+        mgr = await get_db_manager()
+        await mgr.save_event(event)
+    except Exception as exc:
+        log.warning("_save_audit_event failed: %s", exc)
+
 SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"]
 
 class FindingsDB:
     def __init__(self, db_path=None):
         # We use the unified ingestion engine for findings storage
         self.engine = get_ingestion_engine()
-        # Ensure db is initialized
         self.engine._init_db()
-        # Store db_path for the audit table; fall back to engine's DB path if not given
-        if db_path is not None:
-            self._audit_db_path = str(db_path)
-        else:
-            self._audit_db_path = str(self.engine._db_path)
-        self._audit_conn: object | None = None  # sqlite3.Connection when open
-
-    def _get_audit_conn(self) -> object:
-        """Return a lazily-opened SQLite connection for the audit table."""
-        if self._audit_conn is None:
-            import sqlite3
-            self._audit_conn = sqlite3.connect(self._audit_db_path, timeout=30)
-        return self._audit_conn
-
-    def close(self):
-        """Close the audit DB connection gracefully."""
-        if self._audit_conn is not None:
-            try:
-                self._audit_conn.close()
-            except Exception as exc:
-                log.warning("FindingsDB.close(): error closing audit connection: %s", exc)
-            finally:
-                self._audit_conn = None
+        # db_path parameter kept for backwards compatibility but unused
 
     def log_action(self, phase: str, action=None, result: str = ""):
-        """Persist an audit event to findings_audit.
+        """Persist an audit event to Postgres events table.
 
         Supports two call styles:
           log_action(phase, action_str, result_str)   — original 3-arg style
           log_action(action_str, metadata_dict)       — test-compatible 2-arg style
         """
+        if isinstance(action, dict):
+            action_str = phase
+            metadata = action
+        else:
+            action_str = phase
+            metadata = {"action": action, "result": result} if action else {}
+
+        event = {
+            "event_type": "findings_audit",
+            "action": action_str,
+            "metadata": metadata,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
         try:
-            conn = self._get_audit_conn()
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS findings_audit (
-                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                    action    TEXT    NOT NULL,
-                    metadata  TEXT    NOT NULL DEFAULT '{}',
-                    timestamp TEXT    NOT NULL
-                )
-                """
-            )
-            # Normalise arguments so both call styles work
-            if isinstance(action, dict):
-                # Called as log_action("action_name", {"key": "val"})
-                action_str = phase
-                metadata_str = json.dumps(action, default=str)
+            loop = _asyncio.get_event_loop()
+            if loop.is_running():
+                _asyncio.ensure_future(_save_audit_event(event))
             else:
-                # Called as log_action(phase, action_str, result_str)
-                action_str = phase
-                metadata_str = json.dumps(
-                    {"action": action, "result": result} if action else {},
-                    default=str,
-                )
-            ts = datetime.now(timezone.utc).isoformat()
-            conn.execute(
-                "INSERT INTO findings_audit (action, metadata, timestamp) VALUES (?, ?, ?)",
-                (action_str, metadata_str, ts),
-            )
-            conn.commit()
+                loop.run_until_complete(_save_audit_event(event))
         except Exception as exc:
-            log.warning("FindingsDB.log_action(): failed to write audit record: %s", exc)
+            log.warning("FindingsDB.log_action(): failed to dispatch audit event: %s", exc)
 
     def add(self, **kwargs) -> str:
         finding = {
