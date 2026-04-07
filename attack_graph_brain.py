@@ -382,10 +382,13 @@ class AttackGraphBrain:
         if node_id is None:
             return None
 
-        # Wire parent → VULNERABILITY edge using explicit label lookup (exact match)
+        # Wire parent → VULNERABILITY edge using explicit label lookup (exact match).
+        # If no parent node exists yet, create the target node on the fly so the
+        # vulnerability is never left as a disconnected island.
         try:
             from attack_graph_core.graph_engine import NodeType, EdgeType
             eng = self._get_engine()
+            wired = False
             for parent_label in ([url] if url and url != target else []) + [target]:
                 # Prefer exact-label matches over substring search
                 for ntype in (NodeType.URL, NodeType.API_ENDPOINT, NodeType.SUBDOMAIN,
@@ -395,10 +398,25 @@ class AttackGraphBrain:
                     if parent_id and parent_id != node_id:
                         eng.add_edge(parent_id, node_id, EdgeType.HAS_VULNERABILITY,
                                      label=vuln_type or "vulnerability", probability=0.9)
+                        wired = True
                         break
-                else:
-                    continue
-                break
+                if wired:
+                    break
+
+            if not wired:
+                # No existing parent node — create a target node for the domain so
+                # this vulnerability (and future ones for the same target) have a
+                # reachable root in the graph.
+                from urllib.parse import urlparse as _urlparse
+                target_label = target or (_urlparse(url).netloc if url else "")
+                if target_label and target_label != node_id:
+                    t_node, _ = eng.get_or_create_node(
+                        NodeType.TARGET, target_label,
+                        properties={"domain": target_label},
+                        source="integrate_vuln",
+                    )
+                    eng.add_edge(t_node.id, node_id, EdgeType.HAS_VULNERABILITY,
+                                 label=vuln_type or "vulnerability", probability=0.9)
         except Exception as exc:
             log.debug("integrate_vuln: edge wiring failed [%s]: %s", finding_id, exc)
 
