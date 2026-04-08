@@ -555,10 +555,17 @@ class ResultIngestionEngine:
         value: str,
         metadata: Optional[dict] = None,
     ) -> None:
-        """Store a recon asset (subdomain, endpoint, service, technology) into SQLite."""
+        """Store a recon asset (subdomain, endpoint, service, technology)."""
         if metadata is None:
             metadata = {}
         asset_id = str(uuid.uuid4())[:12]
+        mgr = _get_db_manager_sync()
+        if mgr is not None and mgr.mode in ("distributed", "postgres"):
+            try:
+                mgr.sync_save_recon_asset(asset_id, scan_id, asset_type, value, metadata)
+                return
+            except Exception as exc:
+                log.warning("DBManager save_recon_asset failed, falling back to SQLite: %s", exc)
         created_at = datetime.utcnow().isoformat()
         try:
             with self._lock:
@@ -623,6 +630,12 @@ class ResultIngestionEngine:
         severity: str = None,
     ) -> List[dict]:
         """Query findings with optional filters."""
+        mgr = _get_db_manager_sync()
+        if mgr is not None and mgr.mode in ("distributed", "postgres"):
+            try:
+                return mgr.sync_get_findings(scan_id=scan_id, target=target, severity=severity)
+            except Exception as exc:
+                log.warning("DBManager get_findings failed, falling back to SQLite: %s", exc)
         clauses: List[str] = []
         params: List = []
         if scan_id:
@@ -673,6 +686,12 @@ class ResultIngestionEngine:
         asset_type: str = None,
     ) -> List[dict]:
         """Query recon assets with optional filters."""
+        mgr = _get_db_manager_sync()
+        if mgr is not None and mgr.mode in ("distributed", "postgres"):
+            try:
+                return mgr.sync_get_recon_assets(scan_id=scan_id, asset_type=asset_type)
+            except Exception as exc:
+                log.warning("DBManager get_recon_assets failed, falling back to SQLite: %s", exc)
         clauses: List[str] = []
         params: List = []
         if scan_id:
