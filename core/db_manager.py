@@ -350,6 +350,227 @@ class DBManager:
             log.warning("DBManager._sqlite_check_and_save_finding failed: %s", exc)
             raise
 
+    # ── Recon Assets ─────────────────────────────────────────────────────────
+
+    async def save_recon_asset(
+        self,
+        asset_id: str,
+        scan_id: str,
+        asset_type: str,
+        value: str,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        metadata = metadata or {}
+        if self.mode in ("distributed", "postgres"):
+            await self._pg_save_recon_asset(asset_id, scan_id, asset_type, value, metadata)
+        else:
+            self._sqlite_save_recon_asset(asset_id, scan_id, asset_type, value, metadata)
+
+    async def _pg_save_recon_asset(
+        self, asset_id: str, scan_id: str, asset_type: str, value: str, metadata: dict
+    ) -> None:
+        try:
+            async with self._pg_pool.connection() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO recon_assets (asset_id, scan_id, asset_type, value, data)
+                    VALUES (%s,%s,%s,%s,%s)
+                    ON CONFLICT (asset_id) DO NOTHING
+                    """,
+                    (asset_id, scan_id, asset_type, value, json.dumps(metadata, default=str)),
+                )
+                await conn.commit()
+        except Exception as exc:
+            log.warning("DBManager._pg_save_recon_asset failed: %s", exc)
+            raise
+
+    def _sqlite_save_recon_asset(
+        self, asset_id: str, scan_id: str, asset_type: str, value: str, metadata: dict
+    ) -> None:
+        import sqlite3 as _sq
+        try:
+            with _sq.connect(str(self._sqlite_path)) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO recon_assets "
+                    "(asset_id, scan_id, asset_type, value, metadata_json, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (asset_id, scan_id, asset_type, value,
+                     json.dumps(metadata, default=str), datetime.utcnow().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            log.warning("DBManager._sqlite_save_recon_asset failed: %s", exc)
+
+    async def get_recon_assets(
+        self,
+        scan_id: Optional[str] = None,
+        asset_type: Optional[str] = None,
+    ) -> list:
+        if self.mode in ("distributed", "postgres"):
+            return await self._pg_get_recon_assets(scan_id=scan_id, asset_type=asset_type)
+        return self._sqlite_get_recon_assets(scan_id=scan_id, asset_type=asset_type)
+
+    async def _pg_get_recon_assets(self, scan_id=None, asset_type=None) -> list:
+        conditions, params = [], []
+        if scan_id:
+            conditions.append("scan_id = %s"); params.append(scan_id)
+        if asset_type:
+            conditions.append("asset_type = %s"); params.append(asset_type)
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        try:
+            async with self._pg_pool.connection() as conn:
+                rows = await conn.execute(
+                    f"SELECT asset_id, scan_id, asset_type, value, data, created_at "
+                    f"FROM recon_assets {where} ORDER BY created_at DESC",
+                    params,
+                )
+                results = []
+                async for row in rows:
+                    d = {
+                        "asset_id": row[0], "scan_id": row[1],
+                        "asset_type": row[2], "value": row[3],
+                        "created_at": str(row[5]) if row[5] else None,
+                    }
+                    extra = row[4] or {}
+                    if isinstance(extra, str):
+                        extra = json.loads(extra)
+                    d["metadata"] = extra
+                    results.append(d)
+                return results
+        except Exception as exc:
+            log.warning("DBManager._pg_get_recon_assets failed: %s", exc)
+            return []
+
+    def _sqlite_get_recon_assets(self, scan_id=None, asset_type=None) -> list:
+        import sqlite3 as _sq
+        clauses, params = [], []
+        if scan_id:
+            clauses.append("scan_id = ?"); params.append(scan_id)
+        if asset_type:
+            clauses.append("asset_type = ?"); params.append(asset_type)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        try:
+            with _sq.connect(str(self._sqlite_path)) as conn:
+                conn.row_factory = _sq.Row
+                rows = conn.execute(
+                    f"SELECT * FROM recon_assets {where} ORDER BY created_at DESC", params
+                ).fetchall()
+                results = []
+                for row in rows:
+                    d = dict(row)
+                    try:
+                        d["metadata"] = json.loads(d.pop("metadata_json", "{}") or "{}")
+                    except Exception:
+                        d["metadata"] = {}
+                    results.append(d)
+                return results
+        except Exception as exc:
+            log.warning("DBManager._sqlite_get_recon_assets failed: %s", exc)
+            return []
+
+    # ── Raw Findings ─────────────────────────────────────────────────────────
+
+    async def store_raw_findings(self, findings: list) -> int:
+        """Bulk-insert raw findings. Returns count inserted."""
+        if self.mode in ("distributed", "postgres"):
+            return await self._pg_store_raw_findings(findings)
+        return self._sqlite_store_raw_findings(findings)
+
+    async def _pg_store_raw_findings(self, findings: list) -> int:
+        inserted = 0
+        try:
+            async with self._pg_pool.connection() as conn:
+                for f in findings:
+                    tool = f.get("tool") or f.get("source_tool") or "unknown"
+                    await conn.execute(
+                        "INSERT INTO raw_findings (tool, raw_json) VALUES (%s,%s)",
+                        (tool, json.dumps(f, default=str)),
+                    )
+                    inserted += 1
+                await conn.commit()
+        except Exception as exc:
+            log.warning("DBManager._pg_store_raw_findings failed: %s", exc)
+        return inserted
+
+    def _sqlite_store_raw_findings(self, findings: list) -> int:
+        import sqlite3 as _sq
+        inserted = 0
+        try:
+            with _sq.connect(str(self._sqlite_path), timeout=30) as conn:
+                conn.execute("PRAGMA journal_mode=WAL;")
+                for f in findings:
+                    tool = f.get("tool") or f.get("source_tool") or "unknown"
+                    conn.execute(
+                        "INSERT INTO raw_findings (tool, raw_json) VALUES (?, ?)",
+                        (tool, json.dumps(f, default=str)),
+                    )
+                    inserted += 1
+                conn.commit()
+        except Exception as exc:
+            log.warning("DBManager._sqlite_store_raw_findings failed: %s", exc)
+        return inserted
+
+    # ── Findings — delete + count ────────────────────────────────────────────
+
+    async def delete_findings_for_scan(self, scan_id: str) -> int:
+        """Delete all findings for a scan. Returns count deleted."""
+        if self.mode in ("distributed", "postgres"):
+            return await self._pg_delete_findings_for_scan(scan_id)
+        return self._sqlite_delete_findings_for_scan(scan_id)
+
+    async def _pg_delete_findings_for_scan(self, scan_id: str) -> int:
+        try:
+            async with self._pg_pool.connection() as conn:
+                result = await conn.execute(
+                    "DELETE FROM findings WHERE scan_id = %s", (scan_id,)
+                )
+                await conn.commit()
+                return result.rowcount
+        except Exception as exc:
+            log.warning("DBManager._pg_delete_findings_for_scan failed: %s", exc)
+            return 0
+
+    def _sqlite_delete_findings_for_scan(self, scan_id: str) -> int:
+        import sqlite3 as _sq
+        try:
+            with _sq.connect(str(self._sqlite_path)) as conn:
+                cur = conn.execute("DELETE FROM findings WHERE scan_id = ?", (scan_id,))
+                conn.commit()
+                return cur.rowcount
+        except Exception as exc:
+            log.warning("DBManager._sqlite_delete_findings_for_scan failed: %s", exc)
+            return 0
+
+    async def finding_count(self, scan_id: str) -> int:
+        """Return number of findings for a scan."""
+        if self.mode in ("distributed", "postgres"):
+            return await self._pg_finding_count(scan_id)
+        return self._sqlite_finding_count(scan_id)
+
+    async def _pg_finding_count(self, scan_id: str) -> int:
+        try:
+            async with self._pg_pool.connection() as conn:
+                result = await conn.execute(
+                    "SELECT COUNT(*) FROM findings WHERE scan_id = %s", (scan_id,)
+                )
+                row = await result.fetchone()
+                return row[0] if row else 0
+        except Exception as exc:
+            log.warning("DBManager._pg_finding_count failed: %s", exc)
+            return 0
+
+    def _sqlite_finding_count(self, scan_id: str) -> int:
+        import sqlite3 as _sq
+        try:
+            with _sq.connect(str(self._sqlite_path)) as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM findings WHERE scan_id = ?", (scan_id,)
+                ).fetchone()
+                return row[0] if row else 0
+        except Exception as exc:
+            log.warning("DBManager._sqlite_finding_count failed: %s", exc)
+            return 0
+
     # ── Scans ─────────────────────────────────────────────────────────────────
 
     async def save_scan(self, scan: dict) -> str:
@@ -1447,3 +1668,19 @@ class DBManager:
 
     def sync_check_and_save_finding(self, finding: dict) -> bool:
         return self._run_sync(self.check_and_save_finding(finding))
+
+    def sync_save_recon_asset(self, asset_id: str, scan_id: str, asset_type: str,
+                               value: str, metadata: Optional[dict] = None) -> None:
+        self._run_sync(self.save_recon_asset(asset_id, scan_id, asset_type, value, metadata))
+
+    def sync_get_recon_assets(self, **kwargs) -> list:
+        return self._run_sync(self.get_recon_assets(**kwargs))
+
+    def sync_store_raw_findings(self, findings: list) -> int:
+        return self._run_sync(self.store_raw_findings(findings))
+
+    def sync_delete_findings_for_scan(self, scan_id: str) -> int:
+        return self._run_sync(self.delete_findings_for_scan(scan_id))
+
+    def sync_finding_count(self, scan_id: str) -> int:
+        return self._run_sync(self.finding_count(scan_id))

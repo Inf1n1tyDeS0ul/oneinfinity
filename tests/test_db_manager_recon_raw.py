@@ -96,3 +96,197 @@ def test_check_and_save_sqlite_mode_stores_and_returns_true():
         }
         result = mgr.sync_check_and_save_finding(finding)
     assert result is True
+
+
+# ── save_recon_asset ──────────────────────────────────────────────────────────
+
+def test_save_recon_asset_issues_pg_insert():
+    """save_recon_asset in PG mode executes INSERT with correct args."""
+    mgr, mock_conn, mock_result = pg_mgr_with_execute()
+    mgr.sync_save_recon_asset("asset1", "scan1", "subdomain", "sub.example.com", {"ip": "1.2.3.4"})
+    mock_conn.execute.assert_called_once()
+    sql, params = mock_conn.execute.call_args[0]
+    assert "INSERT INTO recon_assets" in sql
+    assert params[0] == "asset1"
+    assert params[1] == "scan1"
+    assert params[2] == "subdomain"
+    assert params[3] == "sub.example.com"
+    assert json.loads(params[4]) == {"ip": "1.2.3.4"}
+
+
+def test_save_recon_asset_sqlite_mode():
+    """save_recon_asset in sqlite mode writes to SQLite."""
+    import core.db_manager as dm
+    from unittest.mock import patch, MagicMock
+    dm._manager = None
+    mgr = dm.DBManager()
+    mgr.mode = "sqlite"
+
+    mock_conn_ctx = MagicMock()
+    mock_conn_ctx.__enter__ = MagicMock(return_value=mock_conn_ctx)
+    mock_conn_ctx.__exit__ = MagicMock(return_value=False)
+    mock_conn_ctx.execute = MagicMock()
+    mock_conn_ctx.commit = MagicMock()
+
+    with patch("sqlite3.connect", return_value=mock_conn_ctx):
+        mgr.sync_save_recon_asset("a1", "s1", "endpoint", "/api/v1", {})
+    mock_conn_ctx.execute.assert_called()
+
+
+# ── get_recon_assets ──────────────────────────────────────────────────────────
+
+def test_get_recon_assets_pg_mode_returns_list():
+    """get_recon_assets in PG mode returns parsed list."""
+    import core.db_manager as dm
+    import json
+    dm._manager = None
+    mgr = dm.DBManager()
+    mgr.mode = "postgres"
+
+    rows = [
+        ("asset1", "scan1", "subdomain", "sub.example.com", json.dumps({"ip": "1.2.3.4"}), "2026-04-07T00:00:00"),
+    ]
+
+    async def fake_execute(sql, params=None):
+        cursor = MagicMock()
+        async def _aiter():
+            for r in rows:
+                yield r
+        cursor.__aiter__ = lambda self=cursor: _aiter()
+        return cursor
+
+    mock_conn = AsyncMock()
+    mock_conn.execute = fake_execute
+    mock_pool = MagicMock()
+    mock_pool.connection.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_pool.connection.return_value.__aexit__ = AsyncMock(return_value=False)
+    mgr._pg_pool = mock_pool
+
+    result = mgr.sync_get_recon_assets(scan_id="scan1")
+    assert len(result) == 1
+    assert result[0]["asset_id"] == "asset1"
+    assert result[0]["metadata"] == {"ip": "1.2.3.4"}
+
+
+def test_get_recon_assets_sqlite_mode_returns_list():
+    """get_recon_assets in sqlite mode returns parsed list from SQLite."""
+    import core.db_manager as dm
+    from unittest.mock import patch, MagicMock
+    import sqlite3
+    dm._manager = None
+    mgr = dm.DBManager()
+    mgr.mode = "sqlite"
+
+    mock_conn_ctx = MagicMock()
+    mock_conn_ctx.__enter__ = MagicMock(return_value=mock_conn_ctx)
+    mock_conn_ctx.__exit__ = MagicMock(return_value=False)
+    mock_conn_ctx.execute = MagicMock(return_value=mock_conn_ctx)
+    mock_conn_ctx.fetchall = MagicMock(return_value=[])
+    mock_conn_ctx.row_factory = None
+
+    with patch("sqlite3.connect", return_value=mock_conn_ctx):
+        result = mgr.sync_get_recon_assets(scan_id="scan1")
+    assert isinstance(result, list)
+
+
+# ── store_raw_findings ────────────────────────────────────────────────────────
+
+def test_store_raw_findings_pg_mode_returns_count():
+    """store_raw_findings inserts each finding and returns count."""
+    mgr, mock_conn, mock_result = pg_mgr_with_execute()
+    findings = [
+        {"tool": "nuclei", "vuln_type": "xss", "url": "https://example.com"},
+        {"tool": "dalfox", "vuln_type": "xss", "url": "https://example.com/q"},
+    ]
+    count = mgr.sync_store_raw_findings(findings)
+    assert count == 2
+    assert mock_conn.execute.call_count == 2
+
+
+def test_store_raw_findings_sqlite_mode_returns_count():
+    """store_raw_findings in sqlite mode inserts and returns count."""
+    import core.db_manager as dm
+    from unittest.mock import patch, MagicMock
+    dm._manager = None
+    mgr = dm.DBManager()
+    mgr.mode = "sqlite"
+
+    mock_conn_ctx = MagicMock()
+    mock_conn_ctx.__enter__ = MagicMock(return_value=mock_conn_ctx)
+    mock_conn_ctx.__exit__ = MagicMock(return_value=False)
+    mock_conn_ctx.execute = MagicMock()
+    mock_conn_ctx.commit = MagicMock()
+
+    with patch("sqlite3.connect", return_value=mock_conn_ctx):
+        count = mgr.sync_store_raw_findings([{"tool": "nuclei"}, {"tool": "sqlmap"}])
+    assert count == 2
+
+
+# ── delete_findings_for_scan ─────────────────────────────────────────────────
+
+def test_delete_findings_for_scan_pg_mode_returns_rowcount():
+    """delete_findings_for_scan returns number of rows deleted."""
+    mgr, mock_conn, mock_result = pg_mgr_with_execute()
+    mock_result.rowcount = 5
+    mock_conn.execute = AsyncMock(return_value=mock_result)
+
+    count = mgr.sync_delete_findings_for_scan("scan1")
+    assert count == 5
+    mock_conn.execute.assert_called_once()
+    sql, params = mock_conn.execute.call_args[0]
+    assert "DELETE FROM findings" in sql
+    assert params == ("scan1",)
+
+
+def test_delete_findings_for_scan_sqlite_mode():
+    """delete_findings_for_scan in sqlite mode deletes and returns rowcount."""
+    import core.db_manager as dm
+    from unittest.mock import patch, MagicMock
+    dm._manager = None
+    mgr = dm.DBManager()
+    mgr.mode = "sqlite"
+
+    mock_cursor = MagicMock()
+    mock_cursor.rowcount = 3
+    mock_conn_ctx = MagicMock()
+    mock_conn_ctx.__enter__ = MagicMock(return_value=mock_conn_ctx)
+    mock_conn_ctx.__exit__ = MagicMock(return_value=False)
+    mock_conn_ctx.execute = MagicMock(return_value=mock_cursor)
+    mock_conn_ctx.commit = MagicMock()
+
+    with patch("sqlite3.connect", return_value=mock_conn_ctx):
+        count = mgr.sync_delete_findings_for_scan("scan1")
+    assert count == 3
+
+
+# ── finding_count ─────────────────────────────────────────────────────────────
+
+def test_finding_count_pg_mode_returns_int():
+    """finding_count returns integer count from PG."""
+    mgr, mock_conn, mock_result = pg_mgr_with_execute(execute_return=(7,))
+    count = mgr.sync_finding_count("scan1")
+    assert count == 7
+    mock_conn.execute.assert_called_once()
+    sql, params = mock_conn.execute.call_args[0]
+    assert "COUNT(*)" in sql
+    assert params == ("scan1",)
+
+
+def test_finding_count_sqlite_mode():
+    """finding_count in sqlite mode returns count."""
+    import core.db_manager as dm
+    from unittest.mock import patch, MagicMock
+    dm._manager = None
+    mgr = dm.DBManager()
+    mgr.mode = "sqlite"
+
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = (4,)
+    mock_conn_ctx = MagicMock()
+    mock_conn_ctx.__enter__ = MagicMock(return_value=mock_conn_ctx)
+    mock_conn_ctx.__exit__ = MagicMock(return_value=False)
+    mock_conn_ctx.execute = MagicMock(return_value=mock_cursor)
+
+    with patch("sqlite3.connect", return_value=mock_conn_ctx):
+        count = mgr.sync_finding_count("scan1")
+    assert count == 4
