@@ -583,6 +583,12 @@ class ResultIngestionEngine:
 
     def store_raw_findings(self, findings: List[dict]) -> int:
         """Store raw findings before validation."""
+        mgr = _get_db_manager_sync()
+        if mgr is not None and mgr.mode in ("distributed", "postgres"):
+            try:
+                return mgr.sync_store_raw_findings(findings)
+            except Exception as exc:
+                log.warning("DBManager store_raw_findings failed, falling back to SQLite: %s", exc)
         inserted = 0
         try:
             with self._lock:
@@ -671,6 +677,12 @@ class ResultIngestionEngine:
 
     def delete_findings_for_scan(self, scan_id: str) -> int:
         """Delete all findings for the given scan_id. Returns the count deleted."""
+        mgr = _get_db_manager_sync()
+        if mgr is not None and mgr.mode in ("distributed", "postgres"):
+            try:
+                return mgr.sync_delete_findings_for_scan(scan_id)
+            except Exception as exc:
+                log.warning("DBManager delete_findings_for_scan failed, falling back to SQLite: %s", exc)
         try:
             with sqlite3.connect(str(self._db_path)) as conn:
                 cur = conn.execute("DELETE FROM findings WHERE scan_id = ?", (scan_id,))
@@ -721,6 +733,12 @@ class ResultIngestionEngine:
 
     def finding_count(self, scan_id: str) -> int:
         """Return number of findings for a given scan_id."""
+        mgr = _get_db_manager_sync()
+        if mgr is not None and mgr.mode in ("distributed", "postgres"):
+            try:
+                return mgr.sync_finding_count(scan_id)
+            except Exception as exc:
+                log.warning("DBManager finding_count failed, falling back to SQLite: %s", exc)
         try:
             with sqlite3.connect(str(self._db_path)) as conn:
                 row = conn.execute(

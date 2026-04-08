@@ -129,3 +129,67 @@ def test_get_recon_assets_uses_pg_when_available():
 
     assert len(results) == 1
     mock_mgr.sync_get_recon_assets.assert_called_once_with(scan_id="scan1", asset_type="subdomain")
+
+
+# ── store_raw_findings ────────────────────────────────────────────────────────
+
+def test_store_raw_findings_uses_pg_when_available():
+    """In PG mode, store_raw_findings delegates to mgr.sync_store_raw_findings."""
+    import result_ingestion_engine as rie
+
+    mock_mgr = make_pg_mgr()
+    mock_mgr.sync_store_raw_findings.return_value = 2
+
+    engine = rie.ResultIngestionEngine.__new__(rie.ResultIngestionEngine)
+    engine._db_path = "/tmp/fake.db"
+    engine._lock = __import__("threading").Lock()
+    engine._broadcast_cb = None
+
+    findings = [{"tool": "nuclei"}, {"tool": "dalfox"}]
+    with patch("result_ingestion_engine._get_db_manager_sync", return_value=mock_mgr):
+        count = engine.store_raw_findings(findings)
+
+    assert count == 2
+    mock_mgr.sync_store_raw_findings.assert_called_once_with(findings)
+
+
+# ── delete_findings_for_scan ─────────────────────────────────────────────────
+
+def test_delete_findings_for_scan_uses_pg_when_available():
+    """In PG mode, delete_findings_for_scan delegates to mgr.sync_delete_findings_for_scan."""
+    import result_ingestion_engine as rie
+
+    mock_mgr = make_pg_mgr()
+    mock_mgr.sync_delete_findings_for_scan.return_value = 5
+
+    engine = rie.ResultIngestionEngine.__new__(rie.ResultIngestionEngine)
+    engine._db_path = "/tmp/fake.db"
+    engine._lock = __import__("threading").Lock()
+    engine._broadcast_cb = None
+
+    with patch("result_ingestion_engine._get_db_manager_sync", return_value=mock_mgr):
+        count = engine.delete_findings_for_scan("scan1")
+
+    assert count == 5
+    mock_mgr.sync_delete_findings_for_scan.assert_called_once_with("scan1")
+
+
+# ── finding_count ─────────────────────────────────────────────────────────────
+
+def test_finding_count_uses_pg_when_available():
+    """In PG mode, finding_count delegates to mgr.sync_finding_count."""
+    import result_ingestion_engine as rie
+
+    mock_mgr = make_pg_mgr()
+    mock_mgr.sync_finding_count.return_value = 7
+
+    engine = rie.ResultIngestionEngine.__new__(rie.ResultIngestionEngine)
+    engine._db_path = "/tmp/fake.db"
+    engine._lock = __import__("threading").Lock()
+    engine._broadcast_cb = None
+
+    with patch("result_ingestion_engine._get_db_manager_sync", return_value=mock_mgr):
+        count = engine.finding_count("scan1")
+
+    assert count == 7
+    mock_mgr.sync_finding_count.assert_called_once_with("scan1")
