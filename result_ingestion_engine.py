@@ -392,6 +392,11 @@ class ResultIngestionEngine:
     # ------------------------------------------------------------------
 
     def _init_db(self) -> None:
+        # In PG mode, DBManager._ensure_schema() handles table creation.
+        mgr = _get_db_manager_sync()
+        if mgr is not None and mgr.mode in ("distributed", "postgres"):
+            log.debug("ResultIngestionEngine: PG mode — skipping SQLite table creation")
+            return
         try:
             with sqlite3.connect(str(self._db_path), timeout=30) as conn:
                 conn.execute("PRAGMA journal_mode=WAL;")
@@ -472,10 +477,9 @@ class ResultIngestionEngine:
         mgr = _get_db_manager_sync()
         if mgr is not None and mgr.mode in ("distributed", "postgres"):
             try:
-                mgr.sync_save_finding(finding.to_dict())
-                return True
+                return mgr.sync_check_and_save_finding(finding.to_dict())
             except Exception as exc:
-                log.warning("DBManager save failed, falling back to SQLite: %s", exc)
+                log.warning("DBManager check_and_save failed, falling back to SQLite: %s", exc)
         # SQLite fallback — route through DBManager abstraction
         last_exc: Optional[Exception] = None
         for attempt in range(3):
