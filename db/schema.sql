@@ -297,3 +297,235 @@ CREATE TABLE IF NOT EXISTS raw_findings (
 );
 CREATE INDEX IF NOT EXISTS idx_raw_findings_tool       ON raw_findings(tool);
 CREATE INDEX IF NOT EXISTS idx_raw_findings_created_at ON raw_findings(created_at);
+
+-- ── Graph Nodes and Edges (attack_graph_core) ─────────────────────────────────
+CREATE TABLE IF NOT EXISTS graph_nodes (
+    id              TEXT PRIMARY KEY,
+    node_type       TEXT NOT NULL,
+    label           TEXT NOT NULL,
+    properties_json TEXT DEFAULT '{}',
+    severity        TEXT,
+    risk_score      DOUBLE PRECISION DEFAULT 0.0,
+    exploitable     BOOLEAN DEFAULT FALSE,
+    validated       BOOLEAN DEFAULT FALSE,
+    discovered_at   TEXT,
+    updated_at      TEXT,
+    source          TEXT DEFAULT '',
+    tags_json       TEXT DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_type  ON graph_nodes(node_type);
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_label ON graph_nodes(label);
+
+CREATE TABLE IF NOT EXISTS graph_edges (
+    id              TEXT PRIMARY KEY,
+    source_id       TEXT NOT NULL,
+    target_id       TEXT NOT NULL,
+    edge_type       TEXT NOT NULL,
+    label           TEXT DEFAULT '',
+    properties_json TEXT DEFAULT '{}',
+    probability     DOUBLE PRECISION DEFAULT 1.0,
+    weight          DOUBLE PRECISION DEFAULT 1.0,
+    requires_auth   BOOLEAN DEFAULT FALSE,
+    created_at      TEXT,
+    source_engine   TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_src ON graph_edges(source_id);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_dst ON graph_edges(target_id);
+
+-- ── Traffic Capture ───────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS captured_requests (
+    id               TEXT PRIMARY KEY,
+    method           TEXT NOT NULL,
+    url              TEXT NOT NULL,
+    headers          TEXT DEFAULT '{}',
+    body             TEXT DEFAULT '',
+    response_status  INTEGER DEFAULT 0,
+    response_headers TEXT DEFAULT '{}',
+    response_body    TEXT DEFAULT '',
+    source           TEXT DEFAULT 'unknown',
+    target_domain    TEXT DEFAULT '',
+    proxied          BOOLEAN DEFAULT FALSE,
+    proxy_address    TEXT DEFAULT '',
+    timestamp        TEXT NOT NULL,
+    duration_ms      INTEGER DEFAULT 0,
+    tags             TEXT DEFAULT '[]',
+    vuln_id          TEXT DEFAULT '',
+    attack_type      TEXT DEFAULT '',
+    flagged          BOOLEAN DEFAULT FALSE,
+    flag_reason      TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_cap_url       ON captured_requests(url);
+CREATE INDEX IF NOT EXISTS idx_cap_target    ON captured_requests(target_domain);
+CREATE INDEX IF NOT EXISTS idx_cap_source    ON captured_requests(source);
+CREATE INDEX IF NOT EXISTS idx_cap_timestamp ON captured_requests(timestamp);
+CREATE INDEX IF NOT EXISTS idx_cap_flagged   ON captured_requests(flagged);
+
+-- ── Memory Manager ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS attack_patterns (
+    id               TEXT PRIMARY KEY,
+    vuln_type        TEXT NOT NULL,
+    target_tech      TEXT DEFAULT '',
+    payload          TEXT DEFAULT '',
+    endpoint_pattern TEXT DEFAULT '',
+    cvss             DOUBLE PRECISION DEFAULT 0,
+    success_rate     DOUBLE PRECISION DEFAULT 0,
+    occurrences      INTEGER DEFAULT 1,
+    last_seen        DOUBLE PRECISION NOT NULL,
+    agent_source     TEXT DEFAULT '',
+    meta             TEXT DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_attack_patterns_vuln ON attack_patterns(vuln_type);
+CREATE INDEX IF NOT EXISTS idx_attack_patterns_tech ON attack_patterns(target_tech);
+
+CREATE TABLE IF NOT EXISTS exploit_chain_records (
+    id               TEXT PRIMARY KEY,
+    chain_name       TEXT NOT NULL,
+    steps            TEXT NOT NULL,
+    target           TEXT DEFAULT '',
+    cvss_combined    DOUBLE PRECISION DEFAULT 0,
+    confirmed        BOOLEAN DEFAULT FALSE,
+    session_id       TEXT DEFAULT '',
+    discovered_at    DOUBLE PRECISION NOT NULL,
+    description      TEXT DEFAULT '',
+    remediation      TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_exploit_chain_records_name ON exploit_chain_records(chain_name);
+
+CREATE TABLE IF NOT EXISTS learning_insights (
+    id               TEXT PRIMARY KEY,
+    category         TEXT NOT NULL,
+    title            TEXT NOT NULL,
+    body             TEXT DEFAULT '',
+    confidence       DOUBLE PRECISION DEFAULT 0.5,
+    source_event     TEXT DEFAULT '',
+    tags             TEXT DEFAULT '[]',
+    created_at       DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_learning_insights_cat ON learning_insights(category);
+CREATE INDEX IF NOT EXISTS idx_learning_insights_ts  ON learning_insights(created_at);
+
+CREATE TABLE IF NOT EXISTS scan_summaries (
+    session_id           TEXT PRIMARY KEY,
+    target               TEXT NOT NULL,
+    started_at           DOUBLE PRECISION NOT NULL,
+    finished_at          DOUBLE PRECISION NOT NULL,
+    phases               TEXT DEFAULT '[]',
+    total_findings       INTEGER DEFAULT 0,
+    confirmed_findings   INTEGER DEFAULT 0,
+    critical_count       INTEGER DEFAULT 0,
+    high_count           INTEGER DEFAULT 0,
+    tools_used           TEXT DEFAULT '[]',
+    new_patterns         INTEGER DEFAULT 0,
+    new_chains           INTEGER DEFAULT 0,
+    insights_generated   INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS capability_snapshots (
+    id               BIGSERIAL PRIMARY KEY,
+    snapshot_at      DOUBLE PRECISION NOT NULL,
+    capabilities     TEXT NOT NULL,
+    total_count      INTEGER DEFAULT 0,
+    delta_from_prev  INTEGER DEFAULT 0,
+    trigger_event    TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS architecture_changelog (
+    id               BIGSERIAL PRIMARY KEY,
+    changed_at       DOUBLE PRECISION NOT NULL,
+    change_type      TEXT NOT NULL,
+    section          TEXT DEFAULT '',
+    summary          TEXT NOT NULL,
+    trigger_event    TEXT DEFAULT '',
+    meta             TEXT DEFAULT '{}'
+);
+
+-- ── Model Budget ──────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS model_usage (
+    id             BIGSERIAL PRIMARY KEY,
+    model_id       TEXT             NOT NULL,
+    provider       TEXT             NOT NULL DEFAULT '',
+    task_id        TEXT             NOT NULL DEFAULT '',
+    task_category  TEXT             NOT NULL DEFAULT 'GENERAL',
+    input_tokens   INTEGER          NOT NULL DEFAULT 0,
+    output_tokens  INTEGER          NOT NULL DEFAULT 0,
+    cost_usd       DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    duration_ms    DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    escalation     BOOLEAN          NOT NULL DEFAULT FALSE,
+    timestamp      DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_model_usage_ts    ON model_usage(timestamp);
+CREATE INDEX IF NOT EXISTS idx_model_usage_model ON model_usage(model_id, timestamp);
+
+-- ── Recon Cache ───────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS recon_cache (
+    cache_key   TEXT             PRIMARY KEY,
+    tool        TEXT             NOT NULL,
+    target      TEXT             NOT NULL,
+    extra       TEXT             DEFAULT '',
+    data        TEXT             NOT NULL,
+    created_at  DOUBLE PRECISION NOT NULL,
+    expires_at  DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recon_cache_tool_target ON recon_cache(tool, target);
+CREATE INDEX IF NOT EXISTS idx_recon_cache_expires     ON recon_cache(expires_at);
+
+-- ── Adversarial Prompt Evolution ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS prompt_genes (
+    prompt_id           TEXT             PRIMARY KEY,
+    text                TEXT             NOT NULL,
+    attack_type         TEXT             NOT NULL,
+    source              TEXT             NOT NULL,
+    parent_ids          TEXT             DEFAULT '[]',
+    generation          INTEGER          DEFAULT 0,
+    mutation_type       TEXT             DEFAULT '',
+    times_tested        INTEGER          DEFAULT 0,
+    times_succeeded     INTEGER          DEFAULT 0,
+    last_success_score  DOUBLE PRECISION DEFAULT 0.0,
+    fitness             DOUBLE PRECISION DEFAULT 0.0,
+    created_at          DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_prompt_genes_attack ON prompt_genes(attack_type);
+
+CREATE TABLE IF NOT EXISTS test_results (
+    result_id       TEXT             PRIMARY KEY,
+    prompt_id       TEXT             NOT NULL,
+    target          TEXT             NOT NULL,
+    response_hash   TEXT             NOT NULL,
+    success         BOOLEAN          NOT NULL,
+    score           DOUBLE PRECISION NOT NULL,
+    attack_type     TEXT             NOT NULL,
+    mutation_type   TEXT             DEFAULT '',
+    tested_at       DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_test_results_prompt ON test_results(prompt_id);
+
+CREATE TABLE IF NOT EXISTS strategy_stats (
+    strategy        TEXT             NOT NULL,
+    attack_type     TEXT             NOT NULL,
+    total_attempts  INTEGER          DEFAULT 0,
+    total_successes INTEGER          DEFAULT 0,
+    avg_score       DOUBLE PRECISION DEFAULT 0.0,
+    PRIMARY KEY(strategy, attack_type)
+);
+
+-- ── Mobile Apps ───────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS mobile_apps (
+    id               TEXT    PRIMARY KEY,
+    filename         TEXT,
+    platform         TEXT,
+    package_name     TEXT,
+    app_name         TEXT,
+    version_name     TEXT,
+    version_code     TEXT,
+    min_sdk          TEXT,
+    target_sdk       TEXT,
+    file_size        INTEGER DEFAULT 0,
+    sha256           TEXT,
+    upload_path      TEXT,
+    extract_path     TEXT,
+    uploaded_at      TEXT,
+    analysis_status  TEXT    DEFAULT 'uploaded',
+    metadata         TEXT    DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_mobile_apps_package  ON mobile_apps(package_name);
+CREATE INDEX IF NOT EXISTS idx_mobile_apps_platform ON mobile_apps(platform);

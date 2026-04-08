@@ -1669,6 +1669,44 @@ class DBManager:
     def sync_check_and_save_finding(self, finding: dict) -> bool:
         return self._run_sync(self.check_and_save_finding(finding))
 
+    # ── Generic PG helpers (for peripheral tables not in main DBManager) ──────
+
+    async def pg_execute_write(self, sql: str, params: tuple = ()) -> int:
+        """Execute a write statement against PG. Returns rowcount. Raises if not PG mode."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("pg_execute_write requires Postgres mode")
+        async with self._pg_pool.connection() as conn:
+            result = await conn.execute(sql, params)
+            await conn.commit()
+            return result.rowcount
+
+    async def pg_execute_read(self, sql: str, params: tuple = ()) -> list:
+        """Execute a SELECT against PG. Returns list of row dicts."""
+        if self.mode not in ("distributed", "postgres"):
+            raise RuntimeError("pg_execute_read requires Postgres mode")
+        async with self._pg_pool.connection() as conn:
+            cursor = await conn.execute(sql, params)
+            columns = [d[0] for d in cursor.description] if cursor.description else []
+            rows = await cursor.fetchall()
+            return [dict(zip(columns, row)) for row in rows]
+
+    async def pg_ensure_tables(self, ddl: str) -> None:
+        """Run CREATE TABLE IF NOT EXISTS DDL against PG (schema migration)."""
+        if self.mode not in ("distributed", "postgres"):
+            return
+        async with self._pg_pool.connection() as conn:
+            await conn.execute(ddl)
+            await conn.commit()
+
+    def sync_pg_execute_write(self, sql: str, params: tuple = ()) -> int:
+        return self._run_sync(self.pg_execute_write(sql, params))
+
+    def sync_pg_execute_read(self, sql: str, params: tuple = ()) -> list:
+        return self._run_sync(self.pg_execute_read(sql, params))
+
+    def sync_pg_ensure_tables(self, ddl: str) -> None:
+        self._run_sync(self.pg_ensure_tables(ddl))
+
     def sync_save_recon_asset(self, asset_id: str, scan_id: str, asset_type: str,
                                value: str, metadata: Optional[dict] = None) -> None:
         self._run_sync(self.save_recon_asset(asset_id, scan_id, asset_type, value, metadata))
