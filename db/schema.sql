@@ -529,3 +529,58 @@ CREATE TABLE IF NOT EXISTS mobile_apps (
 );
 CREATE INDEX IF NOT EXISTS idx_mobile_apps_package  ON mobile_apps(package_name);
 CREATE INDEX IF NOT EXISTS idx_mobile_apps_platform ON mobile_apps(platform);
+
+-- ── Framework / Orchestrator tables (ExtendedDB) ────────────────────────────
+CREATE TABLE IF NOT EXISTS scan_sessions (
+    id            BIGSERIAL PRIMARY KEY,
+    target        TEXT,
+    auth_type     TEXT,
+    auth_ref      TEXT,
+    phase_reached INTEGER DEFAULT 0,
+    status        TEXT DEFAULT 'running',
+    started_at    TIMESTAMPTZ DEFAULT NOW(),
+    completed_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_scan_sessions_target ON scan_sessions(target);
+
+CREATE TABLE IF NOT EXISTS fw_recon_assets (
+    id           BIGSERIAL PRIMARY KEY,
+    session_id   BIGINT,
+    asset_type   TEXT,
+    value        TEXT NOT NULL,
+    source       TEXT,
+    status_code  INTEGER,
+    tech_stack   TEXT,
+    is_in_scope  INTEGER DEFAULT 1,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_fw_recon_assets_session ON fw_recon_assets(session_id);
+
+CREATE TABLE IF NOT EXISTS surface_items (
+    id           BIGSERIAL PRIMARY KEY,
+    session_id   BIGINT,
+    item_type    TEXT,
+    host         TEXT,
+    value        TEXT,
+    method       TEXT,
+    extra        JSONB,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_surface_items_session ON surface_items(session_id);
+
+CREATE TABLE IF NOT EXISTS vuln_candidates (
+    id           BIGSERIAL PRIMARY KEY,
+    session_id   BIGINT,
+    vuln_type    TEXT,
+    host         TEXT,
+    endpoint     TEXT,
+    parameter    TEXT,
+    method       TEXT,
+    payload      TEXT,
+    evidence     TEXT,
+    confidence   TEXT,
+    validated    INTEGER DEFAULT 0,
+    finding_id   BIGINT,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_vuln_candidates_session ON vuln_candidates(session_id);
