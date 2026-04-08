@@ -123,7 +123,21 @@ class MobileUploadManager:
         self._lock = threading.Lock()
         self._init_db()
 
+    # ── DB backend helpers ────────────────────────────────────────────────────
+
+    def _pg(self):
+        """Return DBManager if running in postgres/distributed mode, else None."""
+        try:
+            from core.db_manager import get_db_manager_sync
+            mgr = get_db_manager_sync()
+            return mgr if mgr and mgr.mode in ("distributed", "postgres") else None
+        except Exception:
+            return None
+
     def _init_db(self) -> None:
+        if self._pg():
+            # PG mode: table already created by schema.sql
+            return
         con = self._conn()
         con.executescript(_CREATE_TABLE)
         con.commit()
@@ -197,12 +211,39 @@ class MobileUploadManager:
     # ── Query ─────────────────────────────────────────────────────────────────
 
     def get(self, app_id: str) -> Optional[MobileApp]:
+        pg = self._pg()
+        if pg:
+            try:
+                rows = pg.sync_pg_execute_read(
+                    "SELECT * FROM mobile_apps WHERE id = %s", (app_id,)
+                )
+                if rows:
+                    return MobileApp.from_row(rows[0])
+                return None
+            except Exception as exc:
+                log.warning("PG get failed, falling back to SQLite: %s", exc)
         row = self._conn().execute(
             "SELECT * FROM mobile_apps WHERE id=?", (app_id,)
         ).fetchone()
         return MobileApp.from_row(row) if row else None
 
     def list_apps(self, platform: Optional[str] = None, limit: int = 100) -> List[MobileApp]:
+        pg = self._pg()
+        if pg:
+            try:
+                if platform:
+                    rows = pg.sync_pg_execute_read(
+                        "SELECT * FROM mobile_apps WHERE platform = %s ORDER BY uploaded_at DESC LIMIT %s",
+                        (platform, limit),
+                    )
+                else:
+                    rows = pg.sync_pg_execute_read(
+                        "SELECT * FROM mobile_apps ORDER BY uploaded_at DESC LIMIT %s",
+                        (limit,),
+                    )
+                return [MobileApp.from_row(r) for r in rows]
+            except Exception as exc:
+                log.warning("PG list_apps failed, falling back to SQLite: %s", exc)
         if platform:
             rows = self._conn().execute(
                 "SELECT * FROM mobile_apps WHERE platform=? ORDER BY uploaded_at DESC LIMIT ?",
@@ -215,6 +256,16 @@ class MobileUploadManager:
         return [MobileApp.from_row(r) for r in rows]
 
     def update_status(self, app_id: str, status: str) -> None:
+        pg = self._pg()
+        if pg:
+            try:
+                pg.sync_pg_execute_write(
+                    "UPDATE mobile_apps SET analysis_status=%s WHERE id=%s",
+                    (status, app_id),
+                )
+                return
+            except Exception as exc:
+                log.warning("PG update_status failed, falling back to SQLite: %s", exc)
         with self._lock:
             self._conn().execute(
                 "UPDATE mobile_apps SET analysis_status=? WHERE id=?", (status, app_id)
@@ -232,6 +283,15 @@ class MobileUploadManager:
                     shutil.rmtree(p, ignore_errors=True)
                 else:
                     Path(p).unlink(missing_ok=True)
+        pg = self._pg()
+        if pg:
+            try:
+                pg.sync_pg_execute_write(
+                    "DELETE FROM mobile_apps WHERE id=%s", (app_id,)
+                )
+                return
+            except Exception as exc:
+                log.warning("PG delete failed, falling back to SQLite: %s", exc)
         with self._lock:
             self._conn().execute("DELETE FROM mobile_apps WHERE id=?", (app_id,))
             self._conn().commit()
@@ -388,6 +448,17 @@ class MobileUploadManager:
         return h.hexdigest()
 
     def _find_by_sha256(self, sha: str) -> Optional[MobileApp]:
+        pg = self._pg()
+        if pg:
+            try:
+                rows = pg.sync_pg_execute_read(
+                    "SELECT * FROM mobile_apps WHERE sha256 = %s", (sha,)
+                )
+                if rows:
+                    return MobileApp.from_row(rows[0])
+                return None
+            except Exception as exc:
+                log.warning("PG _find_by_sha256 failed, falling back to SQLite: %s", exc)
         row = self._conn().execute(
             "SELECT * FROM mobile_apps WHERE sha256=?", (sha,)
         ).fetchone()
@@ -395,9 +466,25 @@ class MobileUploadManager:
 
     def _store(self, app: MobileApp) -> None:
         d = app.to_dict()
-        cols = ", ".join(d.keys())
+        pg = self._pg()
+        if pg:
+            try:
+                cols = list(d.keys())
+                col_list = ", ".join(cols)
+                placeholders = ", ".join("%s" for _ in cols)
+                updates = ", ".join(f"{c}=%s" for c in cols if c != "id")
+                update_vals = [d[c] for c in cols if c != "id"]
+                sql = (
+                    f"INSERT INTO mobile_apps ({col_list}) VALUES ({placeholders}) "
+                    f"ON CONFLICT (id) DO UPDATE SET {updates}"
+                )
+                pg.sync_pg_execute_write(sql, tuple(d.values()) + tuple(update_vals))
+                return
+            except Exception as exc:
+                log.warning("PG _store failed, falling back to SQLite: %s", exc)
+        cols_str = ", ".join(d.keys())
         placeholders = ", ".join("?" for _ in d)
-        sql = f"INSERT OR REPLACE INTO mobile_apps ({cols}) VALUES ({placeholders})"
+        sql = f"INSERT OR REPLACE INTO mobile_apps ({cols_str}) VALUES ({placeholders})"
         with self._lock:
             self._conn().execute(sql, list(d.values()))
             self._conn().commit()

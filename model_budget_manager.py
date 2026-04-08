@@ -154,6 +154,17 @@ class ModelBudgetManager:
         self._cache_date:     str = ""  # "YYYY-MM-DD"
         self._refresh_cache()
 
+    # ── PG helper ─────────────────────────────────────────────────────────────
+
+    def _pg(self):
+        """Return DBManager if running in PG/distributed mode, else None."""
+        try:
+            from core.db_manager import get_db_manager_sync
+            mgr = get_db_manager_sync()
+            return mgr if mgr and mgr.mode in ("distributed", "postgres") else None
+        except Exception:
+            return None
+
     # ── DB setup ──────────────────────────────────────────────────────────────
 
     def _open_db(self) -> sqlite3.Connection:
@@ -176,6 +187,39 @@ class ModelBudgetManager:
         month_ts  = time.mktime(
             __import__("datetime").datetime.strptime(month_s, "%Y-%m-%d").timetuple()
         )
+
+        pg = self._pg()
+        if pg is not None:
+            try:
+                rows = pg.sync_pg_execute_read(
+                    "SELECT model_id, task_category, SUM(cost_usd) "
+                    "FROM model_usage WHERE timestamp >= %s GROUP BY model_id, task_category",
+                    (today_ts,)
+                )
+                today_total = 0.0
+                model_today: Dict[str, float] = {}
+                cat_today:   Dict[str, float] = {}
+                for row in rows:
+                    mid = row.get("model_id", "")
+                    cat = row.get("task_category", "")
+                    cost = row.get("sum", 0.0) or 0.0
+                    today_total          += cost
+                    model_today[mid]      = model_today.get(mid, 0.0) + cost
+                    cat_today[cat]        = cat_today.get(cat, 0.0) + cost
+
+                month_rows = pg.sync_pg_execute_read(
+                    "SELECT SUM(cost_usd) AS total FROM model_usage WHERE timestamp >= %s",
+                    (month_ts,)
+                )
+                month_total = (month_rows[0].get("total") or 0.0) if month_rows else 0.0
+
+                self._today_total = today_total
+                self._month_total = month_total
+                self._model_today = model_today
+                self._cat_today   = cat_today
+                return
+            except Exception as exc:
+                log.warning("PG _refresh_cache failed, falling back to SQLite: %s", exc)
 
         with self._lock:
             cur = self._conn.execute(
@@ -288,17 +332,33 @@ class ModelBudgetManager:
                escalation: bool = False) -> None:
         """Persist a usage record and update in-memory cache."""
         ts = time.time()
-        with self._lock:
-            self._conn.execute(
-                "INSERT INTO model_usage "
-                "(model_id, provider, task_id, task_category, input_tokens, "
-                "output_tokens, cost_usd, duration_ms, escalation, timestamp) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (model_id, provider, task_id, task_category,
-                 input_tokens, output_tokens, cost_usd, duration_ms,
-                 1 if escalation else 0, ts)
-            )
-            self._conn.commit()
+        pg = self._pg()
+        if pg is not None:
+            try:
+                pg.sync_pg_execute_write(
+                    "INSERT INTO model_usage "
+                    "(model_id, provider, task_id, task_category, input_tokens, "
+                    "output_tokens, cost_usd, duration_ms, escalation, timestamp) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (model_id, provider, task_id, task_category,
+                     input_tokens, output_tokens, cost_usd, duration_ms,
+                     bool(escalation), ts)
+                )
+            except Exception as exc:
+                log.warning("PG record failed, falling back to SQLite: %s", exc)
+                pg = None
+        if pg is None:
+            with self._lock:
+                self._conn.execute(
+                    "INSERT INTO model_usage "
+                    "(model_id, provider, task_id, task_category, input_tokens, "
+                    "output_tokens, cost_usd, duration_ms, escalation, timestamp) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (model_id, provider, task_id, task_category,
+                     input_tokens, output_tokens, cost_usd, duration_ms,
+                     1 if escalation else 0, ts)
+                )
+                self._conn.commit()
 
         # Update cache
         self._today_total              += cost_usd

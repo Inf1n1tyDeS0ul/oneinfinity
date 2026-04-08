@@ -159,9 +159,21 @@ CREATE INDEX IF NOT EXISTS idx_vuln          ON captured_requests(vuln_id);
 """
 
 
+def _from_pg_row(row: dict) -> "CapturedRequest":
+    """Convert a dict row from PG (sync_pg_execute_read) to a CapturedRequest."""
+    d = dict(row)
+    d["headers"] = json.loads(d.get("headers") or "{}")
+    d["response_headers"] = json.loads(d.get("response_headers") or "{}")
+    d["tags"] = json.loads(d.get("tags") or "[]")
+    d["proxied"] = bool(d.get("proxied", False))
+    d["flagged"] = bool(d.get("flagged", False))
+    return CapturedRequest(**d)
+
+
 class TrafficCaptureEngine:
     """
-    Thread-safe traffic capture engine backed by SQLite.
+    Thread-safe traffic capture engine backed by PostgreSQL (when available)
+    with SQLite fallback.
     """
 
     def __init__(self, db_path: Path = DB_PATH) -> None:
@@ -171,9 +183,23 @@ class TrafficCaptureEngine:
         self._listeners: List[Callable[[CapturedRequest], None]] = []
         self._init_db()
 
+    # ── PG helper ─────────────────────────────────────────────────────────────
+
+    def _pg(self):
+        """Return DBManager if running in PG/distributed mode, else None."""
+        try:
+            from core.db_manager import get_db_manager_sync
+            mgr = get_db_manager_sync()
+            return mgr if mgr and mgr.mode in ("distributed", "postgres") else None
+        except Exception:
+            return None
+
     # ── DB init ───────────────────────────────────────────────────────────────
 
     def _init_db(self) -> None:
+        if self._pg() is not None:
+            # PG schema already applied by DBManager at startup
+            return
         con = self._conn()
         con.executescript(_CREATE_TABLE)
         con.commit()
@@ -189,13 +215,28 @@ class TrafficCaptureEngine:
 
     def store(self, req: CapturedRequest) -> str:
         """Persist a captured request. Returns the request id."""
-        d = req.to_dict()
-        cols = ", ".join(d.keys())
-        placeholders = ", ".join("?" for _ in d)
-        sql = f"INSERT OR REPLACE INTO captured_requests ({cols}) VALUES ({placeholders})"
-        with self._lock:
-            self._conn().execute(sql, list(d.values()))
-            self._conn().commit()
+        mgr = self._pg()
+        if mgr is not None:
+            d = req.to_dict()
+            cols = ", ".join(d.keys())
+            placeholders = ", ".join("%s" for _ in d)
+            sql = (
+                f"INSERT INTO captured_requests ({cols}) VALUES ({placeholders})"
+                " ON CONFLICT (id) DO NOTHING"
+            )
+            try:
+                mgr.sync_pg_execute_write(sql, tuple(d.values()))
+            except Exception as exc:
+                log.warning("TrafficCaptureEngine.store PG failed, falling back to SQLite: %s", exc)
+                mgr = None
+        if mgr is None:
+            d = req.to_dict()
+            cols = ", ".join(d.keys())
+            placeholders = ", ".join("?" for _ in d)
+            sql = f"INSERT OR REPLACE INTO captured_requests ({cols}) VALUES ({placeholders})"
+            with self._lock:
+                self._conn().execute(sql, list(d.values()))
+                self._conn().commit()
         log.debug("Traffic captured: %s %s → %d", req.method, req.url, req.response_status)
         for listener in self._listeners:
             try:
@@ -244,6 +285,14 @@ class TrafficCaptureEngine:
     # ── Query ─────────────────────────────────────────────────────────────────
 
     def get(self, request_id: str) -> Optional[CapturedRequest]:
+        mgr = self._pg()
+        if mgr is not None:
+            rows = mgr.sync_pg_execute_read(
+                "SELECT * FROM captured_requests WHERE id = %s", (request_id,)
+            )
+            if rows:
+                return _from_pg_row(rows[0])
+            return None
         row = self._conn().execute(
             "SELECT * FROM captured_requests WHERE id = ?", (request_id,)
         ).fetchone()
@@ -262,9 +311,45 @@ class TrafficCaptureEngine:
         limit: int = 200,
         offset: int = 0,
     ) -> List[CapturedRequest]:
-        clauses = []
-        params: List[Any] = []
+        mgr = self._pg()
+        if mgr is not None:
+            clauses: List[str] = []
+            params: List[Any] = []
+            if target:
+                clauses.append("target_domain LIKE %s")
+                params.append(f"%{target}%")
+            if source:
+                clauses.append("source = %s")
+                params.append(source)
+            if method:
+                clauses.append("method = %s")
+                params.append(method.upper())
+            if status_code is not None:
+                clauses.append("response_status = %s")
+                params.append(status_code)
+            if flagged is not None:
+                clauses.append("flagged = %s")
+                params.append(flagged)
+            if vuln_id:
+                clauses.append("vuln_id = %s")
+                params.append(vuln_id)
+            if attack_type:
+                clauses.append("attack_type = %s")
+                params.append(attack_type)
+            if search:
+                clauses.append("(url LIKE %s OR body LIKE %s OR response_body LIKE %s)")
+                params += [f"%{search}%", f"%{search}%", f"%{search}%"]
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            sql = (
+                f"SELECT * FROM captured_requests {where}"
+                " ORDER BY timestamp DESC LIMIT %s OFFSET %s"
+            )
+            rows = mgr.sync_pg_execute_read(sql, tuple(params + [limit, offset]))
+            return [_from_pg_row(r) for r in rows]
 
+        # SQLite fallback
+        clauses = []
+        params = []
         if target:
             clauses.append("target_domain LIKE ?")
             params.append(f"%{target}%")
@@ -299,6 +384,13 @@ class TrafficCaptureEngine:
         return len(self.list(**filters, limit=10000))
 
     def flag(self, request_id: str, reason: str) -> None:
+        mgr = self._pg()
+        if mgr is not None:
+            mgr.sync_pg_execute_write(
+                "UPDATE captured_requests SET flagged=TRUE, flag_reason=%s WHERE id=%s",
+                (reason, request_id),
+            )
+            return
         with self._lock:
             self._conn().execute(
                 "UPDATE captured_requests SET flagged=1, flag_reason=? WHERE id=?",
@@ -307,6 +399,13 @@ class TrafficCaptureEngine:
             self._conn().commit()
 
     def link_vuln(self, request_id: str, vuln_id: str, attack_type: str = "") -> None:
+        mgr = self._pg()
+        if mgr is not None:
+            mgr.sync_pg_execute_write(
+                "UPDATE captured_requests SET vuln_id=%s, attack_type=%s WHERE id=%s",
+                (vuln_id, attack_type, request_id),
+            )
+            return
         with self._lock:
             self._conn().execute(
                 "UPDATE captured_requests SET vuln_id=?, attack_type=? WHERE id=?",
@@ -315,11 +414,25 @@ class TrafficCaptureEngine:
             self._conn().commit()
 
     def delete(self, request_id: str) -> None:
+        mgr = self._pg()
+        if mgr is not None:
+            mgr.sync_pg_execute_write(
+                "DELETE FROM captured_requests WHERE id=%s", (request_id,)
+            )
+            return
         with self._lock:
             self._conn().execute("DELETE FROM captured_requests WHERE id=?", (request_id,))
             self._conn().commit()
 
     def clear(self, target: Optional[str] = None) -> int:
+        mgr = self._pg()
+        if mgr is not None:
+            if target:
+                return mgr.sync_pg_execute_write(
+                    "DELETE FROM captured_requests WHERE target_domain LIKE %s",
+                    (f"%{target}%",),
+                )
+            return mgr.sync_pg_execute_write("DELETE FROM captured_requests", ())
         with self._lock:
             if target:
                 cur = self._conn().execute(
@@ -332,6 +445,36 @@ class TrafficCaptureEngine:
             return cur.rowcount
 
     def stats(self) -> Dict:
+        mgr = self._pg()
+        if mgr is not None:
+            total_rows = mgr.sync_pg_execute_read(
+                "SELECT COUNT(*) AS cnt FROM captured_requests", ()
+            )
+            total = total_rows[0]["cnt"] if total_rows else 0
+            flagged_rows = mgr.sync_pg_execute_read(
+                "SELECT COUNT(*) AS cnt FROM captured_requests WHERE flagged=TRUE", ()
+            )
+            flagged = flagged_rows[0]["cnt"] if flagged_rows else 0
+            by_source = {
+                r["source"]: r["cnt"]
+                for r in mgr.sync_pg_execute_read(
+                    "SELECT source, COUNT(*) AS cnt FROM captured_requests GROUP BY source", ()
+                )
+            }
+            by_status = {
+                str(r["response_status"]): r["cnt"]
+                for r in mgr.sync_pg_execute_read(
+                    "SELECT response_status, COUNT(*) AS cnt FROM captured_requests"
+                    " GROUP BY response_status ORDER BY cnt DESC LIMIT 10",
+                    (),
+                )
+            }
+            return {
+                "total": total,
+                "flagged": flagged,
+                "by_source": by_source,
+                "by_status_code": by_status,
+            }
         con = self._conn()
         total = con.execute("SELECT COUNT(*) FROM captured_requests").fetchone()[0]
         flagged = con.execute("SELECT COUNT(*) FROM captured_requests WHERE flagged=1").fetchone()[0]

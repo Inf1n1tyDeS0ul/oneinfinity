@@ -1,8 +1,13 @@
 """
-Recon Cache — SQLite-backed TTL cache for reconnaissance data.
+Recon Cache — PG-first (SQLite fallback) TTL cache for reconnaissance data.
 
 Avoids re-running expensive tools (subfinder, katana, etc.) within the
 same session or across sessions within the TTL window.
+
+When a DBManager is available in "postgres" or "distributed" mode, all
+operations go to the shared PostgreSQL ``recon_cache`` table (already
+defined in db/schema.sql).  If PG is unavailable or DBManager is in
+"sqlite" mode, the original per-process SQLite file is used as fallback.
 
 Usage:
     cache = ReconCache()
@@ -51,7 +56,7 @@ def _cache_key(tool: str, target: str, extra: str = "") -> str:
 
 
 class ReconCache:
-    """Thread-safe SQLite cache with per-tool TTL support."""
+    """PG-first (SQLite fallback) cache with per-tool TTL support."""
 
     def __init__(self, db_path: Optional[Path] = None) -> None:
         self._db_path = db_path or _DB_PATH
@@ -60,7 +65,20 @@ class ReconCache:
         self._init_schema()
 
     # ------------------------------------------------------------------ #
-    #  Connection (per-thread)
+    #  PG helper
+    # ------------------------------------------------------------------ #
+
+    def _pg(self):
+        """Return DBManager if running in postgres/distributed mode, else None."""
+        try:
+            from core.db_manager import get_db_manager_sync
+            mgr = get_db_manager_sync()
+            return mgr if mgr and mgr.mode in ("distributed", "postgres") else None
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------ #
+    #  Connection (per-thread, SQLite fallback)
     # ------------------------------------------------------------------ #
 
     def _conn(self) -> sqlite3.Connection:
@@ -71,6 +89,11 @@ class ReconCache:
         return self._local.conn
 
     def _init_schema(self) -> None:
+        # PG: table already exists in db/schema.sql — nothing to do.
+        if self._pg() is not None:
+            return
+
+        # SQLite fallback: create table locally.
         conn = self._conn()
         conn.execute("""
             CREATE TABLE IF NOT EXISTS recon_cache (
@@ -94,12 +117,29 @@ class ReconCache:
     def get(self, tool: str, target: str, extra: str = "") -> Optional[Any]:
         """Return cached data or None if missing/expired."""
         key = _cache_key(tool, target, extra)
+        now = time.time()
+
+        mgr = self._pg()
+        if mgr is not None:
+            rows = mgr.sync_pg_execute_read(
+                "SELECT data FROM recon_cache WHERE cache_key = %s AND expires_at > %s",
+                (key, now),
+            )
+            if not rows:
+                return None
+            raw = rows[0]["data"]
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return raw
+
+        # --- SQLite fallback ---
         row = self._conn().execute(
             "SELECT data, expires_at FROM recon_cache WHERE cache_key = ?", (key,)
         ).fetchone()
         if row is None:
             return None
-        if time.time() > row["expires_at"]:
+        if now > row["expires_at"]:
             self._conn().execute("DELETE FROM recon_cache WHERE cache_key = ?", (key,))
             self._conn().commit()
             log.debug("Cache expired: %s/%s", tool, target)
@@ -122,13 +162,33 @@ class ReconCache:
             ttl = DEFAULT_TTLS.get(tool, DEFAULT_TTLS["default"])
         key = _cache_key(tool, target, extra)
         now = time.time()
+        serialised = json.dumps(data)
+
+        mgr = self._pg()
+        if mgr is not None:
+            mgr.sync_pg_execute_write(
+                """
+                INSERT INTO recon_cache
+                  (cache_key, tool, target, extra, data, created_at, expires_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (cache_key) DO UPDATE SET
+                  data       = EXCLUDED.data,
+                  expires_at = EXCLUDED.expires_at,
+                  created_at = EXCLUDED.created_at
+                """,
+                (key, tool, target, extra, serialised, now, now + ttl),
+            )
+            log.debug("PG cached %s/%s (TTL %ds)", tool, target, ttl)
+            return
+
+        # --- SQLite fallback ---
         self._conn().execute(
             """
             INSERT OR REPLACE INTO recon_cache
               (cache_key, tool, target, extra, data, created_at, expires_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (key, tool, target, extra, json.dumps(data), now, now + ttl),
+            (key, tool, target, extra, serialised, now, now + ttl),
         )
         self._conn().commit()
         log.debug("Cached %s/%s (TTL %ds)", tool, target, ttl)
@@ -136,11 +196,27 @@ class ReconCache:
     def invalidate(self, tool: str, target: str, extra: str = "") -> None:
         """Force-remove a cache entry."""
         key = _cache_key(tool, target, extra)
+
+        mgr = self._pg()
+        if mgr is not None:
+            mgr.sync_pg_execute_write(
+                "DELETE FROM recon_cache WHERE cache_key = %s", (key,)
+            )
+            return
+
+        # --- SQLite fallback ---
         self._conn().execute("DELETE FROM recon_cache WHERE cache_key = ?", (key,))
         self._conn().commit()
 
     def invalidate_target(self, target: str) -> int:
         """Remove all cache entries for a target. Returns rows deleted."""
+        mgr = self._pg()
+        if mgr is not None:
+            return mgr.sync_pg_execute_write(
+                "DELETE FROM recon_cache WHERE target = %s", (target,)
+            )
+
+        # --- SQLite fallback ---
         cur = self._conn().execute(
             "DELETE FROM recon_cache WHERE target = ?", (target,)
         )
@@ -149,6 +225,14 @@ class ReconCache:
 
     def invalidate_tool(self, tool: str, target: str) -> int:
         """Remove all cache entries for a (tool, target) pair."""
+        mgr = self._pg()
+        if mgr is not None:
+            return mgr.sync_pg_execute_write(
+                "DELETE FROM recon_cache WHERE tool = %s AND target = %s",
+                (tool, target),
+            )
+
+        # --- SQLite fallback ---
         cur = self._conn().execute(
             "DELETE FROM recon_cache WHERE tool = ? AND target = ?", (tool, target)
         )
@@ -157,13 +241,45 @@ class ReconCache:
 
     def sweep_expired(self) -> int:
         """Delete all expired entries. Returns rows deleted."""
+        now = time.time()
+
+        mgr = self._pg()
+        if mgr is not None:
+            return mgr.sync_pg_execute_write(
+                "DELETE FROM recon_cache WHERE expires_at < %s", (now,)
+            )
+
+        # --- SQLite fallback ---
         cur = self._conn().execute(
-            "DELETE FROM recon_cache WHERE expires_at < ?", (time.time(),)
+            "DELETE FROM recon_cache WHERE expires_at < ?", (now,)
         )
         self._conn().commit()
         return cur.rowcount
 
+    # Alias used in the task spec / tests
+    def clear_expired(self) -> int:
+        """Alias for sweep_expired()."""
+        return self.sweep_expired()
+
     def stats(self) -> dict:
+        mgr = self._pg()
+        if mgr is not None:
+            rows_total = mgr.sync_pg_execute_read(
+                "SELECT COUNT(*) AS cnt FROM recon_cache", ()
+            )
+            rows_expired = mgr.sync_pg_execute_read(
+                "SELECT COUNT(*) AS cnt FROM recon_cache WHERE expires_at < %s",
+                (time.time(),),
+            )
+            rows_by_tool = mgr.sync_pg_execute_read(
+                "SELECT tool, COUNT(*) AS cnt FROM recon_cache GROUP BY tool", ()
+            )
+            total = rows_total[0]["cnt"] if rows_total else 0
+            expired = rows_expired[0]["cnt"] if rows_expired else 0
+            by_tool = {r["tool"]: r["cnt"] for r in rows_by_tool}
+            return {"total": total, "expired": expired, "by_tool": by_tool}
+
+        # --- SQLite fallback ---
         conn = self._conn()
         total = conn.execute("SELECT COUNT(*) FROM recon_cache").fetchone()[0]
         expired = conn.execute(
@@ -177,6 +293,12 @@ class ReconCache:
         return {"total": total, "expired": expired, "by_tool": by_tool}
 
     def clear_all(self) -> None:
+        mgr = self._pg()
+        if mgr is not None:
+            mgr.sync_pg_execute_write("DELETE FROM recon_cache", ())
+            return
+
+        # --- SQLite fallback ---
         self._conn().execute("DELETE FROM recon_cache")
         self._conn().commit()
 
