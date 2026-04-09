@@ -1044,7 +1044,7 @@ class UnifiedScanEngine:
         if brain is None:
             raise RuntimeError("graph_brain not available for agent_trigger")
         try:
-            from oneinfinity.agent_execution_fabric import get_fabric
+            from oneinfinity.swarm.agent_execution_fabric import get_fabric
         except ImportError as exc:
             raise RuntimeError("AgentExecutionFabric unavailable: " + str(exc)) from exc
 
@@ -1376,7 +1376,7 @@ class UnifiedScanEngine:
 
         # ── Fix 7: Collect fabric findings (drain async swarm agents) ────────
         try:
-            from oneinfinity.agent_execution_fabric import get_fabric
+            from oneinfinity.swarm.agent_execution_fabric import get_fabric
             _fabric = get_fabric()
             _fabric_findings = _fabric.drain(timeout_s=20.0)
             if _fabric_findings:

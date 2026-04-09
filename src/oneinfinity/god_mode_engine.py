@@ -439,7 +439,7 @@ class SwarmMission(Mission):
 
     def _run(self, session: GodModeSession) -> None:
         import asyncio as _asyncio
-        from oneinfinity.agent_swarm_coordinator import run_swarm
+        from oneinfinity.swarm.agent_swarm_coordinator import run_swarm
 
         log.info("[GOD MODE] SwarmMission: deploying 8 agents against %s", session.target)
 

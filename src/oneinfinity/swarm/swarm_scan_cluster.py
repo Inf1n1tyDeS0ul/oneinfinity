@@ -298,8 +298,8 @@ class SwarmScanCluster:
         Start master + N worker threads using pure Python threading.
         No external dependencies required.
         """
-        from oneinfinity.swarm_master import SwarmMaster
-        from oneinfinity.swarm_worker import SwarmWorker, WorkerConfig
+        from oneinfinity.swarm.swarm_master import SwarmMaster
+        from oneinfinity.swarm.swarm_worker import SwarmWorker, WorkerConfig
 
         # Create master
         self._master = SwarmMaster(
@@ -328,8 +328,8 @@ class SwarmScanCluster:
         Workers connect to Redis queues instead of polling master directly.
         """
         import redis as redis_lib
-        from oneinfinity.swarm_master import SwarmMaster
-        from oneinfinity.swarm_worker import SwarmWorker, WorkerConfig
+        from oneinfinity.swarm.swarm_master import SwarmMaster
+        from oneinfinity.swarm.swarm_worker import SwarmWorker, WorkerConfig
         from oneinfinity.task_dispatcher import TaskRouter
 
         redis_client = redis_lib.from_url(self.config.redis_url)

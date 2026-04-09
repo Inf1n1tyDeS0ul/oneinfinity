@@ -105,8 +105,8 @@ def cmd_swarm_scan(args):
             return
 
     try:
-        from oneinfinity.agent_swarm_coordinator import AgentSwarmCoordinator, run_swarm
-        from oneinfinity.swarm_intelligence_engine import AgentType
+        from oneinfinity.swarm.agent_swarm_coordinator import AgentSwarmCoordinator, run_swarm
+        from oneinfinity.swarm.swarm_intelligence_engine import AgentType
     except ImportError as e:
         print(f"[!] Import error: {e}")
         return

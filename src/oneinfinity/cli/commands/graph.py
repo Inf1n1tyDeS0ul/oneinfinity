@@ -169,7 +169,7 @@ def cmd_brain_start(args):
     try:
         from oneinfinity.attack_graph_brain import get_brain
         from oneinfinity.event_driven_engine import get_engine
-        from oneinfinity.agent_execution_fabric import get_fabric
+        from oneinfinity.swarm.agent_execution_fabric import get_fabric
 
         brain  = get_brain()
         ede    = get_engine()
@@ -204,7 +204,7 @@ def cmd_brain_status(args):
     try:
         from oneinfinity.attack_graph_brain import get_brain
         from oneinfinity.event_driven_engine import get_engine
-        from oneinfinity.agent_execution_fabric import get_fabric
+        from oneinfinity.swarm.agent_execution_fabric import get_fabric
 
         b = get_brain().status()
         e = get_engine().status()

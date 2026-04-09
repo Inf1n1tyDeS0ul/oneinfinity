@@ -345,7 +345,7 @@ def json_deserialize_task(payload) -> Optional[object]:
 
         # Try to reconstruct a proper ScanTask
         try:
-            from oneinfinity.swarm_master import ScanTask
+            from oneinfinity.swarm.swarm_master import ScanTask
             task = ScanTask(
                 task_id=data.get("task_id", ""),
                 target=data.get("target", ""),

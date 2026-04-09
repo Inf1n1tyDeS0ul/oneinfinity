@@ -696,7 +696,7 @@ class SwarmWorker(WorkerEngine):
     def _run_swarm(self, target: str) -> list[dict]:
         findings: list[dict] = []
         try:
-            from oneinfinity.agent_swarm_coordinator import AgentSwarmCoordinator
+            from oneinfinity.swarm.agent_swarm_coordinator import AgentSwarmCoordinator
             import asyncio as _a
             coordinator = AgentSwarmCoordinator()
             result = _a.run(coordinator.scan(target, context={"auto": True, "source": "daemon"}))

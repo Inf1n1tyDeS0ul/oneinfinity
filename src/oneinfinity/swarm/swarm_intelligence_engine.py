@@ -11,7 +11,7 @@ Each agent follows a 5-phase lifecycle:
 Specialized agents: XSS, SQLi, SSRF, IDOR, Auth, BusinessLogic, Mobile, API
 
 Usage:
-    from oneinfinity.swarm_intelligence_engine import create_agent, AgentType
+    from oneinfinity.swarm.swarm_intelligence_engine import create_agent, AgentType
     agent = create_agent(AgentType.XSS, tool_registry=reg, attack_graph=engine)
     findings = await agent.run(target="example.com", context={...})
 """

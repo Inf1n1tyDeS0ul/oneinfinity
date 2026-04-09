@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 # ── Optional platform imports ─────────────────────────────────────────────────
 
 try:
-    from oneinfinity.swarm_intelligence_engine import AgentFinding, AgentType
+    from oneinfinity.swarm.swarm_intelligence_engine import AgentFinding, AgentType
     _SWARM_AVAILABLE = True
 except ImportError:
     _SWARM_AVAILABLE = False

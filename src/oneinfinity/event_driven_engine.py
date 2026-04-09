@@ -128,7 +128,7 @@ class EventDrivenEngine:
 
     def _get_fabric(self):
         if self._fabric is None:
-            from oneinfinity.agent_execution_fabric import get_fabric
+            from oneinfinity.swarm.agent_execution_fabric import get_fabric
             self._fabric = get_fabric()
         return self._fabric
 

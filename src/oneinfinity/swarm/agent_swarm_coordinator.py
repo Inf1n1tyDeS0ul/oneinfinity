@@ -12,7 +12,7 @@ Coordinates all specialized agents through:
   - Result aggregation: SHA-256 dedup + chain candidate detection
 
 Usage:
-    from oneinfinity.agent_swarm_coordinator import AgentSwarmCoordinator
+    from oneinfinity.swarm.agent_swarm_coordinator import AgentSwarmCoordinator
 
     coord = AgentSwarmCoordinator(
         tool_registry=reg,
@@ -57,7 +57,7 @@ try:
 except ImportError:
     _QUERY_AVAILABLE = False
 
-from oneinfinity.swarm_intelligence_engine import (
+from oneinfinity.swarm.swarm_intelligence_engine import (
     AgentType, AgentFinding, SwarmAgent,
     create_agent, create_full_swarm,
 )

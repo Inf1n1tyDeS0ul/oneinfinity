@@ -187,7 +187,7 @@ def _fabric_ai_enrich(finding: dict) -> None:
 
 def _wire_fabric() -> bool:
     try:
-        from oneinfinity.agent_execution_fabric import get_fabric
+        from oneinfinity.swarm.agent_execution_fabric import get_fabric
         fabric = get_fabric()
         # Wrap the existing global callback
         existing_cb = fabric._global_on_complete
