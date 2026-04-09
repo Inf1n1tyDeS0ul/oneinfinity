@@ -46,8 +46,8 @@ def cmd_chains(args):
         print("  oneinfinity vuln-scan <domain>")
         return
 
-    from oneinfinity.exploit_chains import ExploitChainEngine
-    from oneinfinity.exploit_chains.poc_generator import PoCGenerator as PocGenerator
+    from oneinfinity.attack.exploit_chain_engine import ExploitChainEngine
+    from oneinfinity.attack.poc_generator import PoCGenerator as PocGenerator
 
     engine = ExploitChainEngine()
     chains = engine.detect_chains(findings, target)
@@ -71,7 +71,7 @@ def cmd_chains(args):
     # Generate PoC scripts
     if not args.no_poc:
         section("Generating PoC Scripts")
-        from oneinfinity.exploit_chains.chain_patterns import CHAIN_PATTERNS
+        from oneinfinity.attack.chain_patterns import CHAIN_PATTERNS
         gen = PocGenerator()
         out_path.mkdir(parents=True, exist_ok=True)
         for chain in chains:
@@ -105,7 +105,7 @@ def cmd_exploit_chains(args):
 
     import json
     from pathlib import Path
-    from oneinfinity.exploit_chains import ExploitChainEngine
+    from oneinfinity.attack.exploit_chain_engine import ExploitChainEngine
 
     # Load existing findings
     findings_file = Path(output_dir) / "findings.json"

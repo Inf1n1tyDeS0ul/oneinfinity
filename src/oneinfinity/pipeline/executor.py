@@ -1124,9 +1124,9 @@ class CanonicalExecutor:
     def _inline_exploit_chains(self, target: str, out: Path) -> List[dict]:
         findings = []
         try:
-            from oneinfinity.exploit_chains import ExploitChainEngine
-            from oneinfinity.exploit_chains.poc_generator import PoCGenerator
-            from oneinfinity.exploit_chains.chain_patterns import CHAIN_PATTERNS
+            from oneinfinity.attack.exploit_chain_engine import ExploitChainEngine
+            from oneinfinity.attack.poc_generator import PoCGenerator
+            from oneinfinity.attack.chain_patterns import CHAIN_PATTERNS
             all_f = self._load_findings_from_dir(out)
             engine = ExploitChainEngine()
             chains = engine.detect_chains(all_f, target)

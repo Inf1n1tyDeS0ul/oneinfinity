@@ -366,7 +366,7 @@ class ExploitChainWorker(WorkerEngine):
     def _find_chains(self, target: str, vuln_types: set[str]) -> list[dict]:
         chains = []
         try:
-            from oneinfinity.exploit_chains.chain_patterns import CHAIN_PATTERNS
+            from oneinfinity.attack.chain_patterns import CHAIN_PATTERNS
             for pattern in CHAIN_PATTERNS:
                 required = set(r.lower() for r in pattern.requires)
                 present  = set(v.lower() for v in vuln_types)

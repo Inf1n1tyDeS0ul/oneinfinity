@@ -2117,7 +2117,7 @@ class UnifiedScanEngine:
 
         # 3. Detect and execute chains via restored exploit_chains package
         try:
-            from oneinfinity.exploit_chains.engine import ExploitChainEngine
+            from oneinfinity.attack.exploit_chain_engine import ExploitChainEngine
         except ImportError as exc:
             log.error("exploit_chaining: exploit_chains package unavailable: %s", exc)
             session.phases["exploit_chaining"].degraded = True

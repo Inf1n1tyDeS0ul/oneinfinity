@@ -472,7 +472,7 @@ class ResultAggregator:
         if not findings:
             return []
         try:
-            from oneinfinity.exploit_chains.engine import ExploitChainEngine
+            from oneinfinity.attack.exploit_chain_engine import ExploitChainEngine
             engine = ExploitChainEngine(target="aggregated")
             chains = engine.detect_chains(findings)
             chain_dicts = [

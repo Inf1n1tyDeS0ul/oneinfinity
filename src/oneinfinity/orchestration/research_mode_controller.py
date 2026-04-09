@@ -770,7 +770,7 @@ class ResearchModeController:
     def _try_exploit_chain(self, report: DiscoveryReport):
         """Attempt to chain newly confirmed vuln with existing findings."""
         try:
-            from oneinfinity.exploit_chains import ExploitChainEngine
+            from oneinfinity.attack.exploit_chain_engine import ExploitChainEngine
             existing = [r.to_dict() for r in self._discoveries if r.report_id != report.report_id]
             if not existing:
                 return

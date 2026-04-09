@@ -233,9 +233,9 @@ class TaskExecutor:
     def _run_exploit(self) -> dict:
         """Run exploit chain detection."""
         try:
-            from oneinfinity.exploit_chains import ExploitChainEngine
-            from oneinfinity.exploit_chains.poc_generator import PoCGenerator
-            from oneinfinity.exploit_chains.chain_patterns import CHAIN_PATTERNS
+            from oneinfinity.attack.exploit_chain_engine import ExploitChainEngine
+            from oneinfinity.attack.poc_generator import PoCGenerator
+            from oneinfinity.attack.chain_patterns import CHAIN_PATTERNS
             from oneinfinity.modules.findings import FindingsDB  # type: ignore
 
             db_path = self.data_dir / "findings.db"

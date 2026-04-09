@@ -504,7 +504,7 @@ class ExploitAgent(GraphAgent):
         tools    = []
 
         try:
-            from oneinfinity.exploit_chains.chain_patterns import CHAIN_PATTERNS
+            from oneinfinity.attack.chain_patterns import CHAIN_PATTERNS
             vuln_type = task.context.get("vuln_type", "")
             url       = task.node_label
             if not url.startswith("http"):

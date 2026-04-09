@@ -487,7 +487,7 @@ class ChainsMission(Mission):
         super().__init__("chains")
 
     def _run(self, session: GodModeSession) -> None:
-        from oneinfinity.exploit_chains import ExploitChainEngine
+        from oneinfinity.attack.exploit_chain_engine import ExploitChainEngine
         from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
 
         log.info("[GOD MODE] ChainsMission: running chain analysis for %s", session.target)
