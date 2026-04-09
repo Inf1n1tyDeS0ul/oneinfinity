@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from oneinfinity.path_manager import attack_graph_db_path
+from oneinfinity.infra.path_manager import attack_graph_db_path
 
 logger = logging.getLogger(__name__)
 

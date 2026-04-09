@@ -37,7 +37,7 @@ def cmd_hunter_start(args):
             return
 
     try:
-        from oneinfinity.bounty_hunter_engine import BountyHunterEngine, HunterConfig
+        from oneinfinity.bounty.bounty_hunter_engine import BountyHunterEngine, HunterConfig
         engine = BountyHunterEngine()
         config = HunterConfig(
             max_targets=max_targets,
@@ -161,7 +161,7 @@ def cmd_hunter_report(args):
         findings = session.get("findings", [])
         target = session.get("current_target") or "multi-target"
 
-        from oneinfinity.bounty_report_generator import bounty_report_generator
+        from oneinfinity.bounty.bounty_report_generator import bounty_report_generator
         report = bounty_report_generator.generate(target, findings, platform=platform, session_id=session_id)
 
         if fmt == "markdown":
@@ -245,7 +245,7 @@ def cmd_hunter(args):
             sys.exit(0)
 
     try:
-        from oneinfinity.bounty_hunter_engine import BountyHunterEngine, HunterConfig
+        from oneinfinity.bounty.bounty_hunter_engine import BountyHunterEngine, HunterConfig
         engine = BountyHunterEngine()
         config = HunterConfig(
             name=scope_path.parent.name,
@@ -286,7 +286,7 @@ def cmd_hunter(args):
         if session.findings:
             out = Path(output_dir) if output_dir else Path.cwd() / "reports"
             out.mkdir(parents=True, exist_ok=True)
-            from oneinfinity.bounty_report_generator import bounty_report_generator
+            from oneinfinity.bounty.bounty_report_generator import bounty_report_generator
             findings_raw = [
                 f.to_dict() if hasattr(f, "to_dict") else f
                 for f in session.findings

@@ -8,7 +8,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from oneinfinity.path_manager import resolve_output_dir
+from oneinfinity.infra.path_manager import resolve_output_dir
 
 from oneinfinity.agents.base import BaseAgent, Task, TaskResult
 

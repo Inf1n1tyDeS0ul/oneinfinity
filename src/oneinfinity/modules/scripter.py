@@ -409,7 +409,7 @@ TARGET = "YOUR_TARGET_DOMAIN"   # <-- replace with the domain you scanned
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.expanduser("~/oneinfinity"))
 try:
-    import oneinfinity.path_manager as _pm
+    import oneinfinity.infra.path_manager as _pm
     SUBDOMAINS_FILE = str(_pm.get_target_path(TARGET, subdir="recon") / "subdomains.txt")
 except Exception:
     # Fallback when path_manager is unavailable

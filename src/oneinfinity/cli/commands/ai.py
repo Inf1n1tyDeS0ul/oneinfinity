@@ -25,7 +25,7 @@ def cmd_ai_test(args):
       oneinfinity ai-test https://ai.target.com --rebuff --yes
     """
     _inject_proxy(args)
-    from oneinfinity.ai_security_engine import main_cli
+    from oneinfinity.ai.ai_security_engine import main_cli
     main_cli(args)
 
 
@@ -45,7 +45,7 @@ def cmd_ai_redteam(args):
     except Exception:
         pass
     _inject_proxy(args)
-    from oneinfinity.ai_redteam_engine import main_cli
+    from oneinfinity.ai.ai_redteam_engine import main_cli
     main_cli(args)
 
 
@@ -54,7 +54,7 @@ def _inject_proxy(args) -> None:
     proxy_addr = getattr(args, "proxy", None)
     if proxy_addr:
         try:
-            from oneinfinity.proxy_manager import configure_proxy_from_args
+            from oneinfinity.infra.proxy_manager import configure_proxy_from_args
             configure_proxy_from_args(args)
         except Exception:
             pass
@@ -81,7 +81,7 @@ def cmd_ai_agent_test(args):
     except Exception:
         pass
     _inject_proxy(args)
-    from oneinfinity.ai_agent_pentest_engine import main_cli
+    from oneinfinity.ai.ai_agent_pentest_engine import main_cli
     main_cli(args)
 
 
@@ -149,7 +149,7 @@ def cmd_ai_budget(args):
     raw    = getattr(args, 'args', [])
     period = raw[0] if raw else "today"
     try:
-        from oneinfinity.model_budget_manager import get_budget_manager
+        from oneinfinity.infra.model_budget_manager import get_budget_manager
         summary = get_budget_manager().get_summary(period).to_dict()
         print(f"\n  AI Model Usage — {summary['period']}")
         print(f"  Total calls:    {summary['total_calls']}")

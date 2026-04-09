@@ -25,7 +25,7 @@ from collections import defaultdict
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from oneinfinity.path_manager import raw_dir
+from oneinfinity.infra.path_manager import raw_dir
 
 log = logging.getLogger(__name__)
 

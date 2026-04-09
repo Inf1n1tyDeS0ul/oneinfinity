@@ -760,7 +760,7 @@ class LearningWorker(WorkerEngine):
             log.debug("[LearningWorker] KB update failed: %s", exc)
 
         try:
-            from oneinfinity.memory_manager import get_memory_manager, AttackPattern, LearningInsight
+            from oneinfinity.infra.memory_manager import get_memory_manager, AttackPattern, LearningInsight
             mm = get_memory_manager()
             if event.event_type in (EventType.NEW_VULNERABILITY, EventType.EXPLOIT_ATTEMPTED):
                 pat = AttackPattern(
@@ -774,7 +774,7 @@ class LearningWorker(WorkerEngine):
                 )
                 mm.upsert_attack_pattern(pat)
             if event.event_type == EventType.CHAIN_DETECTED:
-                from oneinfinity.memory_manager import ExploitChainRecord
+                from oneinfinity.infra.memory_manager import ExploitChainRecord
                 chain = ExploitChainRecord(
                     chain_name=d.get("chain_name", "auto_chain"),
                     steps=d.get("steps", []),

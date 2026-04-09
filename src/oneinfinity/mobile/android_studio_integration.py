@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from oneinfinity.path_manager import raw_dir
+from oneinfinity.infra.path_manager import raw_dir
 
 logger = logging.getLogger(__name__)
 

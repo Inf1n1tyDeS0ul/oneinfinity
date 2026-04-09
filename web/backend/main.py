@@ -65,7 +65,7 @@ async def _require_auth(request: Request):
 ROOT = Path(__file__).parent.parent.parent  # oneinfinity/
 sys.path.insert(0, str(ROOT))
 
-from oneinfinity.path_manager import raw_dir, db_path as _db_path
+from oneinfinity.infra.path_manager import raw_dir, db_path as _db_path
 from oneinfinity.core.scan_state import BoundedScanCache
 from oneinfinity.core.target_repository import TargetRepository, get_target_repo
 
@@ -90,7 +90,7 @@ async def _lifespan(application):
         )
     # Startup
     try:
-        from oneinfinity.result_ingestion_engine import get_ingestion_engine
+        from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
         for f in get_ingestion_engine().get_findings():
             fid = f.get("finding_id") or f.get("id") or str(uuid.uuid4())[:8]
             VULNERABILITIES[fid] = _finding_to_api(f)
@@ -196,7 +196,7 @@ def _on_finding_ingested(finding: dict):
     )
 
 try:
-    from oneinfinity.result_ingestion_engine import get_ingestion_engine as _get_rie
+    from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine as _get_rie
     _get_rie().set_broadcast_callback(_on_finding_ingested)
 except Exception as _exc:
     log.warning("Could not wire ResultIngestionEngine broadcast: %s", _exc)
@@ -602,7 +602,7 @@ async def get_scan_findings(scan_id: str):
     if not scan_dir.exists():
         # Fallback: query ingestion engine
         try:
-            from oneinfinity.result_ingestion_engine import get_ingestion_engine
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
             raw = get_ingestion_engine().get_findings(scan_id=scan_id)
             vulns = [_finding_to_api(f) for f in raw]
         except Exception:
@@ -723,7 +723,7 @@ async def delete_scan(scan_id: str):
     # Remove findings from persistent DB
     db_deleted = 0
     try:
-        from oneinfinity.result_ingestion_engine import get_ingestion_engine
+        from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
         db_deleted = get_ingestion_engine().delete_findings_for_scan(scan_id)
     except Exception as exc:
         log.warning("Could not purge findings from DB for scan %s: %s", scan_id, exc)
@@ -755,7 +755,7 @@ async def list_findings(target: Optional[str] = None, scan_id: Optional[str] = N
 @app.get("/api/vulnerabilities")
 async def list_vulnerabilities(target: Optional[str] = None, severity: Optional[str] = None):
     try:
-        from oneinfinity.result_ingestion_engine import get_ingestion_engine
+        from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
         raw = get_ingestion_engine().get_findings(target=target, severity=severity)
         vulns = [_finding_to_api(f) for f in raw]
     except Exception as exc:
@@ -825,7 +825,7 @@ async def generate_vulnerability_report(vuln_id: str):
         raise HTTPException(503, "Bounty report generator unavailable")
         
     try:
-        from oneinfinity.bounty_report_generator import ReportFinding
+        from oneinfinity.bounty.bounty_report_generator import ReportFinding
         
         # Convert API vulnerability to ReportFinding
         finding = ReportFinding(
@@ -950,7 +950,7 @@ async def get_attack_graph(target: Optional[str] = None,
     edges = []
 
     try:
-        from oneinfinity.result_ingestion_engine import get_ingestion_engine as _rie
+        from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine as _rie
         _rie_available = True
     except Exception:
         _rie_available = False
@@ -1031,7 +1031,7 @@ async def get_attack_graph(target: Optional[str] = None,
 async def list_reports():
     """List generated report files."""
     reports = []
-    from oneinfinity.path_manager import raw_dir
+    from oneinfinity.infra.path_manager import raw_dir
     recon_dir = raw_dir()
     if recon_dir.exists():
         for f in recon_dir.rglob("*.md"):
@@ -1084,7 +1084,7 @@ async def publish_report(req: PublishReportRequest):
 
     # Load findings from ingestion engine (works for both god mode and regular scans)
     try:
-        from oneinfinity.result_ingestion_engine import get_ingestion_engine
+        from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
         findings = get_ingestion_engine().get_findings(scan_id=scan_id)
     except Exception as exc:
         log.warning("publish_report: could not load findings for %s: %s", scan_id, exc)
@@ -1234,7 +1234,7 @@ async def _run_scan_via_engine(scan_id: str, target: str, scan_type: str, auth_c
     if scan_type in ("full", "full_scan", "full-scan"):
         try:
             from oneinfinity.pipeline.executor import run_canonical_pipeline
-            from oneinfinity.path_manager import get_target_path
+            from oneinfinity.infra.path_manager import get_target_path
 
             out_dir = get_target_path(target, subdir="scans") / scan_id
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -1268,7 +1268,7 @@ async def _run_scan_via_engine(scan_id: str, target: str, scan_type: str, auth_c
                 fid = api_f["id"]
                 VULNERABILITIES[fid] = api_f
                 try:
-                    from oneinfinity.result_ingestion_engine import get_ingestion_engine as _get_rie2
+                    from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine as _get_rie2
                     _get_rie2().persist_finding({**api_f, "scan_id": scan_id, "finding_id": fid})
                 except Exception as _pe:
                     log.warning("persist_finding failed: %s", _pe)
@@ -1406,7 +1406,7 @@ def _get_attack_engine():
 
 def _get_proxy_manager():
     try:
-        from oneinfinity.proxy_manager import proxy_manager as pm
+        from oneinfinity.infra.proxy_manager import proxy_manager as pm
         return pm
     except Exception:
         return None
@@ -2058,7 +2058,7 @@ HUNTER_SESSIONS: dict = {}
 
 def _get_hunter_engine():
     try:
-        from oneinfinity.bounty_hunter_engine import BountyHunterEngine, HunterConfig
+        from oneinfinity.bounty.bounty_hunter_engine import BountyHunterEngine, HunterConfig
         return BountyHunterEngine, HunterConfig
     except Exception:
         return None, None
@@ -2072,7 +2072,7 @@ def _get_program_engine():
 
 def _get_report_generator():
     try:
-        from oneinfinity.bounty_report_generator import bounty_report_generator
+        from oneinfinity.bounty.bounty_report_generator import bounty_report_generator
         return bounty_report_generator
     except Exception:
         return None
@@ -2368,7 +2368,7 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
             # Sync findings from in-memory SCANS dict to the ingestion engine
             # so that report generation (which reads from ingestion engine) sees them
             try:
-                from oneinfinity.result_ingestion_engine import get_ingestion_engine, RawResult
+                from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
                 ie = get_ingestion_engine()
                 scan_findings = SCANS.get(gm_scan_id, {}).get("findings", [])
                 for finding in scan_findings:
@@ -3016,7 +3016,7 @@ _safe_register("orchestrator", "orchestrator_api", "register_orchestrator_routes
 # orchestrator_integration.activate is not a router-registration function but
 # we still want to track its load status for observability.
 try:
-    from oneinfinity.orchestrator_integration import activate as _orch_activate
+    from oneinfinity.orchestration.orchestrator_integration import activate as _orch_activate
     _orch_activate(quiet=True)
     _ROUTER_STATUS.append({"name": "orchestrator_integration", "status": "ok", "error": None})
     log.info("Router registered: orchestrator_integration")
@@ -3160,7 +3160,7 @@ async def replay_finding_report(request: Request):
     finding = VULNERABILITIES.get(finding_id)
     if not finding:
         try:
-            from oneinfinity.result_ingestion_engine import get_ingestion_engine
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
             findings = get_ingestion_engine().get_findings()
             finding = next((f for f in (findings or []) if f.get("id") == finding_id), None)
         except Exception:

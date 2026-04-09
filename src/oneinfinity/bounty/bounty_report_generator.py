@@ -10,7 +10,7 @@ from typing import Optional, List, Dict
 from pathlib import Path
 from datetime import datetime
 
-from oneinfinity.path_manager import raw_dir
+from oneinfinity.infra.path_manager import raw_dir
 
 logger = logging.getLogger(__name__)
 

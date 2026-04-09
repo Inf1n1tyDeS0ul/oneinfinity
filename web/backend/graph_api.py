@@ -74,7 +74,7 @@ async def get_attack_paths(target: str):
         engine = AttackGraphEngine()
         updater = GraphUpdater(engine)
         try:
-            from oneinfinity.result_ingestion_engine import get_ingestion_engine
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
             raw = get_ingestion_engine().get_findings(target=target)
             updater.update_from_scan_result(target, raw)
         except Exception:
@@ -280,7 +280,7 @@ async def swarm_status(session_id: str):
 @swarm_router.get("/workers")
 async def swarm_workers():
     try:
-        from oneinfinity.task_dispatcher import TaskDispatcher
+        from oneinfinity.infra.task_dispatcher import TaskDispatcher
         td = TaskDispatcher()
         return {"workers": td.get_worker_stats()}
     except Exception:

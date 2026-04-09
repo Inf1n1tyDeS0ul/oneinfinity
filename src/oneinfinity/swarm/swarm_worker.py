@@ -178,7 +178,7 @@ class SwarmWorker:
                 # Claim from Redis (Redis mode)
                 if task is None and self._redis_client:
                     try:
-                        from oneinfinity.task_dispatcher import TaskRouter
+                        from oneinfinity.infra.task_dispatcher import TaskRouter
                         router = TaskRouter()
                         task = router.consume_from_redis(
                             self.worker_id, self._redis_client,
@@ -388,7 +388,7 @@ class SwarmWorker:
         target = task.target
         log.info("[worker:%s] AI security: %s", self.worker_id, target)
         try:
-            from oneinfinity.ai_security_engine import AISecurityEngine
+            from oneinfinity.ai.ai_security_engine import AISecurityEngine
             engine = AISecurityEngine(target)
             result = engine.run_all_tools()
             findings = result.get("findings", []) if isinstance(result, dict) else []

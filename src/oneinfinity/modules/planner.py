@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-from oneinfinity.path_manager import resolve_output_dir
+from oneinfinity.infra.path_manager import resolve_output_dir
 from oneinfinity.modules.utils import banner, section, ok, info, warn, bold, cyan, sev, write_text
 
 

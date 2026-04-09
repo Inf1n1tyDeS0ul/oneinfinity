@@ -19,10 +19,10 @@ def _make_pg_mgr():
 
 def test_store_exploit_chain_calls_pg_execute_write(tmp_path):
     """store_exploit_chain() must call sync_pg_execute_write with exploit_chain_records SQL."""
-    from oneinfinity.memory_manager import MemoryManager, ExploitChainRecord
+    from oneinfinity.infra.memory_manager import MemoryManager, ExploitChainRecord
     mock_mgr = _make_pg_mgr()
 
-    with patch("oneinfinity.memory_manager._require_pg", return_value=mock_mgr):
+    with patch("oneinfinity.infra.memory_manager._require_pg", return_value=mock_mgr):
         mm = MemoryManager()
         chain = ExploitChainRecord(
             chain_name="test-chain",
@@ -38,10 +38,10 @@ def test_store_exploit_chain_calls_pg_execute_write(tmp_path):
 
 def test_get_patterns_calls_pg_execute_read(tmp_path):
     """get_patterns() must call sync_pg_execute_read with attack_patterns SQL in PG mode."""
-    from oneinfinity.memory_manager import MemoryManager
+    from oneinfinity.infra.memory_manager import MemoryManager
     mock_mgr = _make_pg_mgr()
 
-    with patch("oneinfinity.memory_manager._require_pg", return_value=mock_mgr):
+    with patch("oneinfinity.infra.memory_manager._require_pg", return_value=mock_mgr):
         mm = MemoryManager()
         mm.get_patterns(vuln_type="xss", limit=10)
 
@@ -52,9 +52,9 @@ def test_get_patterns_calls_pg_execute_read(tmp_path):
 
 def test_store_exploit_chain_raises_when_pg_unavailable(tmp_path):
     """When PG is unavailable, store_exploit_chain() must raise RuntimeError."""
-    from oneinfinity.memory_manager import MemoryManager, ExploitChainRecord
+    from oneinfinity.infra.memory_manager import MemoryManager, ExploitChainRecord
 
-    with patch("oneinfinity.memory_manager._require_pg",
+    with patch("oneinfinity.infra.memory_manager._require_pg",
                side_effect=RuntimeError("PostgreSQL is required")):
         mm = MemoryManager()
         chain = ExploitChainRecord(

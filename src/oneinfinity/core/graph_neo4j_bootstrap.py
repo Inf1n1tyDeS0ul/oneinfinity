@@ -48,7 +48,7 @@ def create_default_graph_store() -> Tuple[Any, dict]:
     Called from attack_graph_core.get_engine() — keep imports lazy.
     """
     from oneinfinity.attack_graph_core.graph_store import GraphStore
-    from oneinfinity.path_manager import attack_graph_db_path
+    from oneinfinity.infra.path_manager import attack_graph_db_path
 
     global _neo4j_engine_singleton, _neo4j_backend_singleton
 

@@ -84,7 +84,7 @@ def cmd_report(args):
     if getattr(args, "all_findings", False):
         from oneinfinity.modules.findings import FindingsDB
         from oneinfinity.modules.utils import ok, info, banner, warn
-        from oneinfinity.bounty_report_generator import BountyReportGenerator
+        from oneinfinity.bounty.bounty_report_generator import BountyReportGenerator
         # Resolve scope targets so only in-scope findings go into the report
         scope_targets = sm._data.get("scope", {}).get("targets") or \
                         sm._data.get("scope", {}).get("in_scope") or []

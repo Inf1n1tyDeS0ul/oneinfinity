@@ -40,11 +40,11 @@ from enum import IntEnum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from oneinfinity.task_classifier import (
+from oneinfinity.infra.task_classifier import (
     TaskClassification, TaskClassifier, TaskCategory,
     ComplexityLevel, ImportanceLevel, LatencyClass, get_classifier,
 )
-from oneinfinity.model_budget_manager import (
+from oneinfinity.infra.model_budget_manager import (
     ModelBudgetManager, BudgetConfig, BudgetExhaustedError, get_budget_manager,
 )
 

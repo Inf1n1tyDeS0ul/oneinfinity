@@ -38,7 +38,7 @@ log = logging.getLogger("oneinfinity.learning.persistent_memory")
 
 def _memory_dir() -> Path:
     try:
-        from oneinfinity.path_manager import raw_dir
+        from oneinfinity.infra.path_manager import raw_dir
         d = raw_dir() / "memory"
     except ImportError:
         d = Path(os.environ.get("ONEINFINITY_DATA", "/tmp/oneinfinity")) / "memory"

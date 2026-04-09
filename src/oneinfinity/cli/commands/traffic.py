@@ -66,7 +66,7 @@ def cmd_traffic_export(args):
 def cmd_replay_request(args):
     """oneinfinity replay-request <request_id> — replay a captured request."""
     from oneinfinity.scan.traffic_replay_engine import traffic_replay_engine
-    from oneinfinity.proxy_manager import configure_proxy_from_args
+    from oneinfinity.infra.proxy_manager import configure_proxy_from_args
 
     configure_proxy_from_args(args)
 
@@ -114,7 +114,7 @@ def cmd_replay_attack(args):
     """oneinfinity replay-attack <attack_id> — replay a discovered attack."""
     from attack_replay_engine import attack_replay_engine, PAYLOAD_LIBRARY
     from oneinfinity.scan.traffic_capture_engine import traffic_capture_engine
-    from oneinfinity.proxy_manager import configure_proxy_from_args
+    from oneinfinity.infra.proxy_manager import configure_proxy_from_args
 
     configure_proxy_from_args(args)
 
@@ -149,7 +149,7 @@ def cmd_replay_attack(args):
 
 def cmd_proxy_status(args):
     """oneinfinity proxy-status — show proxy configuration."""
-    from oneinfinity.proxy_manager import proxy_manager
+    from oneinfinity.infra.proxy_manager import proxy_manager
     status = proxy_manager.status()
     print(f"\n[*] Proxy Status")
     print(f"    Enabled : {status['enabled']}")
@@ -165,10 +165,10 @@ def cmd_proxy_status(args):
 
 def cmd_proxy_set(args):
     """oneinfinity proxy-set <address> — configure proxy."""
-    from oneinfinity.proxy_manager import proxy_manager
+    from oneinfinity.infra.proxy_manager import proxy_manager
     address = args.address
     scopes = getattr(args, "scope", ["all"])
-    from oneinfinity.proxy_manager import ProxyScope
+    from oneinfinity.infra.proxy_manager import ProxyScope
     scope_map = {
         "all": ProxyScope.ALL,
         "recon": ProxyScope.RECON,

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from oneinfinity.modules.utils import banner, section, ok, info, warn, err, bold, cyan, now_str
-from oneinfinity.path_manager import findings_db_path, resolve_output_dir
+from oneinfinity.infra.path_manager import findings_db_path, resolve_output_dir
 
 
 # ── Rate limiter ──────────────────────────────────────────────────────────────

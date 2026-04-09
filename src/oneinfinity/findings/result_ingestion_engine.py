@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, List, Optional
 
-import oneinfinity.path_manager as path_manager
+import oneinfinity.infra.path_manager as path_manager
 
 log = logging.getLogger("oneinfinity.result_ingestion")
 

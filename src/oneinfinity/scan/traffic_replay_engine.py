@@ -365,7 +365,7 @@ class TrafficReplayEngine:
         fuzz_value: str = "",
     ) -> ReplayResult:
         import ssl
-        from oneinfinity.proxy_manager import proxy_manager, ProxyScope
+        from oneinfinity.infra.proxy_manager import proxy_manager, ProxyScope
 
         # Build request
         data = body.encode("utf-8") if body else None

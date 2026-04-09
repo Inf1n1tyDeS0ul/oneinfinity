@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from oneinfinity.path_manager import resolve_output_dir
+from oneinfinity.infra.path_manager import resolve_output_dir
 from typing import Optional
 
 

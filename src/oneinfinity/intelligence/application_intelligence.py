@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from oneinfinity.path_manager import resolve_output_dir
+from oneinfinity.infra.path_manager import resolve_output_dir
 from typing import Any, Optional
 from urllib.parse import urlparse, parse_qs
 

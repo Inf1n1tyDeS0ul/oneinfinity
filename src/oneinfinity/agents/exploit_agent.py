@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from oneinfinity.path_manager import resolve_output_dir
+from oneinfinity.infra.path_manager import resolve_output_dir
 
 from oneinfinity.agents.base import BaseAgent, Task, TaskResult
 

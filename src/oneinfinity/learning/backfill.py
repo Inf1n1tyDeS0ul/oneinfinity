@@ -88,7 +88,7 @@ class LearningBackfill:
         """Fallback: read from SQLite findings table. Returns all findings (no confirmed filter)."""
         try:
             import sqlite3
-            import oneinfinity.path_manager as path_manager
+            import oneinfinity.infra.path_manager as path_manager
             db = path_manager.findings_db_path()
             with sqlite3.connect(str(db)) as conn:
                 conn.row_factory = sqlite3.Row

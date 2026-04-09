@@ -29,7 +29,7 @@ from typing import Any, Optional
 
 log = logging.getLogger("oneinfinity.research")
 
-from oneinfinity.path_manager import resolve_output_dir
+from oneinfinity.infra.path_manager import resolve_output_dir
 
 # ── Data models ───────────────────────────────────────────────────────────────
 

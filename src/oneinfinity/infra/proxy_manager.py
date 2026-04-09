@@ -12,7 +12,7 @@ Supports:
   - Subprocess env-var injection (for CLI tools)
 
 Usage:
-    from oneinfinity.proxy_manager import proxy_manager, get_proxied_opener
+    from oneinfinity.infra.proxy_manager import proxy_manager, get_proxied_opener
 
     proxy_manager.configure("http://127.0.0.1:8080")
     proxy_manager.enable()

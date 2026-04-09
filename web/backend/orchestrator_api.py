@@ -37,7 +37,7 @@ def _orch():
 
 def _budget():
     try:
-        from oneinfinity.model_budget_manager import get_budget_manager
+        from oneinfinity.infra.model_budget_manager import get_budget_manager
         return get_budget_manager()
     except Exception as e:
         raise HTTPException(503, f"ModelBudgetManager unavailable: {e}")
@@ -45,7 +45,7 @@ def _budget():
 
 def _classifier():
     try:
-        from oneinfinity.task_classifier import get_classifier
+        from oneinfinity.infra.task_classifier import get_classifier
         return get_classifier()
     except Exception as e:
         raise HTTPException(503, f"TaskClassifier unavailable: {e}")

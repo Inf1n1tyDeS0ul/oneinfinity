@@ -12,7 +12,7 @@ LEGACY_WORKSPACE_DIRNAME = "bounty-workspace"
 
 
 def get_workspace_root() -> Path:
-    from oneinfinity.path_manager import workspace_root
+    from oneinfinity.infra.path_manager import workspace_root
     return workspace_root()
 
 

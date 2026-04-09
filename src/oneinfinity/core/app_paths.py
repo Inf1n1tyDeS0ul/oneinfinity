@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from oneinfinity.path_manager import data_root
+from oneinfinity.infra.path_manager import data_root
 
 
 def app_home() -> Path:

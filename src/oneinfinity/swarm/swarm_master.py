@@ -21,7 +21,7 @@ from typing import Optional
 from collections import defaultdict
 from pathlib import Path
 
-from oneinfinity.path_manager import raw_dir
+from oneinfinity.infra.path_manager import raw_dir
 
 log = logging.getLogger(__name__)
 

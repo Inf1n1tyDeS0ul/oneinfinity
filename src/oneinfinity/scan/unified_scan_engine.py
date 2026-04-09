@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from oneinfinity.path_manager import db_path, get_target_path, raw_dir, resolve_output_dir
+from oneinfinity.infra.path_manager import db_path, get_target_path, raw_dir, resolve_output_dir
 
 log = logging.getLogger("oneinfinity.unified_scan_engine")
 
@@ -1146,7 +1146,7 @@ class UnifiedScanEngine:
                 log.info("Running tool '%s' against %s (%d URLs)", tool_name, session.target, len(urls))
                 if tool_name in ("garak", "pyrit"):
                     try:
-                        from oneinfinity.ai_security_engine import AISecurityEngine, AISecurityScanConfig
+                        from oneinfinity.ai.ai_security_engine import AISecurityEngine, AISecurityScanConfig
                         import asyncio
                         ai_engine = AISecurityEngine()
                         config = AISecurityScanConfig(

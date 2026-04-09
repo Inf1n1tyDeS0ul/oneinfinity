@@ -243,7 +243,7 @@ class SwarmAgent(ABC):
         self._stop_event = asyncio.Event()
         # ── Priority 6: Memory persistence path ──────────────────────────
         try:
-            from oneinfinity.path_manager import db_path as _dp
+            from oneinfinity.infra.path_manager import db_path as _dp
             _mem_dir = Path(str(_dp("."))).parent / "agent_memories"
         except Exception:
             _mem_dir = Path.home() / ".oneinfinity" / "agent_memories"

@@ -12,7 +12,7 @@ import urllib.request
 import urllib.parse
 from pathlib import Path
 
-from oneinfinity.path_manager import findings_db_path, resolve_output_dir
+from oneinfinity.infra.path_manager import findings_db_path, resolve_output_dir
 
 from oneinfinity.agents.base import BaseAgent, Task, TaskResult
 

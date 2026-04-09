@@ -578,7 +578,7 @@ class AISecurityAgent(GraphAgent):
         findings = []
 
         try:
-            from oneinfinity.ai_security_engine import AISecurityEngine
+            from oneinfinity.ai.ai_security_engine import AISecurityEngine
             engine  = AISecurityEngine()
             results = engine.scan_endpoint(task.node_label, context=task.context)
             for r in (results or []):

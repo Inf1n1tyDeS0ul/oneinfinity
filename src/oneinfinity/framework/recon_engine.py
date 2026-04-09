@@ -11,7 +11,7 @@ import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from oneinfinity.path_manager import resolve_output_dir
+from oneinfinity.infra.path_manager import resolve_output_dir
 from typing import Optional
 
 from oneinfinity.modules.utils import banner, section, ok, info, warn, err, write_json, now_str

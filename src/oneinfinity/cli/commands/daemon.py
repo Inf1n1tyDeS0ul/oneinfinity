@@ -119,7 +119,7 @@ def cmd_arch_status(args):
     """oneinfinity arch-status — show evolution engine status, recent changes, capabilities."""
     import json as _json
     try:
-        from oneinfinity.auto_architecture_engine import cmd_arch_status as _status
+        from oneinfinity.infra.auto_architecture_engine import cmd_arch_status as _status
         status = _status()
     except Exception as e:
         print(f"  [!] Error loading arch engine: {e}")
@@ -165,7 +165,7 @@ def cmd_arch_events(args):
     limit = getattr(args, "limit", 20)
     etype = getattr(args, "type", "")
     try:
-        from oneinfinity.auto_architecture_engine import get_engine
+        from oneinfinity.infra.auto_architecture_engine import get_engine
         engine = get_engine()
         events = engine.recent_events(limit=limit, event_type=etype)
     except Exception as e:
@@ -192,7 +192,7 @@ def cmd_arch_insights(args):
     cat    = getattr(args, "category", "")
     hours  = getattr(args, "hours", 24)
     try:
-        from oneinfinity.memory_manager import get_memory_manager
+        from oneinfinity.infra.memory_manager import get_memory_manager
         mm = get_memory_manager()
         insights = mm.recent_insights(hours=hours, limit=limit)
         if cat:
@@ -225,7 +225,7 @@ def cmd_arch_emit(args):
     desc  = getattr(args, "desc", "")
     cat   = getattr(args, "cat", "General")
     try:
-        from oneinfinity.auto_architecture_engine import get_engine, ArchEvent, EventType
+        from oneinfinity.infra.auto_architecture_engine import get_engine, ArchEvent, EventType
         engine = get_engine()
         ev = ArchEvent(
             event_type=EventType(etype),

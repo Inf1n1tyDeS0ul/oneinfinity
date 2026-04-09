@@ -43,7 +43,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from oneinfinity.path_manager import db_path, resolve_output_dir
+from oneinfinity.infra.path_manager import db_path, resolve_output_dir
 
 log = logging.getLogger("oneinfinity.intelligence_engine")
 
@@ -152,7 +152,7 @@ class IntelligenceEngine:
         """
         options = options or {}
         try:
-            from oneinfinity.ai_security_engine import AISecurityEngine, AISecurityScanConfig
+            from oneinfinity.ai.ai_security_engine import AISecurityEngine, AISecurityScanConfig
         except ImportError as exc:
             log.error("run_ai_security: ai_security_engine unavailable — %s", exc)
             return []
@@ -197,7 +197,7 @@ class IntelligenceEngine:
         """
         options = options or {}
         try:
-            from oneinfinity.ai_redteam_engine import AIRedTeamEngine
+            from oneinfinity.ai.ai_redteam_engine import AIRedTeamEngine
         except ImportError as exc:
             log.error("run_redteam: ai_redteam_engine unavailable — %s", exc)
             return []
@@ -244,7 +244,7 @@ class IntelligenceEngine:
         """
         options = options or {}
         try:
-            from oneinfinity.ai_agent_pentest_engine import AIAgentPentestEngine, AgentPentestConfig
+            from oneinfinity.ai.ai_agent_pentest_engine import AIAgentPentestEngine, AgentPentestConfig
         except ImportError as exc:
             log.error("run_agent_pentest: ai_agent_pentest_engine unavailable — %s", exc)
             return []

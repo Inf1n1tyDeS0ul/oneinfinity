@@ -330,7 +330,7 @@ class SwarmScanCluster:
         import redis as redis_lib
         from oneinfinity.swarm.swarm_master import SwarmMaster
         from oneinfinity.swarm.swarm_worker import SwarmWorker, WorkerConfig
-        from oneinfinity.task_dispatcher import TaskRouter
+        from oneinfinity.infra.task_dispatcher import TaskRouter
 
         redis_client = redis_lib.from_url(self.config.redis_url)
 

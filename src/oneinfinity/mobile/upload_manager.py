@@ -31,7 +31,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from oneinfinity.path_manager import raw_dir
+from oneinfinity.infra.path_manager import raw_dir
 
 log = logging.getLogger("oneinfinity.mobile.upload")
 

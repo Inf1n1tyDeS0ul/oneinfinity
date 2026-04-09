@@ -27,7 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-import oneinfinity.path_manager as path_manager
+import oneinfinity.infra.path_manager as path_manager
 
 log = logging.getLogger("oneinfinity.db_manager")
 

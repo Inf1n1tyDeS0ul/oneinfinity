@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from oneinfinity.path_manager import raw_dir
+from oneinfinity.infra.path_manager import raw_dir
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +227,7 @@ class BountyHunterEngine:
             pass
 
         try:
-            from oneinfinity.bounty_report_generator import bounty_report_generator
+            from oneinfinity.bounty.bounty_report_generator import bounty_report_generator
             self._report_gen = bounty_report_generator
         except ImportError:
             pass
@@ -703,7 +703,7 @@ class BountyHunterEngine:
                 scores = []
                 for f in session.findings:
                     fd = f if isinstance(f, dict) else f.to_dict()
-                    from oneinfinity.bounty_report_generator import ReportFinding
+                    from oneinfinity.bounty.bounty_report_generator import ReportFinding
                     rf = ReportFinding(**{k: fd.get(k, "") for k in ReportFinding.__dataclass_fields__
                                          if k in fd})
                     scores.append(self._report_gen.calculate_confidence_score(rf))

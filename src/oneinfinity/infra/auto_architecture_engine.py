@@ -278,28 +278,28 @@ class AutoArchitectureEngine:
         """Lazily resolve module singletons to avoid circular imports at load time."""
         if self._memory is None:
             try:
-                from oneinfinity.memory_manager import get_memory_manager
+                from oneinfinity.infra.memory_manager import get_memory_manager
                 self._memory = get_memory_manager()
             except Exception as e:
                 log.debug("memory_manager not available: %s", e)
 
         if self._arch_upd is None:
             try:
-                from oneinfinity.architecture_updater import get_architecture_updater
+                from oneinfinity.infra.architecture_updater import get_architecture_updater
                 self._arch_upd = get_architecture_updater()
             except Exception as e:
                 log.debug("architecture_updater not available: %s", e)
 
         if self._skills is None:
             try:
-                from oneinfinity.skills_tracker import get_skills_tracker, Skill
+                from oneinfinity.infra.skills_tracker import get_skills_tracker, Skill
                 self._skills = get_skills_tracker()
             except Exception as e:
                 log.debug("skills_tracker not available: %s", e)
 
         if self._readme is None:
             try:
-                from oneinfinity.readme_generator import get_readme_generator
+                from oneinfinity.bounty.readme_generator import get_readme_generator
                 self._readme = get_readme_generator()
             except Exception as e:
                 log.debug("readme_generator not available: %s", e)
@@ -329,7 +329,7 @@ class AutoArchitectureEngine:
 
         # 1. Register in SkillsTracker
         if self._skills:
-            from oneinfinity.skills_tracker import Skill, CATEGORIES
+            from oneinfinity.infra.skills_tracker import Skill, CATEGORIES
             # Map category to canonical slug
             cat_map = {
                 "web": "web_security", "mobile": "mobile_security",
@@ -351,14 +351,14 @@ class AutoArchitectureEngine:
 
         # 2. Update ArchitectureUpdater
         if self._arch_upd:
-            from oneinfinity.architecture_updater import ComponentEntry
+            from oneinfinity.infra.architecture_updater import ComponentEntry
             comp = ComponentEntry(name=name, file=engine or name,
                                   description=description, category=category)
             self._arch_upd.add_component(comp)
 
         # 3. Update ReadmeGenerator
         if self._readme:
-            from oneinfinity.readme_generator import FeatureEntry, CLICommand
+            from oneinfinity.bounty.readme_generator import FeatureEntry, CLICommand
             fe = FeatureEntry(title=name, description=description, category=category)
             self._readme.add_feature(fe)
             if command:
@@ -368,7 +368,7 @@ class AutoArchitectureEngine:
 
         # 4. Store insight
         if self._memory:
-            from oneinfinity.memory_manager import LearningInsight
+            from oneinfinity.infra.memory_manager import LearningInsight
             self._memory.store_insight(LearningInsight(
                 category="feature",
                 title=f"New capability: {name}",
@@ -413,7 +413,7 @@ class AutoArchitectureEngine:
         high = sum(1 for f in findings if f.get("severity", "").lower() == "high")
         confirmed = sum(1 for f in findings if f.get("confirmed", True))
 
-        from oneinfinity.memory_manager import ScanResultSummary, AttackPattern, LearningInsight
+        from oneinfinity.infra.memory_manager import ScanResultSummary, AttackPattern, LearningInsight
 
         summary = ScanResultSummary(
             session_id=session_id, target=target,
@@ -464,7 +464,7 @@ class AutoArchitectureEngine:
         if not self._memory:
             return
 
-        from oneinfinity.memory_manager import AttackPattern, LearningInsight
+        from oneinfinity.infra.memory_manager import AttackPattern, LearningInsight
 
         pat = AttackPattern(
             vuln_type=d.get("vuln_type", ""),
@@ -502,7 +502,7 @@ class AutoArchitectureEngine:
         if not self._memory:
             return
 
-        from oneinfinity.memory_manager import ExploitChainRecord, LearningInsight
+        from oneinfinity.infra.memory_manager import ExploitChainRecord, LearningInsight
 
         chain = ExploitChainRecord(
             chain_name=d.get("chain_name", "unknown_chain"),
@@ -548,7 +548,7 @@ class AutoArchitectureEngine:
         capabilities = d.get("capabilities", [])
 
         if self._skills:
-            from oneinfinity.skills_tracker import Skill
+            from oneinfinity.infra.skills_tracker import Skill
             skill = Skill(
                 name=f"Tool: {tool_name}",
                 category="web_security",
@@ -561,7 +561,7 @@ class AutoArchitectureEngine:
             self._skills.register(skill, rewrite=True)
 
         if self._arch_upd:
-            from oneinfinity.architecture_updater import ComponentEntry
+            from oneinfinity.infra.architecture_updater import ComponentEntry
             self._arch_upd.add_component(ComponentEntry(
                 name=tool_name,
                 file=tool_name,
@@ -570,7 +570,7 @@ class AutoArchitectureEngine:
             ), section_title="Tool Inventory")
 
         if self._memory:
-            from oneinfinity.memory_manager import LearningInsight
+            from oneinfinity.infra.memory_manager import LearningInsight
             self._memory.store_insight(LearningInsight(
                 category="tool",
                 title=f"Tool integrated: {tool_name} v{version}",
@@ -609,7 +609,7 @@ class AutoArchitectureEngine:
         if not self._memory:
             return
 
-        from oneinfinity.memory_manager import LearningInsight, AttackPattern
+        from oneinfinity.infra.memory_manager import LearningInsight, AttackPattern
         findings = d.get("findings", [])
         for f in findings:
             if f.get("vuln_type"):
@@ -641,7 +641,7 @@ class AutoArchitectureEngine:
         if not self._memory:
             return
 
-        from oneinfinity.memory_manager import AttackPattern, LearningInsight
+        from oneinfinity.infra.memory_manager import AttackPattern, LearningInsight
         pat = AttackPattern(
             vuln_type=d.get("vuln_type", "ai_vulnerability"),
             target_tech="llm",
@@ -789,7 +789,7 @@ def get_engine() -> AutoArchitectureEngine:
 def cmd_arch_status() -> dict:
     engine = get_engine()
     try:
-        from oneinfinity.memory_manager import get_memory_manager
+        from oneinfinity.infra.memory_manager import get_memory_manager
         mm = get_memory_manager()
         mem_stats = mm.stats()
         cap_snap = mm.latest_capability_snapshot()
@@ -802,7 +802,7 @@ def cmd_arch_status() -> dict:
         recent_insights = []
 
     try:
-        from oneinfinity.skills_tracker import get_skills_tracker
+        from oneinfinity.infra.skills_tracker import get_skills_tracker
         st = get_skills_tracker()
         skills_summary = st.categories_summary()
         total_skills = st.total_count()

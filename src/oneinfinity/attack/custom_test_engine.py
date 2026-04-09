@@ -18,7 +18,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from oneinfinity.path_manager import resolve_output_dir
+from oneinfinity.infra.path_manager import resolve_output_dir
 from typing import Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 

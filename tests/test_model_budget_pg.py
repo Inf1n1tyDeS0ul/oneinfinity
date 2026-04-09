@@ -24,8 +24,8 @@ def _make_pg_mgr(write_results=None, read_results=None):
 
 def _make_budget_manager_pg(mock_mgr):
     """Instantiate ModelBudgetManager with PG mock injected."""
-    from oneinfinity.model_budget_manager import ModelBudgetManager
-    with patch("oneinfinity.model_budget_manager._require_pg", return_value=mock_mgr):
+    from oneinfinity.infra.model_budget_manager import ModelBudgetManager
+    with patch("oneinfinity.infra.model_budget_manager._require_pg", return_value=mock_mgr):
         bm = ModelBudgetManager()
     return bm
 
@@ -36,8 +36,8 @@ def test_record_calls_pg_execute_write(tmp_path):
     """record() must call sync_pg_execute_write with SQL targeting model_usage."""
     mock_mgr = _make_pg_mgr()
 
-    with patch("oneinfinity.model_budget_manager._require_pg", return_value=mock_mgr):
-        from oneinfinity.model_budget_manager import ModelBudgetManager
+    with patch("oneinfinity.infra.model_budget_manager._require_pg", return_value=mock_mgr):
+        from oneinfinity.infra.model_budget_manager import ModelBudgetManager
         bm = ModelBudgetManager()
 
         # Call record
@@ -73,8 +73,8 @@ def test_refresh_cache_calls_pg_execute_read(tmp_path):
     """_refresh_cache() must call sync_pg_execute_read in PG mode."""
     mock_mgr = _make_pg_mgr(read_results=[])
 
-    with patch("oneinfinity.model_budget_manager._require_pg", return_value=mock_mgr):
-        from oneinfinity.model_budget_manager import ModelBudgetManager
+    with patch("oneinfinity.infra.model_budget_manager._require_pg", return_value=mock_mgr):
+        from oneinfinity.infra.model_budget_manager import ModelBudgetManager
         bm = ModelBudgetManager()
 
         # _refresh_cache is called during __init__; reset call count then call again
@@ -97,8 +97,8 @@ def test_record_escalation_bool_in_pg_mode(tmp_path):
     """In PG mode, escalation must be sent as Python bool, not int."""
     mock_mgr = _make_pg_mgr()
 
-    with patch("oneinfinity.model_budget_manager._require_pg", return_value=mock_mgr):
-        from oneinfinity.model_budget_manager import ModelBudgetManager
+    with patch("oneinfinity.infra.model_budget_manager._require_pg", return_value=mock_mgr):
+        from oneinfinity.infra.model_budget_manager import ModelBudgetManager
         bm = ModelBudgetManager()
 
         bm.record(
@@ -126,11 +126,11 @@ def test_record_raises_when_pg_unavailable(tmp_path):
     """When PG is unavailable, record() must raise RuntimeError."""
     mock_mgr = _make_pg_mgr()
 
-    with patch("oneinfinity.model_budget_manager._require_pg", return_value=mock_mgr):
-        from oneinfinity.model_budget_manager import ModelBudgetManager
+    with patch("oneinfinity.infra.model_budget_manager._require_pg", return_value=mock_mgr):
+        from oneinfinity.infra.model_budget_manager import ModelBudgetManager
         bm = ModelBudgetManager()
 
-    with patch("oneinfinity.model_budget_manager._require_pg",
+    with patch("oneinfinity.infra.model_budget_manager._require_pg",
                side_effect=RuntimeError("PostgreSQL is required")):
         try:
             bm.record(
