@@ -1,0 +1,98 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "oneinfinity"
+version = "0.1.0"
+description = "AI-powered offensive security research framework for bug bounty hunting and penetration testing"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+dependencies = [
+    # HTTP & networking
+    "requests>=2.31.0",
+    "urllib3>=2.0.0",
+
+    # HTML parsing
+    "beautifulsoup4>=4.12.0",
+
+    # System utilities
+    "psutil>=5.9.0",
+    "tqdm>=4.66.0",
+    "rich>=13.7.0",
+
+    # Config & data
+    "pyyaml>=6.0.0",
+    "sqlparse>=0.4.4",
+    "pandas>=2.1.0",
+
+    # Crypto (JWT, hashing)
+    "cryptography>=42.0.0",
+
+    # Graph analysis (attack graph)
+    "networkx>=3.2.1",
+    "matplotlib>=3.8.0",
+
+    # Report generation (PDF)
+    "fpdf2>=2.7.0",
+
+    # PostgreSQL
+    "psycopg[binary,pool]",
+
+    # Cache / messaging
+    "redis>=5.0.0",
+
+    # Optional Neo4j graph backend (enabled via config/graph.yaml)
+    "neo4j>=5.14.0",
+]
+
+[project.optional-dependencies]
+ai = [
+    # AI Red Teaming frameworks
+    "adversarial-robustness-toolbox>=1.17.0",
+
+    # Browser automation (AI endpoint crawling)
+    "playwright>=1.42.0",
+    "selenium>=4.18.0",
+
+    # Microsoft PyRIT — install separately if needed
+    # "pyrit>=0.1.0",
+
+    # Giskard ML safety (Python 3.10-3.11 only)
+    # "giskard>=2.7.0",
+
+    # Prompt injection defence testing
+    # "rebuff>=0.0.3",
+]
+
+mobile = [
+    # APK static analysis
+    "androguard>=3.4.0",
+
+    # Frida dynamic instrumentation — requires frida-server on device
+    # "frida>=16.2.0",
+]
+
+web = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+    "websockets>=12.0",
+    "pydantic>=2.0",
+    "aiofiles>=23.0",
+    "python-multipart>=0.0.9",
+]
+
+dev = [
+    "oneinfinity[ai,mobile,web]",
+]
+
+[project.scripts]
+oneinfinity = "oneinfinity.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["oneinfinity*", "core*", "modules*", "agents*", "pipeline*"]
+
+[tool.setuptools.package-dir]
+"" = "."
