@@ -17,7 +17,7 @@ def run(coro):
 
 def make_repo():
     """ResearchRepository backed by a fully mocked DBManager."""
-    from core.research_repository import ResearchRepository
+    from oneinfinity.core.research_repository import ResearchRepository
     db = MagicMock()
     db.save_research_session = AsyncMock()
     db.list_research_sessions = AsyncMock(return_value=[])

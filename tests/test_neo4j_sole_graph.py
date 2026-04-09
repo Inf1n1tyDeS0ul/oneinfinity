@@ -12,12 +12,12 @@ def test_no_attack_graph_db_direct_writes_outside_fallback():
 
 def test_neo4j_primary_backend_exists():
     """Neo4jPrimaryBackend must exist in core/graph_storage.py."""
-    from core.graph_storage import Neo4jPrimaryBackend
+    from oneinfinity.core.graph_storage import Neo4jPrimaryBackend
     assert Neo4jPrimaryBackend is not None
 
 def test_neo4j_primary_backend_on_node_saved_does_not_raise_on_error():
     """Neo4jPrimaryBackend.on_node_saved must be non-fatal on errors."""
-    from core.graph_storage import Neo4jPrimaryBackend
+    from oneinfinity.core.graph_storage import Neo4jPrimaryBackend
     from unittest.mock import MagicMock
     mock_engine = MagicMock()
     mock_engine.upsert_node.side_effect = Exception("Neo4j down")
@@ -27,7 +27,7 @@ def test_neo4j_primary_backend_on_node_saved_does_not_raise_on_error():
 
 def test_neo4j_primary_backend_on_edge_saved_does_not_raise_on_error():
     """Neo4jPrimaryBackend.on_edge_saved must be non-fatal on errors."""
-    from core.graph_storage import Neo4jPrimaryBackend
+    from oneinfinity.core.graph_storage import Neo4jPrimaryBackend
     from unittest.mock import MagicMock
     mock_engine = MagicMock()
     mock_engine.upsert_edge.side_effect = Exception("Neo4j down")
@@ -37,7 +37,7 @@ def test_neo4j_primary_backend_on_edge_saved_does_not_raise_on_error():
 
 def test_neo4j_primary_backend_on_node_deleted_does_not_raise_on_error():
     """Neo4jPrimaryBackend.on_node_deleted must be non-fatal on errors."""
-    from core.graph_storage import Neo4jPrimaryBackend
+    from oneinfinity.core.graph_storage import Neo4jPrimaryBackend
     from unittest.mock import MagicMock
     mock_engine = MagicMock()
     mock_engine.delete_node.side_effect = Exception("Neo4j down")
@@ -46,7 +46,7 @@ def test_neo4j_primary_backend_on_node_deleted_does_not_raise_on_error():
 
 def test_neo4j_primary_backend_on_edge_deleted_does_not_raise_on_error():
     """Neo4jPrimaryBackend.on_edge_deleted must be non-fatal on errors."""
-    from core.graph_storage import Neo4jPrimaryBackend
+    from oneinfinity.core.graph_storage import Neo4jPrimaryBackend
     from unittest.mock import MagicMock
     mock_engine = MagicMock()
     mock_engine.delete_edge.side_effect = Exception("Neo4j down")

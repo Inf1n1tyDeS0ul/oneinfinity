@@ -14,10 +14,10 @@ import time
 import unittest
 from unittest.mock import patch, MagicMock, PropertyMock
 
-from agents.secret_intel.detector import SecretDetector, adaptive_entropy_threshold, shannon_entropy
-from agents.secret_intel.scorer import SecretScorer
-from agents.secret_intel.agent import SecretIntelAgent
-from agents.secret_intel.github_client import GitHubSearchClient
+from oneinfinity.agents.secret_intel.detector import SecretDetector, adaptive_entropy_threshold, shannon_entropy
+from oneinfinity.agents.secret_intel.scorer import SecretScorer
+from oneinfinity.agents.secret_intel.agent import SecretIntelAgent
+from oneinfinity.agents.secret_intel.github_client import GitHubSearchClient
 
 # ── Test fixture helpers ──────────────────────────────────────────────────────
 # Secret-like strings are constructed via concatenation so that static scanners
@@ -181,7 +181,7 @@ class TestRateLimitHandling(unittest.TestCase):
         # Patch safe_request (used by github_client) and throttle sleep
         client = GitHubSearchClient(token="fake-token")
         ok_resp = self._make_resp(200, remaining=29, body={"items": []})
-        with patch("agents.secret_intel.github_client.safe_request", return_value=ok_resp) as mock_req:
+        with patch("oneinfinity.agents.secret_intel.github_client.safe_request", return_value=ok_resp) as mock_req:
             with patch("time.sleep"):
                 result = client.search_code("test query")
         self.assertEqual(result, [])
@@ -199,7 +199,7 @@ class TestRateLimitHandling(unittest.TestCase):
         rl_403    = self._make_resp(403, remaining=0, reset_in=-3)
         ok_resp   = self._make_resp(200, remaining=29, body={"items": [{"url": "u1", "html_url": "h1"}]})
 
-        with patch("agents.secret_intel.github_client.safe_request", side_effect=[rl_403, ok_resp]):
+        with patch("oneinfinity.agents.secret_intel.github_client.safe_request", side_effect=[rl_403, ok_resp]):
             with patch("time.sleep"):
                 result = client.search_code("test query")
 
@@ -221,7 +221,7 @@ class TestRateLimitHandling(unittest.TestCase):
         """After exhausting retries, search_code returns [] not raises."""
         client = GitHubSearchClient(token="fake-token")
         always_fail = self._make_resp(503, remaining=30)
-        with patch("agents.secret_intel.github_client.safe_request", return_value=always_fail):
+        with patch("oneinfinity.agents.secret_intel.github_client.safe_request", return_value=always_fail):
             with patch("time.sleep"):
                 result = client.search_code("test query")
         # Must return empty list, never raise
@@ -231,7 +231,7 @@ class TestRateLimitHandling(unittest.TestCase):
         """A 422 Unprocessable response must not be retried."""
         client = GitHubSearchClient(token="fake-token")
         bad_query = self._make_resp(422, remaining=30)
-        with patch("agents.secret_intel.github_client.safe_request", return_value=bad_query) as mock_req:
+        with patch("oneinfinity.agents.secret_intel.github_client.safe_request", return_value=bad_query) as mock_req:
             with patch("time.sleep"):
                 result = client.search_code("bad::query")
         # Only 1 attempt — 422 is not retried

@@ -2,7 +2,7 @@
 import sys, os, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from core.reporter import Reporter
+from oneinfinity.core.reporter import Reporter
 
 
 def _make_reporter(tmp_dir):
@@ -96,11 +96,11 @@ def test_publish_endpoint_returns_pdf(tmp_path, monkeypatch):
         def get_findings(self, scan_id=None, **kwargs):
             return [mock_finding]
 
-    import result_ingestion_engine as rie
+    import oneinfinity.result_ingestion_engine as rie
     monkeypatch.setattr(rie, "get_ingestion_engine", lambda: MockIngestion())
 
     # Mock god mode state file
-    import god_mode_engine as gme
+    import oneinfinity.god_mode_engine as gme
     class MockStateFile:
         def read(self):
             return {

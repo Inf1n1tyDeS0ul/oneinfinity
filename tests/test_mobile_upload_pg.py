@@ -30,7 +30,7 @@ class TestMobileUploadManagerPG:
     def test_save_calls_pg_execute_write(self):
         mgr = _make_pg_mgr()
 
-        from mobile_upload_manager import MobileApp, MobileUploadManager
+        from oneinfinity.mobile_upload_manager import MobileApp, MobileUploadManager
         app = MobileApp(
             id="testapp001",
             filename="sample.apk",
@@ -60,7 +60,7 @@ class TestMobileUploadManagerPG:
         mgr = _make_pg_mgr()
 
         with patch("mobile_upload_manager._require_pg", return_value=mgr):
-            from mobile_upload_manager import MobileUploadManager
+            from oneinfinity.mobile_upload_manager import MobileUploadManager
             manager = MobileUploadManager()
             result = manager.list_apps(platform="android", limit=25)
 
@@ -78,7 +78,7 @@ class TestMobileUploadManagerPG:
         mgr = _make_pg_mgr()
 
         with patch("mobile_upload_manager._require_pg", return_value=mgr):
-            from mobile_upload_manager import MobileUploadManager
+            from oneinfinity.mobile_upload_manager import MobileUploadManager
             manager = MobileUploadManager()
             result = manager.list_apps()
 
@@ -94,7 +94,7 @@ class TestMobileUploadManagerPG:
         mgr = _make_pg_mgr()
 
         with patch("mobile_upload_manager._require_pg", return_value=mgr):
-            from mobile_upload_manager import MobileUploadManager
+            from oneinfinity.mobile_upload_manager import MobileUploadManager
             manager = MobileUploadManager()
             manager.update_status("testapp001", "done")
 
@@ -132,7 +132,7 @@ class TestMobileUploadManagerPG:
         mgr.sync_pg_execute_read.return_value = [fake_row]
 
         with patch("mobile_upload_manager._require_pg", return_value=mgr):
-            from mobile_upload_manager import MobileUploadManager
+            from oneinfinity.mobile_upload_manager import MobileUploadManager
             manager = MobileUploadManager()
             app = manager.get("testapp001")
 
@@ -154,7 +154,7 @@ class TestMobileUploadManagerPG:
         mgr.sync_pg_execute_read.return_value = []
 
         with patch("mobile_upload_manager._require_pg", return_value=mgr):
-            from mobile_upload_manager import MobileUploadManager
+            from oneinfinity.mobile_upload_manager import MobileUploadManager
             manager = MobileUploadManager()
             app = manager.get("nonexistent")
 
@@ -166,7 +166,7 @@ class TestMobileUploadManagerPG:
         """When PG is unavailable, update_status must raise RuntimeError."""
         with patch("mobile_upload_manager._require_pg",
                    side_effect=RuntimeError("PostgreSQL is required")):
-            from mobile_upload_manager import MobileUploadManager
+            from oneinfinity.mobile_upload_manager import MobileUploadManager
             manager = MobileUploadManager()
             try:
                 manager.update_status("fallback01", "done")

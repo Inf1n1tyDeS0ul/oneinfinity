@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 def test_swarm_concurrency_capped():
     """At most MAX_CONCURRENT_AGENTS agents run simultaneously."""
-    from swarm_intelligence_engine import SwarmIntelligenceEngine
+    from oneinfinity.swarm_intelligence_engine import SwarmIntelligenceEngine
 
     concurrent_count = [0]
     peak_concurrent = [0]

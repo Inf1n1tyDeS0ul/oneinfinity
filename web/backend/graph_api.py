@@ -51,7 +51,7 @@ _swarm_status: Dict[str, Any] = {}
 async def get_full_graph(target: str):
     """Return full graph for target (nodes + edges)."""
     try:
-        from attack_graph_core.graph_engine import AttackGraphEngine
+        from oneinfinity.attack_graph_core.graph_engine import AttackGraphEngine
         engine = _get_or_create_graph(target)
         nodes = [_serialize_node(n) for n in engine._nodes.values()]
         edges = [_serialize_edge(e) for e in engine._edges.values()]
@@ -66,15 +66,15 @@ async def get_attack_paths(target: str):
     """Return BFS attack paths from entry to impact nodes."""
     import uuid as _uuid
     try:
-        from attack_graph_core.graph_engine import AttackGraphEngine, NodeType
-        from attack_graph_core.graph_query_engine import GraphQueryEngine, AttackPath
-        from attack_graph_core.graph_updater import GraphUpdater
+        from oneinfinity.attack_graph_core.graph_engine import AttackGraphEngine, NodeType
+        from oneinfinity.attack_graph_core.graph_query_engine import GraphQueryEngine, AttackPath
+        from oneinfinity.attack_graph_core.graph_updater import GraphUpdater
 
         # Build a fresh engine populated with real findings for this target
         engine = AttackGraphEngine()
         updater = GraphUpdater(engine)
         try:
-            from result_ingestion_engine import get_ingestion_engine
+            from oneinfinity.result_ingestion_engine import get_ingestion_engine
             raw = get_ingestion_engine().get_findings(target=target)
             updater.update_from_scan_result(target, raw)
         except Exception:
@@ -119,7 +119,7 @@ async def get_attack_paths(target: str):
 async def get_exploit_chains(target: str):
     """Return detected exploit chains."""
     try:
-        from attack_graph_core.exploit_chain_engine import ExploitChainEngine
+        from oneinfinity.attack_graph_core.exploit_chain_engine import ExploitChainEngine
         engine = _get_or_create_graph(target)
         ece = ExploitChainEngine(engine)
         chains = ece.detect_chains(target)
@@ -132,8 +132,8 @@ async def get_exploit_chains(target: str):
 async def get_risk_report(target: str):
     """Return full risk report for target."""
     try:
-        from attack_graph_core.risk_analyzer import RiskAnalyzer
-        from attack_graph_core.exploit_chain_engine import ExploitChainEngine
+        from oneinfinity.attack_graph_core.risk_analyzer import RiskAnalyzer
+        from oneinfinity.attack_graph_core.exploit_chain_engine import ExploitChainEngine
         engine = _get_or_create_graph(target)
         ece = ExploitChainEngine(engine)
         ra = RiskAnalyzer(engine, ece)
@@ -147,7 +147,7 @@ async def get_risk_report(target: str):
 async def get_attack_plan(target: str):
     """Return prioritized attack plan."""
     try:
-        from attack_graph_core.attack_planner import AttackPlanner
+        from oneinfinity.attack_graph_core.attack_planner import AttackPlanner
         engine = _get_or_create_graph(target)
         planner = AttackPlanner(engine)
         plan = planner.plan(target)
@@ -160,7 +160,7 @@ async def get_attack_plan(target: str):
 async def update_graph(target: str, data: Dict[str, Any]):
     """Accept external updates to the graph (from scan engines)."""
     try:
-        from attack_graph_core.graph_updater import GraphUpdater
+        from oneinfinity.attack_graph_core.graph_updater import GraphUpdater
         engine = _get_or_create_graph(target)
         updater = GraphUpdater(engine)
         update_type = data.get("type", "")
@@ -195,7 +195,7 @@ async def discovery_status(session_id: str):
 async def run_osint(req: TargetRequest):
     """Run OSINT collection on target."""
     try:
-        from osint_collector import OSINTCollector
+        from oneinfinity.osint_collector import OSINTCollector
         collector = OSINTCollector()
         results = await collector.collect(req.target)
         return {"target": req.target, "results": [r.to_dict() for r in results]}
@@ -207,7 +207,7 @@ async def run_osint(req: TargetRequest):
 async def correlate_assets(req: TargetRequest):
     """Correlate IP/domain/cloud assets."""
     try:
-        from asset_correlator import AssetCorrelator
+        from oneinfinity.asset_correlator import AssetCorrelator
         correlator = AssetCorrelator()
         corr = await correlator.correlate(req.target)
         return corr.to_dict()
@@ -219,7 +219,7 @@ async def correlate_assets(req: TargetRequest):
 async def get_program_scope(platform: str, handle: str):
     """Fetch program scope from bug bounty platform."""
     try:
-        from program_scope_analyzer import ProgramScopeAnalyzer
+        from oneinfinity.program_scope_analyzer import ProgramScopeAnalyzer
         analyzer = ProgramScopeAnalyzer()
         scope = await analyzer.fetch_scope(handle, platform)
         return scope.to_dict()
@@ -233,7 +233,7 @@ async def get_program_scope(platform: str, handle: str):
 async def generate_bizlogic_attacks(req: BizLogicRequest):
     """Generate business logic attack hypotheses."""
     try:
-        from business_logic_attack_engine import BusinessLogicAttackEngine
+        from oneinfinity.business_logic_attack_engine import BusinessLogicAttackEngine
         engine = BusinessLogicAttackEngine()
         attacks = await engine.generate(req.target, req.app_context, req.categories)
         return {
@@ -248,7 +248,7 @@ async def generate_bizlogic_attacks(req: BizLogicRequest):
 @bizlogic_router.get("/categories")
 async def get_attack_categories():
     try:
-        from business_logic_attack_engine import ATTACK_CATEGORIES, RULE_BASED_TEMPLATES
+        from oneinfinity.business_logic_attack_engine import ATTACK_CATEGORIES, RULE_BASED_TEMPLATES
         return {"categories": ATTACK_CATEGORIES, "rule_count": sum(len(v) for v in RULE_BASED_TEMPLATES.values())}
     except Exception:
         return {"categories": [], "rule_count": 0}
@@ -280,7 +280,7 @@ async def swarm_status(session_id: str):
 @swarm_router.get("/workers")
 async def swarm_workers():
     try:
-        from task_dispatcher import TaskDispatcher
+        from oneinfinity.task_dispatcher import TaskDispatcher
         td = TaskDispatcher()
         return {"workers": td.get_worker_stats()}
     except Exception:
@@ -306,7 +306,7 @@ def _get_or_create_graph(target: str):
         # Double-check after acquiring lock (another thread may have created it)
         if target not in _graph_instances:
             try:
-                from attack_graph_core.graph_engine import AttackGraphEngine
+                from oneinfinity.attack_graph_core.graph_engine import AttackGraphEngine
                 _graph_instances[target] = AttackGraphEngine()
             except Exception:
                 _graph_instances[target] = None
@@ -333,7 +333,7 @@ def _serialize_edge(edge) -> dict:
 
 async def _run_discovery(session_id: str, domain: str, sources: list):
     try:
-        from target_discovery_engine import TargetDiscoveryEngine
+        from oneinfinity.target_discovery_engine import TargetDiscoveryEngine
         engine = TargetDiscoveryEngine()
         results = await engine.discover(domain)
         _swarm_status[session_id]["results"] = [r.to_dict() if hasattr(r, 'to_dict') else r for r in results]
@@ -346,7 +346,7 @@ async def _run_discovery(session_id: str, domain: str, sources: list):
 async def _run_swarm(session_id: str, targets: list, modules: Optional[List[str]], priority: int):
     _swarm_status[session_id]["status"] = "running"
     try:
-        from swarm_scan_cluster import SwarmScanCluster
+        from oneinfinity.swarm_scan_cluster import SwarmScanCluster
         cluster = SwarmScanCluster()
         results = await cluster.scan_many(targets, modules=modules or ["recon"])
         _swarm_status[session_id]["results"] = results

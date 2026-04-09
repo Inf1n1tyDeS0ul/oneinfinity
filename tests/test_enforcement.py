@@ -1,5 +1,5 @@
 # tests/test_enforcement.py
-from enforcement_controller import EnforcementController
+from oneinfinity.enforcement_controller import EnforcementController
 
 def test_stop_recursive_watch_cleans_up_after_exception():
     """Handlers must be unregistered even if god mode is interrupted."""

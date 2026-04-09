@@ -5,8 +5,7 @@ import pytest
 def test_scan_uses_make_swarm_state_factory(monkeypatch):
     """_make_swarm_state must be called during scan(), not SharedSwarmState() directly."""
     import sys
-    sys.path.insert(0, "/home/devendra-yadav/oneinfinity")
-    from agent_swarm_coordinator import AgentSwarmCoordinator, SharedSwarmState
+    from oneinfinity.agent_swarm_coordinator import AgentSwarmCoordinator, SharedSwarmState
 
     coordinator = AgentSwarmCoordinator.__new__(AgentSwarmCoordinator)
     coordinator._sim_engine = None
@@ -37,8 +36,7 @@ def test_scan_uses_make_swarm_state_factory(monkeypatch):
 
 def test_redis_swarm_state_has_session_id_property():
     import sys
-    sys.path.insert(0, "/home/devendra-yadav/oneinfinity")
-    from core.swarm_state_redis import RedisSwarmState
+    from oneinfinity.core.swarm_state_redis import RedisSwarmState
     state = RedisSwarmState(scan_id="abc-123", redis=None)
     assert state.session_id == "abc-123"
     assert state.scan_id == "abc-123"

@@ -17,9 +17,8 @@ def test_redis_listener_retries_on_disconnect(monkeypatch):
         return None  # None stops the listener cleanly
 
     import sys
-    sys.path.insert(0, "/home/devendra-yadav/oneinfinity")
-    import event_bus as eb
-    from event_bus import EventBus
+    import oneinfinity.event_bus as eb
+    from oneinfinity.event_bus import EventBus
     import queue
     bus = EventBus.__new__(EventBus)
     bus._running = True
@@ -29,7 +28,7 @@ def test_redis_listener_retries_on_disconnect(monkeypatch):
 
     # Patch the get_redis import inside the method
     import unittest.mock as mock
-    with mock.patch("core.redis_client.get_redis") as mocked:
+    with mock.patch("oneinfinity.core.redis_client.get_redis") as mocked:
         mocked.side_effect = fake_get_redis
 
         def stop_after_attempts():

@@ -8,7 +8,7 @@ import requests
 # Add project root to sys.path
 sys.path.insert(0, os.getcwd())
 
-from core.http_client import safe_request, get_http_client
+from oneinfinity.core.http_client import safe_request, get_http_client
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)

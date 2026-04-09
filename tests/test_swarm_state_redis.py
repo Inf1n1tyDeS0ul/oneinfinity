@@ -75,7 +75,7 @@ def _make_mock_redis():
 
 def test_claim_task_stores_in_redis():
     r = _make_mock_redis()
-    from core.swarm_state_redis import RedisSwarmState
+    from oneinfinity.core.swarm_state_redis import RedisSwarmState
     state = RedisSwarmState(scan_id="scan-1", redis=r)
     state.claim_task("task-001", "agent-A")
     claimed = state.get_claimed_tasks()
@@ -84,7 +84,7 @@ def test_claim_task_stores_in_redis():
 
 def test_add_finding_stores_in_redis():
     r = _make_mock_redis()
-    from core.swarm_state_redis import RedisSwarmState
+    from oneinfinity.core.swarm_state_redis import RedisSwarmState
     state = RedisSwarmState(scan_id="scan-1", redis=r)
     state.add_active_finding("finding-abc")
     assert "finding-abc" in state.get_active_findings()
@@ -92,7 +92,7 @@ def test_add_finding_stores_in_redis():
 
 def test_leader_election_set_nx():
     r = _make_mock_redis()
-    from core.swarm_state_redis import RedisSwarmState
+    from oneinfinity.core.swarm_state_redis import RedisSwarmState
     state = RedisSwarmState(scan_id="scan-1", redis=r)
     assert state.acquire_leader("worker-1") is True
     assert state.acquire_leader("worker-2") is False  # already locked
@@ -100,7 +100,7 @@ def test_leader_election_set_nx():
 
 def test_fallback_state_when_redis_none():
     """When redis=None, RedisSwarmState uses in-memory fallback."""
-    from core.swarm_state_redis import RedisSwarmState
+    from oneinfinity.core.swarm_state_redis import RedisSwarmState
     state = RedisSwarmState(scan_id="scan-1", redis=None)
     state.claim_task("task-001", "agent-A")
     assert state.get_claimed_tasks().get("task-001") == "agent-A"

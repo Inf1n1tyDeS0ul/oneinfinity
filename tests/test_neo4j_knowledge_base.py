@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch, call
 import pytest
-from learning.neo4j_knowledge_base import Neo4jKnowledgeBase
+from oneinfinity.learning.neo4j_knowledge_base import Neo4jKnowledgeBase
 
 
 def _make_kb(available: bool = True) -> Neo4jKnowledgeBase:

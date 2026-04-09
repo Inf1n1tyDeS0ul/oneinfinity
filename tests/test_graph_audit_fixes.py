@@ -3,8 +3,8 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
-from attack_graph_core.graph_engine import AttackGraphEngine, NodeType, EdgeType
-from attack_graph_core.exploit_chain_engine import ExploitChainEngine
+from oneinfinity.attack_graph_core.graph_engine import AttackGraphEngine, NodeType, EdgeType
+from oneinfinity.attack_graph_core.exploit_chain_engine import ExploitChainEngine
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ class TestExploitChainEngineGraphValidation:
 
 # ── C2 tests ───────────────────────────────────────────────────────────────
 
-from attack_graph_core.graph_updater import GraphUpdater
+from oneinfinity.attack_graph_core.graph_updater import GraphUpdater
 
 
 class TestCanonicalEdgeTypes:
@@ -142,7 +142,7 @@ class TestCanonicalEdgeTypes:
 
     def test_path_validator_accepts_graph_updater_paths(self):
         """Paths built via graph_updater must pass GraphPathValidator strict mode."""
-        from core.graph_path_validator import GraphPathValidator
+        from oneinfinity.core.graph_path_validator import GraphPathValidator
         engine, updater = self._make()
         updater.add_target("example.com")
         updater.add_url("https://example.com/login", "example.com")
@@ -170,7 +170,7 @@ class TestCanonicalEdgeTypes:
 
 # ── W1 tests ───────────────────────────────────────────────────────────────
 
-from core.token_execution_engine import TokenExecutionEngine
+from oneinfinity.core.token_execution_engine import TokenExecutionEngine
 
 
 class TestTokenCache:

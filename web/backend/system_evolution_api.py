@@ -45,7 +45,7 @@ class EmitEventRequest(BaseModel):
 
 def _get_engine():
     try:
-        from auto_architecture_engine import get_engine
+        from oneinfinity.auto_architecture_engine import get_engine
         return get_engine()
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"AutoArchitectureEngine unavailable: {e}")
@@ -53,7 +53,7 @@ def _get_engine():
 
 def _get_memory():
     try:
-        from memory_manager import get_memory_manager
+        from oneinfinity.memory_manager import get_memory_manager
         return get_memory_manager()
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"MemoryManager unavailable: {e}")
@@ -61,7 +61,7 @@ def _get_memory():
 
 def _get_skills():
     try:
-        from skills_tracker import get_skills_tracker
+        from oneinfinity.skills_tracker import get_skills_tracker
         return get_skills_tracker()
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SkillsTracker unavailable: {e}")
@@ -73,7 +73,7 @@ def _get_skills():
 def get_status():
     """Full engine status: stats, capability snapshot, recent changes + insights."""
     try:
-        from auto_architecture_engine import cmd_arch_status
+        from oneinfinity.auto_architecture_engine import cmd_arch_status
         return cmd_arch_status()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -184,7 +184,7 @@ def emit_event(req: EmitEventRequest, background_tasks: BackgroundTasks):
     """Emit a platform event from the UI (for testing / manual triggers)."""
     engine = _get_engine()
     try:
-        from auto_architecture_engine import ArchEvent, EventType
+        from oneinfinity.auto_architecture_engine import ArchEvent, EventType
         ev = ArchEvent(
             event_type=EventType(req.event_type),
             source=req.source,
@@ -201,7 +201,7 @@ def emit_event(req: EmitEventRequest, background_tasks: BackgroundTasks):
 @router.get("/event-types")
 def list_event_types():
     try:
-        from auto_architecture_engine import EventType
+        from oneinfinity.auto_architecture_engine import EventType
         return [et.value for et in EventType]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

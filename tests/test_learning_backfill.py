@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch, call
 import pytest
-from learning.backfill import LearningBackfill
+from oneinfinity.learning.backfill import LearningBackfill
 
 
 def _make_backfill(findings: list[dict]) -> LearningBackfill:

@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "oneinfinity"
@@ -87,12 +87,14 @@ dev = [
     "oneinfinity[ai,mobile,web]",
 ]
 
-[project.scripts]
-oneinfinity = "oneinfinity.cli.main:main"
+# [project.scripts] — defined in Phase 4 after CLI is split into cli/main.py
+# oneinfinity = "oneinfinity.cli.main:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["oneinfinity*", "core*", "modules*", "agents*", "pipeline*"]
+where = ["src"]
 
 [tool.setuptools.package-dir]
-"" = "."
+"" = "src"
+
+[tool.setuptools.package-data]
+"oneinfinity" = ["config/*.yaml", "db/schema.sql"]

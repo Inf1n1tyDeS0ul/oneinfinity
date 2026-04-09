@@ -8,9 +8,8 @@ import json
 import time
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, "/home/devendra-yadav/oneinfinity")
 
-from attack_graph_core.graph_store import SQLiteStore
+from oneinfinity.attack_graph_core.graph_store import SQLiteStore
 
 
 # ---------------------------------------------------------------------------

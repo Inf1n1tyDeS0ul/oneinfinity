@@ -14,13 +14,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 from unittest.mock import patch, MagicMock
 
-from attack_graph_core.graph_engine import AttackGraphEngine, NodeType, EdgeType
-from attack_graph_core.graph_updater import GraphUpdater
-from attack_graph_core.graph_query_engine import GraphQueryEngine
-from attack_graph_core.exploit_chain_engine import ExploitChainEngine as InnerChainEngine
-from attack_graph_core.graph_store import GraphStore
-from attack_graph_brain import AttackGraphBrain
-from core.token_execution_engine import TokenExecutionEngine
+from oneinfinity.attack_graph_core.graph_engine import AttackGraphEngine, NodeType, EdgeType
+from oneinfinity.attack_graph_core.graph_updater import GraphUpdater
+from oneinfinity.attack_graph_core.graph_query_engine import GraphQueryEngine
+from oneinfinity.attack_graph_core.exploit_chain_engine import ExploitChainEngine as InnerChainEngine
+from oneinfinity.attack_graph_core.graph_store import GraphStore
+from oneinfinity.attack_graph_brain import AttackGraphBrain
+from oneinfinity.core.token_execution_engine import TokenExecutionEngine
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +311,7 @@ def sim_graph_extended(sim_graph):
     brain  = sim_graph["brain"]
 
     # Create the AUTH_FLOW issuer node that integrate_token expects
-    from attack_graph_core.graph_engine import NodeType, EdgeType
+    from oneinfinity.attack_graph_core.graph_engine import NodeType, EdgeType
     engine.get_or_create_node(
         NodeType.AUTH_FLOW, "login_flow",
         properties={"scheme": "jwt", "target": "vulnbank.org"},
@@ -464,7 +464,7 @@ class TestPhase5Persistence:
         mock_mgr.sync_pg_execute_write = MagicMock(side_effect=mock_write)
         mock_mgr.sync_pg_execute_read = MagicMock(side_effect=mock_read)
 
-        with patch("attack_graph_core.graph_store.SQLiteStore._get_pg", return_value=mock_mgr):
+        with patch("oneinfinity.attack_graph_core.graph_store.SQLiteStore._get_pg", return_value=mock_mgr):
             # Write all nodes and edges to PG via store1
             store1 = GraphStore(use_memory=True)
             store1.initialize()
@@ -499,7 +499,7 @@ class TestPhase6Execution:
 
     def _tee(self):
         """Return the singleton TokenExecutionEngine (has raw-token cache from sim_graph)."""
-        from core.token_execution_engine import get_token_execution_engine
+        from oneinfinity.core.token_execution_engine import get_token_execution_engine
         tee = get_token_execution_engine()
         tee._tested_pairs.clear()   # reset dedup so tests don't interfere
         return tee
@@ -548,7 +548,7 @@ class TestPhase6Execution:
 
     def test_token_cache_populated_by_integrate_token(self, sim_graph):
         """W1 regression: brain.integrate_token must populate the same-run token cache."""
-        from core.token_execution_engine import get_token_execution_engine
+        from oneinfinity.core.token_execution_engine import get_token_execution_engine
         tee = get_token_execution_engine()
         assert len(tee._token_cache) > 0, (
             "W1 regression: _token_cache is empty after brain.integrate_token() — "

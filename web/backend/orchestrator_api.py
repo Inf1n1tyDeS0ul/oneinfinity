@@ -29,7 +29,7 @@ router = APIRouter(prefix="/api/orchestrator", tags=["model-orchestrator"])
 
 def _orch():
     try:
-        from model_orchestrator import get_orchestrator
+        from oneinfinity.model_orchestrator import get_orchestrator
         return get_orchestrator()
     except Exception as e:
         raise HTTPException(503, f"ModelOrchestrator unavailable: {e}")
@@ -37,7 +37,7 @@ def _orch():
 
 def _budget():
     try:
-        from model_budget_manager import get_budget_manager
+        from oneinfinity.model_budget_manager import get_budget_manager
         return get_budget_manager()
     except Exception as e:
         raise HTTPException(503, f"ModelBudgetManager unavailable: {e}")
@@ -45,7 +45,7 @@ def _budget():
 
 def _classifier():
     try:
-        from task_classifier import get_classifier
+        from oneinfinity.task_classifier import get_classifier
         return get_classifier()
     except Exception as e:
         raise HTTPException(503, f"TaskClassifier unavailable: {e}")
@@ -115,7 +115,7 @@ def budget_records(limit: int = Query(50, ge=1, le=200)):
 @router.post("/execute")
 async def orchestrator_execute(req: ExecuteRequest):
     import asyncio
-    from model_orchestrator import ModelTier
+    from oneinfinity.model_orchestrator import ModelTier
     task = req.dict(exclude={"force_tier"})
     # map prompt → description key the classifier expects
     task["description"] = task.get("description") or task.pop("prompt", "")

@@ -18,7 +18,7 @@ def _make_pg_mgr():
 
 
 def _make_gene():
-    from ai_security.adversarial_prompt_evolution import PromptGene
+    from oneinfinity.ai_security.adversarial_prompt_evolution import PromptGene
     return PromptGene(
         prompt_id="pg-001",
         text="test payload",
@@ -32,10 +32,10 @@ def _make_gene():
 
 def test_save_gene_calls_pg_execute_write(tmp_path):
     """save_gene() must call sync_pg_execute_write with prompt_genes SQL in PG mode."""
-    from ai_security.adversarial_prompt_evolution import EvolutionDB
+    from oneinfinity.ai_security.adversarial_prompt_evolution import EvolutionDB
     mock_mgr = _make_pg_mgr()
 
-    with patch("ai_security.adversarial_prompt_evolution.EvolutionDB._pg", return_value=mock_mgr):
+    with patch("oneinfinity.ai_security.adversarial_prompt_evolution.EvolutionDB._pg", return_value=mock_mgr):
         db = EvolutionDB(db_path=tmp_path / "evolution.db")
         db.save_gene(_make_gene())
 
@@ -47,10 +47,10 @@ def test_save_gene_calls_pg_execute_write(tmp_path):
 
 def test_record_result_calls_pg_execute_write(tmp_path):
     """record_result() must call sync_pg_execute_write with test_results SQL in PG mode."""
-    from ai_security.adversarial_prompt_evolution import EvolutionDB
+    from oneinfinity.ai_security.adversarial_prompt_evolution import EvolutionDB
     mock_mgr = _make_pg_mgr()
 
-    with patch("ai_security.adversarial_prompt_evolution.EvolutionDB._pg", return_value=mock_mgr):
+    with patch("oneinfinity.ai_security.adversarial_prompt_evolution.EvolutionDB._pg", return_value=mock_mgr):
         db = EvolutionDB(db_path=tmp_path / "evolution.db")
         db.record_result(
             prompt_id="p-001",
@@ -69,9 +69,9 @@ def test_record_result_calls_pg_execute_write(tmp_path):
 
 def test_save_gene_raises_when_pg_unavailable(tmp_path):
     """When _pg() raises, save_gene() must propagate the RuntimeError."""
-    from ai_security.adversarial_prompt_evolution import EvolutionDB
+    from oneinfinity.ai_security.adversarial_prompt_evolution import EvolutionDB
 
-    with patch("ai_security.adversarial_prompt_evolution.EvolutionDB._pg",
+    with patch("oneinfinity.ai_security.adversarial_prompt_evolution.EvolutionDB._pg",
                side_effect=RuntimeError("PostgreSQL is required")):
         db = EvolutionDB(db_path=tmp_path / "evolution.db")
         try:

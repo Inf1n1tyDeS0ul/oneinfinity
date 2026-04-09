@@ -7,9 +7,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 from unittest.mock import MagicMock
 
-from attack_graph_core.graph_engine import AttackGraphEngine, NodeType, EdgeType
-from attack_graph_core.graph_store import GraphStore
-from attack_graph_core.graph_query_engine import GraphQueryEngine
+from oneinfinity.attack_graph_core.graph_engine import AttackGraphEngine, NodeType, EdgeType
+from oneinfinity.attack_graph_core.graph_store import GraphStore
+from oneinfinity.attack_graph_core.graph_query_engine import GraphQueryEngine
 
 
 def test_graph_store_sync_backend_called():
@@ -19,7 +19,7 @@ def test_graph_store_sync_backend_called():
     mock_mgr.sync_pg_execute_write = MagicMock(return_value=1)
     mock_mgr.sync_pg_execute_read = MagicMock(return_value=[])
 
-    with patch("attack_graph_core.graph_store.SQLiteStore._get_pg", return_value=mock_mgr):
+    with patch("oneinfinity.attack_graph_core.graph_store.SQLiteStore._get_pg", return_value=mock_mgr):
         store = GraphStore(db_path=":memory:", use_memory=True, sync_backend=backend)
         store.initialize()
 
@@ -50,10 +50,10 @@ def test_hybrid_dfs_falls_back_when_no_neo4j():
 
 
 def test_neo4j_engine_batches_rows():
-    from core import neo4j_engine as ne
+    from oneinfinity.core import neo4j_engine as ne
     if not ne.neo4j_driver_available():
         pytest.skip("neo4j package not installed")
-    from core.neo4j_engine import Neo4jEngine, node_to_neo_row
+    from oneinfinity.core.neo4j_engine import Neo4jEngine, node_to_neo_row
 
     eng = Neo4jEngine("bolt://127.0.0.1:1", "neo4j", "invalid-password-for-test")
     mock_drv = MagicMock()
@@ -72,6 +72,6 @@ def test_neo4j_engine_batches_rows():
 
 
 def test_publish_chain_feedback_no_crash():
-    from core.graph_neo4j_bootstrap import publish_chain_feedback_neo4j
+    from oneinfinity.core.graph_neo4j_bootstrap import publish_chain_feedback_neo4j
 
     publish_chain_feedback_neo4j("c1", False, target="t", vuln_type="sqli")

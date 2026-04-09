@@ -2,7 +2,7 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from modules.owasp_gap_checks import (
+from oneinfinity.modules.owasp_gap_checks import (
     GapCheckResult,
     check_cookie_attributes,
     check_csrf,

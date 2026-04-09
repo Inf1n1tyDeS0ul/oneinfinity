@@ -7,8 +7,8 @@ def test_event_bus_publishes_to_redis_when_available():
     mock_redis = MagicMock()
     mock_redis.publish = MagicMock(return_value=1)
 
-    with patch("core.redis_client.get_redis", return_value=mock_redis):
-        from event_bus import EventBus, EventType
+    with patch("oneinfinity.core.redis_client.get_redis", return_value=mock_redis):
+        from oneinfinity.event_bus import EventBus, EventType
         bus = EventBus()
         bus._redis = mock_redis  # inject after construction
         bus.publish(EventType.NEW_TARGET, {"target": "example.com"})
@@ -19,8 +19,8 @@ def test_event_bus_publishes_to_redis_when_available():
 
 def test_event_bus_falls_back_when_redis_none():
     """When Redis is None, publish() must still work via local asyncio bus."""
-    with patch("core.redis_client.get_redis", return_value=None):
-        from event_bus import EventBus, EventType
+    with patch("oneinfinity.core.redis_client.get_redis", return_value=None):
+        from oneinfinity.event_bus import EventBus, EventType
         received = []
         bus = EventBus()
         bus.on(EventType.NEW_TARGET, lambda e: received.append(e))
@@ -31,7 +31,7 @@ def test_event_bus_falls_back_when_redis_none():
 def test_bus_event_to_dict_is_json_serializable():
     """BusEvent.to_dict() must produce JSON-serializable output."""
     import json
-    from event_bus import BusEvent, EventType
+    from oneinfinity.event_bus import BusEvent, EventType
     evt = BusEvent(event_type=EventType.NEW_TARGET, data={"target": "example.com", "ts": 1234})
     d = evt.to_dict()
     json.dumps(d)  # must not raise

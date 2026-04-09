@@ -4,7 +4,7 @@ import sys
 
 sys.path.insert(0, os.getcwd())
 
-from modules.pipeline import extract_js_endpoints_and_params, build_get_form_urls
+from oneinfinity.modules.pipeline import extract_js_endpoints_and_params, build_get_form_urls
 
 
 def test_extract_js_endpoints_and_params():

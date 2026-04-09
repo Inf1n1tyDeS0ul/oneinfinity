@@ -164,7 +164,7 @@ class TestCodeQuality:
     def test_scan_state_bounded(self):
         """A13/A25/A26: SCANS and VULNERABILITIES must be BoundedScanCache."""
         from web.backend.main import SCANS, VULNERABILITIES
-        from core.scan_state import BoundedScanCache
+        from oneinfinity.core.scan_state import BoundedScanCache
         assert isinstance(SCANS, BoundedScanCache)
         assert isinstance(VULNERABILITIES, BoundedScanCache)
 

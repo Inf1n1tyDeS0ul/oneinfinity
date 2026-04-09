@@ -1,7 +1,6 @@
 # tests/test_pipeline_parity.py
 import inspect
 import sys
-sys.path.insert(0, "/home/devendra-yadav/oneinfinity")
 
 
 def test_unified_engine_has_business_logic_phase():
@@ -11,7 +10,7 @@ def test_unified_engine_has_business_logic_phase():
     Users scanning via the API (which uses unified_scan_engine) must
     get the same coverage as users running full-scan CLI.
     """
-    import unified_scan_engine
+    import oneinfinity.unified_scan_engine as unified_scan_engine
     src = inspect.getsource(unified_scan_engine)
     assert "business_logic" in src, (
         "unified_scan_engine.py is missing the business_logic phase. "
@@ -22,7 +21,7 @@ def test_unified_engine_has_business_logic_phase():
 
 def test_unified_engine_has_oob_check_phase():
     """unified_scan_engine must include an OOB check phase."""
-    import unified_scan_engine
+    import oneinfinity.unified_scan_engine as unified_scan_engine
     src = inspect.getsource(unified_scan_engine)
     assert "oob_check" in src or "oob" in src.lower(), (
         "unified_scan_engine.py appears to be missing OOB check functionality."
@@ -31,7 +30,7 @@ def test_unified_engine_has_oob_check_phase():
 
 def test_business_logic_phase_method_exists():
     """The _phase_business_logic method must be callable."""
-    from unified_scan_engine import UnifiedScanEngine
+    from oneinfinity.unified_scan_engine import UnifiedScanEngine
     engine = UnifiedScanEngine.__new__(UnifiedScanEngine)
     assert hasattr(engine, '_phase_business_logic'), (
         "UnifiedScanEngine must have a _phase_business_logic method"

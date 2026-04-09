@@ -24,7 +24,7 @@ def run(coro):
 def test_save_scan_sqlite(tmp_db):
     import core.db_manager as dm
     dm._manager = None
-    from core.db_manager import get_db_manager
+    from oneinfinity.core.db_manager import get_db_manager
     mgr = run(get_db_manager())
     assert mgr.mode == "sqlite"
     scan = {"id": "test-001", "target": "127.0.0.1", "scan_type": "full", "status": "queued"}
@@ -36,7 +36,7 @@ def test_save_scan_sqlite(tmp_db):
 def test_delete_scan_sqlite(tmp_db):
     import core.db_manager as dm
     dm._manager = None
-    from core.db_manager import get_db_manager
+    from oneinfinity.core.db_manager import get_db_manager
     mgr = run(get_db_manager())
     scan = {"id": "del-001", "target": "127.0.0.1", "scan_type": "full", "status": "completed"}
     run(mgr.save_scan(scan))
@@ -47,7 +47,7 @@ def test_delete_scan_sqlite(tmp_db):
 def test_load_scans_marks_interrupted_running(tmp_db):
     import core.db_manager as dm
     dm._manager = None
-    from core.db_manager import get_db_manager
+    from oneinfinity.core.db_manager import get_db_manager
     mgr = run(get_db_manager())
     scan = {"id": "int-001", "target": "10.0.0.1", "scan_type": "full", "status": "running"}
     run(mgr.save_scan(scan))
@@ -74,8 +74,7 @@ def test_findings_check_and_store_uses_dbmanager_sqlite(tmp_db, monkeypatch):
     monkeypatch.setattr(dm.DBManager, "_sqlite_save_finding", spy)
 
     import sys
-    sys.path.insert(0, "/home/devendra-yadav/oneinfinity")
-    import result_ingestion_engine as rie
+    import oneinfinity.result_ingestion_engine as rie
 
     # Reset singleton so it picks up our monkeypatched DBManager
     rie._engine = None

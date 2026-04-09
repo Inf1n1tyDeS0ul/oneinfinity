@@ -64,7 +64,7 @@ class WorkerConfigPatch(BaseModel):
 
 def _daemon():
     try:
-        from intelligence_daemon import get_daemon
+        from oneinfinity.intelligence_daemon import get_daemon
         return get_daemon()
     except Exception as e:
         raise HTTPException(503, f"IntelligenceDaemon unavailable: {e}")
@@ -72,7 +72,7 @@ def _daemon():
 
 def _bus():
     try:
-        from event_bus import get_bus
+        from oneinfinity.event_bus import get_bus
         return get_bus()
     except Exception as e:
         raise HTTPException(503, f"EventBus unavailable: {e}")
@@ -189,7 +189,7 @@ def bus_stats():
 @events_router.get("/types")
 def event_types():
     try:
-        from event_bus import EventType
+        from oneinfinity.event_bus import EventType
         return [et.value for et in EventType]
     except Exception as e:
         raise HTTPException(500, str(e))

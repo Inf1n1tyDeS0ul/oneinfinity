@@ -8,14 +8,14 @@ from pathlib import Path
 
 
 def _get_rie_source():
-    return Path("result_ingestion_engine.py").read_text()
+    return Path("oneinfinity.result_ingestion_engine.py").read_text()
 
 
 def test_no_sqlite_import():
     """sqlite3 must not be imported in result_ingestion_engine.py."""
     source = _get_rie_source()
     assert "import sqlite3" not in source, (
-        "result_ingestion_engine.py must not import sqlite3"
+        "oneinfinity.result_ingestion_engine.py must not import sqlite3"
     )
 
 
@@ -23,7 +23,7 @@ def test_require_pg_used_in_all_methods():
     """All methods must use _require_pg() — no direct DB access."""
     source = _get_rie_source()
     assert "_require_pg" in source, (
-        "result_ingestion_engine.py must define and use _require_pg()"
+        "oneinfinity.result_ingestion_engine.py must define and use _require_pg()"
     )
 
 
@@ -39,7 +39,7 @@ def test_no_direct_pg_queries_in_rie():
     """RIE must not issue direct psycopg queries — all PG goes through DBManager."""
     source = _get_rie_source()
     assert "psycopg" not in source, (
-        "result_ingestion_engine.py must not import psycopg directly — use DBManager"
+        "oneinfinity.result_ingestion_engine.py must not import psycopg directly — use DBManager"
     )
 
 

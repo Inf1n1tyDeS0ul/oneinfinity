@@ -24,7 +24,7 @@ def make_mock_db(**method_returns):
 
 def test_add_delegates_to_save_target():
     """TargetRepository.add must call db.save_target with a target dict."""
-    from core.target_repository import TargetRepository
+    from oneinfinity.core.target_repository import TargetRepository
     expected = {"target_id": "t1", "target_value": "example.com", "id": "t1", "domain": "example.com"}
     db = make_mock_db(save_target=expected)
     repo = TargetRepository(db)
@@ -38,7 +38,7 @@ def test_add_delegates_to_save_target():
 
 def test_add_uses_target_value_as_name_when_name_empty():
     """add must use target_value as name when name is empty string."""
-    from core.target_repository import TargetRepository
+    from oneinfinity.core.target_repository import TargetRepository
     db = make_mock_db(save_target={"target_id": "t1", "target_value": "example.com"})
     repo = TargetRepository(db)
     run(repo.add("t1", "example.com"))
@@ -47,7 +47,7 @@ def test_add_uses_target_value_as_name_when_name_empty():
 
 
 def test_list_all_delegates_to_list_targets():
-    from core.target_repository import TargetRepository
+    from oneinfinity.core.target_repository import TargetRepository
     targets = [{"target_id": "t1"}, {"target_id": "t2"}]
     db = make_mock_db(list_targets=targets)
     repo = TargetRepository(db)
@@ -57,7 +57,7 @@ def test_list_all_delegates_to_list_targets():
 
 
 def test_get_delegates_to_get_target():
-    from core.target_repository import TargetRepository
+    from oneinfinity.core.target_repository import TargetRepository
     target = {"target_id": "t1", "target_value": "example.com"}
     db = make_mock_db(get_target=target)
     repo = TargetRepository(db)
@@ -67,7 +67,7 @@ def test_get_delegates_to_get_target():
 
 
 def test_get_returns_none_when_not_found():
-    from core.target_repository import TargetRepository
+    from oneinfinity.core.target_repository import TargetRepository
     db = make_mock_db(get_target=None)
     repo = TargetRepository(db)
     result = run(repo.get("nonexistent"))
@@ -75,7 +75,7 @@ def test_get_returns_none_when_not_found():
 
 
 def test_delete_delegates_to_delete_target():
-    from core.target_repository import TargetRepository
+    from oneinfinity.core.target_repository import TargetRepository
     db = make_mock_db(delete_target=True)
     repo = TargetRepository(db)
     result = run(repo.delete("t1"))
@@ -84,7 +84,7 @@ def test_delete_delegates_to_delete_target():
 
 
 def test_update_status_delegates_to_update_target_status():
-    from core.target_repository import TargetRepository
+    from oneinfinity.core.target_repository import TargetRepository
     db = make_mock_db(update_target_status=None)
     repo = TargetRepository(db)
     run(repo.update_status("t1", "scanning", "2026-04-07T12:00:00"))
@@ -92,7 +92,7 @@ def test_update_status_delegates_to_update_target_status():
 
 
 def test_update_vuln_count_delegates_to_update_target_vuln_count():
-    from core.target_repository import TargetRepository
+    from oneinfinity.core.target_repository import TargetRepository
     db = make_mock_db(update_target_vuln_count=None)
     repo = TargetRepository(db)
     run(repo.update_vuln_count("t1", 7))
@@ -101,12 +101,12 @@ def test_update_vuln_count_delegates_to_update_target_vuln_count():
 
 def test_get_target_repo_returns_repository_instance():
     """get_target_repo() must return a TargetRepository."""
-    from core.target_repository import TargetRepository, get_target_repo
+    from oneinfinity.core.target_repository import TargetRepository, get_target_repo
     from unittest.mock import patch
     import core.db_manager as dm
     dm._manager = None
     mock_mgr = MagicMock()
-    with patch("core.target_repository.get_db_manager", new_callable=AsyncMock,
+    with patch("oneinfinity.core.target_repository.get_db_manager", new_callable=AsyncMock,
                return_value=mock_mgr):
         repo = run(get_target_repo())
     assert isinstance(repo, TargetRepository)

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 import pytest
-from learning.graph_learning_writer import GraphLearningWriter
+from oneinfinity.learning.graph_learning_writer import GraphLearningWriter
 
 
 def _make_writer(available: bool = True) -> GraphLearningWriter:

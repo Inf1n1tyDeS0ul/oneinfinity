@@ -2,7 +2,7 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from zero_day_engine import ZeroDayEngine, ResponseProfile, _TIMING_THRESHOLD_MS, _SIZE_DEVIATION_PCT, _CONFIDENCE_FLOOR, _MEANINGFUL_PAYLOAD_CHARS
+from oneinfinity.zero_day_engine import ZeroDayEngine, ResponseProfile, _TIMING_THRESHOLD_MS, _SIZE_DEVIATION_PCT, _CONFIDENCE_FLOOR, _MEANINGFUL_PAYLOAD_CHARS
 
 def _make_baseline(status=200, length=500, time_ms=100.0):
     return ResponseProfile(url="http://test.local/api", status_code=status,
@@ -95,7 +95,7 @@ def test_401_to_200_fires_auth_bypass():
 
 
 # SQLi time-blind FP fix
-from finding_validation_engine import TIMING_THRESHOLD_S
+from oneinfinity.finding_validation_engine import TIMING_THRESHOLD_S
 
 def test_sqli_timing_threshold_is_six_seconds():
     assert TIMING_THRESHOLD_S == 6.0, f"Expected 6.0, got {TIMING_THRESHOLD_S}"
@@ -103,7 +103,7 @@ def test_sqli_timing_threshold_is_six_seconds():
 
 def test_ssrf_finding_without_oob_gets_low_confidence():
     """SSRF findings without OOB callback must be tagged needs_manual_verification."""
-    from modules.tool_wrappers import tag_ssrf_confidence
+    from oneinfinity.modules.tool_wrappers import tag_ssrf_confidence
     finding = {"vuln_type": "SSRF", "url": "http://test.local/fetch", "confidence": 0.9}
     tagged = tag_ssrf_confidence(finding, oob_callback_received=False)
     assert tagged["confidence"] <= 0.4
@@ -111,7 +111,7 @@ def test_ssrf_finding_without_oob_gets_low_confidence():
 
 
 def test_ssrf_finding_with_oob_keeps_confidence():
-    from modules.tool_wrappers import tag_ssrf_confidence
+    from oneinfinity.modules.tool_wrappers import tag_ssrf_confidence
     finding = {"vuln_type": "SSRF", "url": "http://test.local/fetch", "confidence": 0.9}
     tagged = tag_ssrf_confidence(finding, oob_callback_received=True)
     assert tagged["confidence"] == 0.9

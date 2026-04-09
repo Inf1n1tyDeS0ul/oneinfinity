@@ -34,8 +34,8 @@ def _make_pg_mgr(read_return=None):
 def test_set_calls_pg_execute_write(tmp_path):
     mgr = _make_pg_mgr()
 
-    with patch("core.cache._require_pg", return_value=mgr):
-        from core.cache import ReconCache
+    with patch("oneinfinity.core.cache._require_pg", return_value=mgr):
+        from oneinfinity.core.cache import ReconCache
         cache = ReconCache()
         cache.set("subfinder", "target.com", ["sub1.target.com"], ttl=3600)
 
@@ -51,8 +51,8 @@ def test_set_pg_params_contain_tool_target_data(tmp_path):
     """set() must pass correct column values to PG."""
     mgr = _make_pg_mgr()
 
-    with patch("core.cache._require_pg", return_value=mgr):
-        from core.cache import ReconCache
+    with patch("oneinfinity.core.cache._require_pg", return_value=mgr):
+        from oneinfinity.core.cache import ReconCache
         cache = ReconCache()
         cache.set("httpx", "example.org", {"alive": True}, extra="port443", ttl=60)
 
@@ -72,8 +72,8 @@ def test_get_calls_pg_execute_read_cache_miss(tmp_path):
     """get() must call sync_pg_execute_read and return None on a miss."""
     mgr = _make_pg_mgr(read_return=[])
 
-    with patch("core.cache._require_pg", return_value=mgr):
-        from core.cache import ReconCache
+    with patch("oneinfinity.core.cache._require_pg", return_value=mgr):
+        from oneinfinity.core.cache import ReconCache
         cache = ReconCache()
         result = cache.get("subfinder", "target.com")
 
@@ -86,8 +86,8 @@ def test_get_calls_pg_execute_read_cache_hit(tmp_path):
     payload = ["sub1.target.com", "sub2.target.com"]
     mgr = _make_pg_mgr(read_return=[{"data": json.dumps(payload)}])
 
-    with patch("core.cache._require_pg", return_value=mgr):
-        from core.cache import ReconCache
+    with patch("oneinfinity.core.cache._require_pg", return_value=mgr):
+        from oneinfinity.core.cache import ReconCache
         cache = ReconCache()
         result = cache.get("subfinder", "target.com")
 
@@ -99,8 +99,8 @@ def test_get_pg_sql_filters_by_cache_key_and_expires_at(tmp_path):
     """The SELECT sent to PG must filter on cache_key and expires_at."""
     mgr = _make_pg_mgr(read_return=[])
 
-    with patch("core.cache._require_pg", return_value=mgr):
-        from core.cache import ReconCache
+    with patch("oneinfinity.core.cache._require_pg", return_value=mgr):
+        from oneinfinity.core.cache import ReconCache
         cache = ReconCache()
         cache.get("nuclei", "victim.io")
 
@@ -117,8 +117,8 @@ def test_get_pg_sql_filters_by_cache_key_and_expires_at(tmp_path):
 def test_clear_expired_calls_pg_execute_write(tmp_path):
     mgr = _make_pg_mgr()
 
-    with patch("core.cache._require_pg", return_value=mgr):
-        from core.cache import ReconCache
+    with patch("oneinfinity.core.cache._require_pg", return_value=mgr):
+        from oneinfinity.core.cache import ReconCache
         cache = ReconCache()
         cache.clear_expired()
 
@@ -135,8 +135,8 @@ def test_sweep_expired_is_same_as_clear_expired(tmp_path):
     """sweep_expired() and clear_expired() must both hit PG."""
     mgr = _make_pg_mgr()
 
-    with patch("core.cache._require_pg", return_value=mgr):
-        from core.cache import ReconCache
+    with patch("oneinfinity.core.cache._require_pg", return_value=mgr):
+        from oneinfinity.core.cache import ReconCache
         cache = ReconCache()
         cache.sweep_expired()
 
@@ -150,8 +150,8 @@ def test_sweep_expired_is_same_as_clear_expired(tmp_path):
 def test_invalidate_calls_pg_execute_write(tmp_path):
     mgr = _make_pg_mgr()
 
-    with patch("core.cache._require_pg", return_value=mgr):
-        from core.cache import ReconCache
+    with patch("oneinfinity.core.cache._require_pg", return_value=mgr):
+        from oneinfinity.core.cache import ReconCache
         cache = ReconCache()
         cache.invalidate("nuclei", "victim.io")
 
@@ -167,9 +167,9 @@ def test_invalidate_calls_pg_execute_write(tmp_path):
 
 def test_set_raises_when_no_pg(tmp_path):
     """When PG is unavailable, set() must raise RuntimeError."""
-    with patch("core.cache._require_pg",
+    with patch("oneinfinity.core.cache._require_pg",
                side_effect=RuntimeError("PostgreSQL is required")):
-        from core.cache import ReconCache
+        from oneinfinity.core.cache import ReconCache
         cache = ReconCache()
         try:
             cache.set("dalfox", "site.io", {"xss": True}, ttl=120)
@@ -180,9 +180,9 @@ def test_set_raises_when_no_pg(tmp_path):
 
 def test_get_raises_when_no_pg(tmp_path):
     """When PG is unavailable, get() must raise RuntimeError."""
-    with patch("core.cache._require_pg",
+    with patch("oneinfinity.core.cache._require_pg",
                side_effect=RuntimeError("PostgreSQL is required")):
-        from core.cache import ReconCache
+        from oneinfinity.core.cache import ReconCache
         cache = ReconCache()
         try:
             cache.get("katana", "site.io")

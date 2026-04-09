@@ -49,7 +49,7 @@ sys.path.insert(0, str(ROOT))
 
 def _brain():
     try:
-        from attack_graph_brain import get_brain
+        from oneinfinity.attack_graph_brain import get_brain
         return get_brain()
     except Exception as e:
         raise HTTPException(503, f"AttackGraphBrain unavailable: {e}")
@@ -57,7 +57,7 @@ def _brain():
 
 def _ede():
     try:
-        from event_driven_engine import get_engine
+        from oneinfinity.event_driven_engine import get_engine
         return get_engine()
     except Exception as e:
         raise HTTPException(503, f"EventDrivenEngine unavailable: {e}")
@@ -65,7 +65,7 @@ def _ede():
 
 def _triggers():
     try:
-        from graph_trigger_engine import get_trigger_engine
+        from oneinfinity.graph_trigger_engine import get_trigger_engine
         return get_trigger_engine()
     except Exception as e:
         raise HTTPException(503, f"GraphTriggerEngine unavailable: {e}")
@@ -73,7 +73,7 @@ def _triggers():
 
 def _decisions():
     try:
-        from autonomous_decision_engine import get_decision_engine
+        from oneinfinity.autonomous_decision_engine import get_decision_engine
         return get_decision_engine()
     except Exception as e:
         raise HTTPException(503, f"AutonomousDecisionEngine unavailable: {e}")
@@ -81,7 +81,7 @@ def _decisions():
 
 def _fabric():
     try:
-        from agent_execution_fabric import get_fabric
+        from oneinfinity.agent_execution_fabric import get_fabric
         return get_fabric()
     except Exception as e:
         raise HTTPException(503, f"AgentExecutionFabric unavailable: {e}")
@@ -233,7 +233,7 @@ def ede_start(req: StartRequest):
     if not ede._running:
         cfg = None
         if req.config:
-            from event_driven_engine import LoopConfig
+            from oneinfinity.event_driven_engine import LoopConfig
             cfg = LoopConfig(**{k: v for k, v in req.config.items()
                                 if hasattr(LoopConfig, k)})
             ede._config = cfg

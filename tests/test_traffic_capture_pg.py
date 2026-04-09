@@ -35,7 +35,7 @@ class TestTrafficCapturePG:
             "traffic_capture_engine.TrafficCaptureEngine._pg",
             return_value=mgr,
         ):
-            from traffic_capture_engine import TrafficCaptureEngine
+            from oneinfinity.traffic_capture_engine import TrafficCaptureEngine
             engine = TrafficCaptureEngine.__new__(TrafficCaptureEngine)
             import threading
             engine._local = threading.local()
@@ -50,7 +50,7 @@ class TestTrafficCapturePG:
         mgr = _make_pg_mgr()
         engine = self._engine_with_pg(mgr)
 
-        from traffic_capture_engine import CapturedRequest
+        from oneinfinity.traffic_capture_engine import CapturedRequest
         req = CapturedRequest(
             method="GET",
             url="http://example.com/test",

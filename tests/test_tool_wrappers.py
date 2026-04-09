@@ -1,9 +1,8 @@
 # tests/test_tool_wrappers.py
 import sys, logging
 import logging as _logging
-sys.path.insert(0, "/home/devendra-yadav/oneinfinity")
 
-from modules.tool_wrappers import _wrap
+from oneinfinity.modules.tool_wrappers import _wrap
 
 
 def test_bearer_token_not_in_command_string():
@@ -48,7 +47,7 @@ def test_normal_commands_not_redacted():
 
 def test_missing_tool_returns_success_false():
     """rc=127 (tool not found) must result in ToolResult.success=False."""
-    from modules.tool_wrappers import _wrap
+    from oneinfinity.modules.tool_wrappers import _wrap
     result = _wrap(tool="definitely_not_installed_xyz_abc", cmd=["definitely_not_installed_xyz_abc", "--help"])
     assert result.success is False, f"Missing tool should have success=False, got {result.success}"
     assert result.returncode == 127, f"Missing tool should have rc=127, got {result.returncode}"
@@ -57,7 +56,7 @@ def test_missing_tool_returns_success_false():
 def test_missing_tool_logs_warning_not_debug():
     """rc=127 must be logged at WARNING level so users see it, not just DEBUG."""
     import logging
-    from modules.tool_wrappers import _wrap
+    from oneinfinity.modules.tool_wrappers import _wrap
     import modules.tool_wrappers as tw
 
     warning_messages = []
@@ -85,7 +84,7 @@ def test_missing_tool_logs_warning_not_debug():
 
 def test_success_false_on_nonzero_exit():
     """ToolResult.success must be False when tool exits non-zero, even if it produced output."""
-    from modules.tool_wrappers import _wrap
+    from oneinfinity.modules.tool_wrappers import _wrap
     # python3 -c 'print("output"); exit(1)' — exits non-zero but produces stdout
     result = _wrap(
         tool="python3",
@@ -98,7 +97,7 @@ def test_success_false_on_nonzero_exit():
 
 def test_success_true_only_on_rc_zero():
     """ToolResult.success must be True when tool exits 0."""
-    from modules.tool_wrappers import _wrap
+    from oneinfinity.modules.tool_wrappers import _wrap
     result = _wrap(
         tool="python3",
         cmd=["python3", "-c", "print('ok')"],

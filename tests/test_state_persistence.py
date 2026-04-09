@@ -1,7 +1,6 @@
 # tests/test_state_persistence.py
 import sys
-sys.path.insert(0, "/home/devendra-yadav/oneinfinity")
-from core.scan_state import BoundedScanCache
+from oneinfinity.core.scan_state import BoundedScanCache
 
 
 def test_bounded_cache_does_not_exceed_cap():

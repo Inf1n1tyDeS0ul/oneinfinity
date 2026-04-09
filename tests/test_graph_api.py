@@ -1,6 +1,5 @@
 import threading
 import sys
-sys.path.insert(0, "/home/devendra-yadav/oneinfinity")
 
 from web.backend.graph_api import _get_or_create_graph, _graph_instances
 

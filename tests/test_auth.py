@@ -9,7 +9,6 @@ from fastapi.testclient import TestClient
 
 # Import app after setting env
 import sys
-sys.path.insert(0, "/home/devendra-yadav/oneinfinity")
 from web.backend.main import app
 
 client = TestClient(app, raise_server_exceptions=False)

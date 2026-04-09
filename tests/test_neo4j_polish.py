@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch, call
 
 def _make_neo4j_engine(connected=True):
     """Build Neo4jEngine with a fully-mocked driver (no real Neo4j needed)."""
-    from core.neo4j_engine import Neo4jEngine
+    from oneinfinity.core.neo4j_engine import Neo4jEngine
     eng = Neo4jEngine.__new__(Neo4jEngine)
     eng._uri = "bolt://localhost:7687"
     eng._auth = ("neo4j", "test")
@@ -52,7 +52,7 @@ def test_find_path_node_ids_safe_respects_depth_cap():
     driver.session.return_value.__enter__ = lambda s: mock_sess
     driver.session.return_value.__exit__ = MagicMock(return_value=False)
 
-    with patch("core.graph_config.load_graph_config", return_value={"neo4j": {"path_max_depth": 8, "max_path_query_ms": 5000}}):
+    with patch("oneinfinity.core.graph_config.load_graph_config", return_value={"neo4j": {"path_max_depth": 8, "max_path_query_ms": 5000}}):
         eng.find_path_node_ids_safe("a", "b", max_depth=999)
 
     cypher_str = mock_sess.run.call_args_list[0][0][0]
@@ -117,7 +117,7 @@ def test_get_status_structure():
 
 def test_compare_inmemory_vs_neo4j_match():
     """Returns True when in-memory counts match Neo4j counts."""
-    from core.graph_neo4j_bootstrap import compare_inmemory_vs_neo4j
+    from oneinfinity.core.graph_neo4j_bootstrap import compare_inmemory_vs_neo4j
 
     mock_store = MagicMock()
     mock_store.get_graph_stats.return_value = {"total_nodes": 10, "total_edges": 5}
@@ -135,7 +135,7 @@ def test_compare_inmemory_vs_neo4j_match():
 
 def test_compare_inmemory_vs_neo4j_mismatch():
     """Returns False with delta when counts differ."""
-    from core.graph_neo4j_bootstrap import compare_inmemory_vs_neo4j
+    from oneinfinity.core.graph_neo4j_bootstrap import compare_inmemory_vs_neo4j
 
     mock_store = MagicMock()
     mock_store.get_graph_stats.return_value = {"total_nodes": 10, "total_edges": 5}
@@ -152,7 +152,7 @@ def test_compare_inmemory_vs_neo4j_mismatch():
 
 def test_compare_inmemory_vs_neo4j_no_neo4j():
     """Returns neo4j_connected=False when Neo4j unavailable."""
-    from core.graph_neo4j_bootstrap import compare_inmemory_vs_neo4j
+    from oneinfinity.core.graph_neo4j_bootstrap import compare_inmemory_vs_neo4j
 
     mock_store = MagicMock()
     mock_store.get_graph_stats.return_value = {"total_nodes": 3, "total_edges": 1}
@@ -168,7 +168,7 @@ def test_compare_inmemory_vs_neo4j_no_neo4j():
 def test_get_graph_stats_includes_avg_degree():
     """get_graph_stats must return avg_degree key."""
     import tempfile
-    from attack_graph_core.graph_store import GraphStore
+    from oneinfinity.attack_graph_core.graph_store import GraphStore
 
     with tempfile.TemporaryDirectory() as td:
         store = GraphStore(db_path=f"{td}/test.db", use_memory=True)
@@ -239,7 +239,6 @@ def test_get_chain_feedback_scores_empty_when_disconnected():
 def test_graph_parser_has_verify_stats_neo4j_status():
     """The 'graph' parser must expose verify, stats, neo4j-status subcommands."""
     import sys
-    sys.path.insert(0, "/Users/devendrayadav/Tools/oneinfinity")
     from oneinfinity import build_parser
 
     p = build_parser()

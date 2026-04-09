@@ -1,7 +1,7 @@
 # tests/test_schema.py
 import pathlib
 
-SCHEMA = pathlib.Path("/home/devendra-yadav/oneinfinity/db/schema.sql").read_text()
+SCHEMA = (pathlib.Path(__file__).resolve().parent.parent / "src" / "oneinfinity" / "db" / "schema.sql").read_text()
 
 def test_scans_table_exists():
     assert "CREATE TABLE" in SCHEMA and "scans" in SCHEMA

@@ -24,6 +24,6 @@ def test_get_redis_returns_none_when_unreachable():
 
 def test_close_redis_is_idempotent():
     """close_redis() must not raise when called with no connection."""
-    from core.redis_client import close_redis
+    from oneinfinity.core.redis_client import close_redis
     close_redis()  # must not raise
     close_redis()  # second call also must not raise

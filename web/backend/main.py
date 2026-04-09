@@ -65,9 +65,9 @@ async def _require_auth(request: Request):
 ROOT = Path(__file__).parent.parent.parent  # oneinfinity/
 sys.path.insert(0, str(ROOT))
 
-from path_manager import raw_dir, db_path as _db_path
-from core.scan_state import BoundedScanCache
-from core.target_repository import TargetRepository, get_target_repo
+from oneinfinity.path_manager import raw_dir, db_path as _db_path
+from oneinfinity.core.scan_state import BoundedScanCache
+from oneinfinity.core.target_repository import TargetRepository, get_target_repo
 
 log = logging.getLogger("oneinfinity.api")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -81,7 +81,7 @@ async def _lifespan(application):
     global _event_loop
     _event_loop = asyncio.get_running_loop()
     # Fail fast if PostgreSQL is not available
-    from core.db_manager import get_db_manager as _get_dbm_check
+    from oneinfinity.core.db_manager import get_db_manager as _get_dbm_check
     _startup_check = await _get_dbm_check()
     if _startup_check.mode not in ("distributed", "postgres"):
         raise RuntimeError(
@@ -90,7 +90,7 @@ async def _lifespan(application):
         )
     # Startup
     try:
-        from result_ingestion_engine import get_ingestion_engine
+        from oneinfinity.result_ingestion_engine import get_ingestion_engine
         for f in get_ingestion_engine().get_findings():
             fid = f.get("finding_id") or f.get("id") or str(uuid.uuid4())[:8]
             VULNERABILITIES[fid] = _finding_to_api(f)
@@ -99,7 +99,7 @@ async def _lifespan(application):
         log.warning("Could not load persisted findings: %s", exc)
     # Load persisted scan history
     try:
-        from core.db_manager import get_db_manager as _get_dbm
+        from oneinfinity.core.db_manager import get_db_manager as _get_dbm
         _startup_mgr = await _get_dbm()
         for s in await _startup_mgr.load_scans():
             SCANS[s["scan_id"]] = s
@@ -196,7 +196,7 @@ def _on_finding_ingested(finding: dict):
     )
 
 try:
-    from result_ingestion_engine import get_ingestion_engine as _get_rie
+    from oneinfinity.result_ingestion_engine import get_ingestion_engine as _get_rie
     _get_rie().set_broadcast_callback(_on_finding_ingested)
 except Exception as _exc:
     log.warning("Could not wire ResultIngestionEngine broadcast: %s", _exc)
@@ -214,7 +214,7 @@ async def get_mgr():
         _db_mgr_lock = asyncio.Lock()
     async with _db_mgr_lock:
         if _db_mgr is None:
-            from core.db_manager import get_db_manager
+            from oneinfinity.core.db_manager import get_db_manager
             _db_mgr = await get_db_manager()
     return _db_mgr
 
@@ -602,7 +602,7 @@ async def get_scan_findings(scan_id: str):
     if not scan_dir.exists():
         # Fallback: query ingestion engine
         try:
-            from result_ingestion_engine import get_ingestion_engine
+            from oneinfinity.result_ingestion_engine import get_ingestion_engine
             raw = get_ingestion_engine().get_findings(scan_id=scan_id)
             vulns = [_finding_to_api(f) for f in raw]
         except Exception:
@@ -723,7 +723,7 @@ async def delete_scan(scan_id: str):
     # Remove findings from persistent DB
     db_deleted = 0
     try:
-        from result_ingestion_engine import get_ingestion_engine
+        from oneinfinity.result_ingestion_engine import get_ingestion_engine
         db_deleted = get_ingestion_engine().delete_findings_for_scan(scan_id)
     except Exception as exc:
         log.warning("Could not purge findings from DB for scan %s: %s", scan_id, exc)
@@ -755,7 +755,7 @@ async def list_findings(target: Optional[str] = None, scan_id: Optional[str] = N
 @app.get("/api/vulnerabilities")
 async def list_vulnerabilities(target: Optional[str] = None, severity: Optional[str] = None):
     try:
-        from result_ingestion_engine import get_ingestion_engine
+        from oneinfinity.result_ingestion_engine import get_ingestion_engine
         raw = get_ingestion_engine().get_findings(target=target, severity=severity)
         vulns = [_finding_to_api(f) for f in raw]
     except Exception as exc:
@@ -804,7 +804,7 @@ async def mutate_payload(vuln_id: str, body: Dict[str, Any]):
     # Attempt to use real mutator
     try:
         sys.path.insert(0, str(ROOT))
-        from ai_security.payload_mutator import PayloadMutator
+        from oneinfinity.ai_security.payload_mutator import PayloadMutator
         mutator = PayloadMutator()
         mutated = mutator.mutate(original, strategies=[strategy])
         return {"original": original, "mutated": mutated[0].text if mutated else original, "strategy": strategy}
@@ -825,7 +825,7 @@ async def generate_vulnerability_report(vuln_id: str):
         raise HTTPException(503, "Bounty report generator unavailable")
         
     try:
-        from bounty_report_generator import ReportFinding
+        from oneinfinity.bounty_report_generator import ReportFinding
         
         # Convert API vulnerability to ReportFinding
         finding = ReportFinding(
@@ -922,7 +922,7 @@ async def test_ai_prompt(body: Dict[str, Any]):
 
         # Analyze response
         try:
-            from ai_security.vulnerability_detector import VulnerabilityDetector
+            from oneinfinity.ai_security.vulnerability_detector import VulnerabilityDetector
             detector = VulnerabilityDetector()
             findings = detector.analyze(response=text, prompt=prompt, target=target)
             vuln_found = len(findings) > 0
@@ -950,7 +950,7 @@ async def get_attack_graph(target: Optional[str] = None,
     edges = []
 
     try:
-        from result_ingestion_engine import get_ingestion_engine as _rie
+        from oneinfinity.result_ingestion_engine import get_ingestion_engine as _rie
         _rie_available = True
     except Exception:
         _rie_available = False
@@ -1031,7 +1031,7 @@ async def get_attack_graph(target: Optional[str] = None,
 async def list_reports():
     """List generated report files."""
     reports = []
-    from path_manager import raw_dir
+    from oneinfinity.path_manager import raw_dir
     recon_dir = raw_dir()
     if recon_dir.exists():
         for f in recon_dir.rglob("*.md"):
@@ -1084,7 +1084,7 @@ async def publish_report(req: PublishReportRequest):
 
     # Load findings from ingestion engine (works for both god mode and regular scans)
     try:
-        from result_ingestion_engine import get_ingestion_engine
+        from oneinfinity.result_ingestion_engine import get_ingestion_engine
         findings = get_ingestion_engine().get_findings(scan_id=scan_id)
     except Exception as exc:
         log.warning("publish_report: could not load findings for %s: %s", scan_id, exc)
@@ -1093,7 +1093,7 @@ async def publish_report(req: PublishReportRequest):
     # Load metadata — try god mode state file first, fall back to SCANS dict
     meta: dict = {}
     try:
-        from god_mode_engine import GodModeStateFile
+        from oneinfinity.god_mode_engine import GodModeStateFile
         state = GodModeStateFile(scan_id).read()
         if state:
             meta = {
@@ -1122,7 +1122,7 @@ async def publish_report(req: PublishReportRequest):
 
     tmp_dir = _tmp.mkdtemp(prefix="oi_report_")
     try:
-        from core.reporter import Reporter
+        from oneinfinity.core.reporter import Reporter
         reporter = Reporter(output_dir=tmp_dir, target=target, platform="oneinfinity")
         for f in findings:
             reporter.add_finding(f)
@@ -1233,8 +1233,8 @@ async def _run_scan_via_engine(scan_id: str, target: str, scan_type: str, auth_c
     # Full scans must run the canonical pipeline to preserve CLI/Docker parity.
     if scan_type in ("full", "full_scan", "full-scan"):
         try:
-            from pipeline.executor import run_canonical_pipeline
-            from path_manager import get_target_path
+            from oneinfinity.pipeline.executor import run_canonical_pipeline
+            from oneinfinity.path_manager import get_target_path
 
             out_dir = get_target_path(target, subdir="scans") / scan_id
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -1268,7 +1268,7 @@ async def _run_scan_via_engine(scan_id: str, target: str, scan_type: str, auth_c
                 fid = api_f["id"]
                 VULNERABILITIES[fid] = api_f
                 try:
-                    from result_ingestion_engine import get_ingestion_engine as _get_rie2
+                    from oneinfinity.result_ingestion_engine import get_ingestion_engine as _get_rie2
                     _get_rie2().persist_finding({**api_f, "scan_id": scan_id, "finding_id": fid})
                 except Exception as _pe:
                     log.warning("persist_finding failed: %s", _pe)
@@ -1385,14 +1385,14 @@ async def _run_ai_campaign(campaign_id: str):
 def _get_traffic_engine():
     try:
         sys.path.insert(0, str(ROOT))
-        from traffic_capture_engine import traffic_capture_engine as tce
+        from oneinfinity.traffic_capture_engine import traffic_capture_engine as tce
         return tce
     except Exception:
         return None
 
 def _get_replay_engine():
     try:
-        from traffic_replay_engine import traffic_replay_engine as tre
+        from oneinfinity.traffic_replay_engine import traffic_replay_engine as tre
         return tre
     except Exception:
         return None
@@ -1406,7 +1406,7 @@ def _get_attack_engine():
 
 def _get_proxy_manager():
     try:
-        from proxy_manager import proxy_manager as pm
+        from oneinfinity.proxy_manager import proxy_manager as pm
         return pm
     except Exception:
         return None
@@ -1788,7 +1788,7 @@ def _get_mobile_engine():
     try:
         import sys as _sys, os as _os
         _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-        from mobile_security_engine import MobileSecurityEngine, MobileSecurityConfig
+        from oneinfinity.mobile_security_engine import MobileSecurityEngine, MobileSecurityConfig
         return MobileSecurityEngine, MobileSecurityConfig
     except ImportError:
         return None, None
@@ -1820,7 +1820,7 @@ async def mobile_upload(file: UploadFile, background_tasks: BackgroundTasks):
     try:
         import sys as _sys, os as _os
         _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-        from mobile_upload_manager import mobile_upload_manager
+        from oneinfinity.mobile_upload_manager import mobile_upload_manager
         app_info = mobile_upload_manager.upload(str(dest), fname)
         if hasattr(app_info, "to_dict"):
             app_info = app_info.to_dict()
@@ -1846,7 +1846,7 @@ async def mobile_list_apps():
     try:
         import sys as _sys, os as _os
         _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-        from mobile_upload_manager import mobile_upload_manager
+        from oneinfinity.mobile_upload_manager import mobile_upload_manager
         return mobile_upload_manager.list_apps()
     except Exception:
         return list(MOBILE_APPS.values())
@@ -2058,21 +2058,21 @@ HUNTER_SESSIONS: dict = {}
 
 def _get_hunter_engine():
     try:
-        from bounty_hunter_engine import BountyHunterEngine, HunterConfig
+        from oneinfinity.bounty_hunter_engine import BountyHunterEngine, HunterConfig
         return BountyHunterEngine, HunterConfig
     except Exception:
         return None, None
 
 def _get_program_engine():
     try:
-        from program_discovery_engine import program_discovery_engine
+        from oneinfinity.program_discovery_engine import program_discovery_engine
         return program_discovery_engine
     except Exception:
         return None
 
 def _get_report_generator():
     try:
-        from bounty_report_generator import bounty_report_generator
+        from oneinfinity.bounty_report_generator import bounty_report_generator
         return bounty_report_generator
     except Exception:
         return None
@@ -2153,7 +2153,7 @@ async def hunter_scan_target(request: Request, background_tasks: BackgroundTasks
 
     def _run():
         try:
-            from autonomous_scan_pipeline import autonomous_scan_pipeline
+            from oneinfinity.autonomous_scan_pipeline import autonomous_scan_pipeline
             result = autonomous_scan_pipeline.run(target)
             if result:
                 rd = result.to_dict() if hasattr(result, "to_dict") else result
@@ -2331,7 +2331,7 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
         try:
             import sys as _s, os as _o
             _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)) + "/../..")
-            from god_mode_engine import get_god_mode_conductor
+            from oneinfinity.god_mode_engine import get_god_mode_conductor
             # Bridge god-mode log records → live WebSocket log panel
             import logging as _logging
             class _WsBridge(_logging.Handler):
@@ -2363,12 +2363,12 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
                 SCANS[gm_scan_id]["findings_count"] = state.get("finding_count", 0)
                 SCANS[gm_scan_id]["completed_at"] = datetime.utcnow().isoformat()
                 SCANS[gm_scan_id]["progress"] = 100
-                from core.db_manager import get_db_manager_sync as _get_dbm_sync
+                from oneinfinity.core.db_manager import get_db_manager_sync as _get_dbm_sync
                 _get_dbm_sync().sync_save_scan(SCANS[gm_scan_id])
             # Sync findings from in-memory SCANS dict to the ingestion engine
             # so that report generation (which reads from ingestion engine) sees them
             try:
-                from result_ingestion_engine import get_ingestion_engine, RawResult
+                from oneinfinity.result_ingestion_engine import get_ingestion_engine, RawResult
                 ie = get_ingestion_engine()
                 scan_findings = SCANS.get(gm_scan_id, {}).get("findings", [])
                 for finding in scan_findings:
@@ -2386,7 +2386,7 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
             if gm_scan_id in SCANS:
                 SCANS[gm_scan_id]["status"] = "failed"
                 SCANS[gm_scan_id]["completed_at"] = datetime.utcnow().isoformat()
-                from core.db_manager import get_db_manager_sync as _get_dbm_sync
+                from oneinfinity.core.db_manager import get_db_manager_sync as _get_dbm_sync
                 _get_dbm_sync().sync_save_scan(SCANS[gm_scan_id])
 
     background_tasks.add_task(_run)
@@ -2400,7 +2400,7 @@ async def god_mode_status_latest():
     try:
         import sys as _s, os as _o
         _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)) + "/../..")
-        from god_mode_engine import get_god_mode_conductor
+        from oneinfinity.god_mode_engine import get_god_mode_conductor
         data = get_god_mode_conductor().status()
         return data if data is not None else {"status": "no_session"}
     except Exception as exc:
@@ -2413,7 +2413,7 @@ async def god_mode_status_by_id(scan_id: str):
     try:
         import sys as _s, os as _o
         _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)) + "/../..")
-        from god_mode_engine import get_god_mode_conductor
+        from oneinfinity.god_mode_engine import get_god_mode_conductor
         data = get_god_mode_conductor().status(scan_id)
         if data is None:
             raise HTTPException(status_code=404, detail=f"Session {scan_id} not found")
@@ -2501,7 +2501,7 @@ async def god_mode_stop(request: Request):
     try:
         import sys as _s, os as _o
         _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)) + "/../..")
-        from god_mode_engine import get_god_mode_conductor
+        from oneinfinity.god_mode_engine import get_god_mode_conductor
         ok = get_god_mode_conductor().stop(scan_id)
         return {"stopped": ok}
     except Exception as exc:
@@ -2845,7 +2845,7 @@ async def utils_waf_bypass(req: WafBypassRequest):
 async def utils_methodology(req: MethodologyRequest):
     # Try rich vuln_methodologies module first
     try:
-        from modules.vuln_methodologies import VULN_METHODOLOGIES
+        from oneinfinity.modules.vuln_methodologies import VULN_METHODOLOGIES
         data = VULN_METHODOLOGIES.get(req.vuln_class)
         if data:
             # Flatten step dicts to strings for the frontend's simple list rendering
@@ -2871,12 +2871,12 @@ async def utils_methodology(req: MethodologyRequest):
 async def learning_stats():
     """Return continuous learning system statistics."""
     try:
-        from learning.adaptive_planner import LearningSystem
+        from oneinfinity.learning.adaptive_planner import LearningSystem
         ls = LearningSystem()
         raw = ls.stats()
         ls.close()
         # Pull per-agent EMA rates from tool_performance via DBManager
-        from core.learning_repository import get_learning_repo_sync
+        from oneinfinity.core.learning_repository import get_learning_repo_sync
         _repo = get_learning_repo_sync()
         perf_rows = _repo.get_tool_performance_stats_sync()
         vuln_type_stats: dict = {}
@@ -2913,7 +2913,7 @@ async def learning_plan(body: Dict[str, Any]):
         raise HTTPException(status_code=400, detail="target is required")
     tech_stack = [t.strip() for t in (body.get("tech") or "").split(",") if t.strip()]
     try:
-        from learning.adaptive_planner import LearningSystem
+        from oneinfinity.learning.adaptive_planner import LearningSystem
         ls = LearningSystem()
         plan = ls.plan_for(target, tech_stack or None)
         desc = ls.planner.describe_plan(plan)
@@ -2938,7 +2938,7 @@ async def tools_status():
     try:
         import sys as _sys
         _sys.path.insert(0, str(ROOT))
-        from modules.tool_wrappers import ToolRegistry
+        from oneinfinity.modules.tool_wrappers import ToolRegistry
         reg = ToolRegistry()
         status = reg.check_all()
         cats: dict = {}
@@ -2957,8 +2957,8 @@ async def tools_capmap():
     try:
         import sys as _sys
         _sys.path.insert(0, str(ROOT))
-        from modules.capability_map import CAPABILITIES
-        from modules.tool_wrappers import is_available
+        from oneinfinity.modules.capability_map import CAPABILITIES
+        from oneinfinity.modules.tool_wrappers import is_available
         conf_map = {"high": 1.0, "medium": 0.6, "low": 0.3}
         all_vulns = set()
         for cap in CAPABILITIES.values():
@@ -3016,7 +3016,7 @@ _safe_register("orchestrator", "orchestrator_api", "register_orchestrator_routes
 # orchestrator_integration.activate is not a router-registration function but
 # we still want to track its load status for observability.
 try:
-    from orchestrator_integration import activate as _orch_activate
+    from oneinfinity.orchestrator_integration import activate as _orch_activate
     _orch_activate(quiet=True)
     _ROUTER_STATUS.append({"name": "orchestrator_integration", "status": "ok", "error": None})
     log.info("Router registered: orchestrator_integration")
@@ -3083,14 +3083,14 @@ async def run_benchmark(request: Request):
     t0 = _time.time()
     result: Dict[str, Any] = {"target": target, "tools_available": [], "phases_available": []}
     try:
-        from modules.tool_wrappers import is_available
+        from oneinfinity.modules.tool_wrappers import is_available
         for tool in ["nuclei", "subfinder", "httpx", "ffuf", "sqlmap", "dalfox"]:
             if is_available(tool):
                 result["tools_available"].append(tool)
     except Exception:
         pass
     try:
-        from pipeline.canonical import PHASE_MAP
+        from oneinfinity.pipeline.canonical import PHASE_MAP
         result["phases_available"] = list(PHASE_MAP.keys())
     except Exception:
         pass
@@ -3160,7 +3160,7 @@ async def replay_finding_report(request: Request):
     finding = VULNERABILITIES.get(finding_id)
     if not finding:
         try:
-            from result_ingestion_engine import get_ingestion_engine
+            from oneinfinity.result_ingestion_engine import get_ingestion_engine
             findings = get_ingestion_engine().get_findings()
             finding = next((f for f in (findings or []) if f.get("id") == finding_id), None)
         except Exception:
@@ -3169,7 +3169,7 @@ async def replay_finding_report(request: Request):
         return {"finding_id": finding_id, "validated": False,
                 "error": f"Finding '{finding_id}' not found", "confidence": 0.0}
     try:
-        from finding_validation_engine import FindingValidationEngine
+        from oneinfinity.finding_validation_engine import FindingValidationEngine
         result = FindingValidationEngine(timeout=10, max_retries=1).validate(finding)
         return {"finding_id": finding_id, "validated": result.validated,
                 "confidence": result.confidence, "error": result.error}

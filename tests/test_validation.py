@@ -3,7 +3,6 @@ import os
 os.environ["ONEINFINITY_API_KEY"] = ""  # no auth enforcement for validation tests
 
 import sys
-sys.path.insert(0, "/home/devendra-yadav/oneinfinity")
 from fastapi.testclient import TestClient
 from web.backend.main import app
 

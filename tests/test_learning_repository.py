@@ -17,7 +17,7 @@ def run(coro):
 
 def make_repo():
     """LearningRepository backed by a fully mocked DBManager."""
-    from core.learning_repository import LearningRepository
+    from oneinfinity.core.learning_repository import LearningRepository
     db = MagicMock()
     db.save_learning_session = AsyncMock()
     db.get_learning_session = AsyncMock(return_value=None)

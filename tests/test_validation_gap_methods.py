@@ -2,7 +2,7 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from finding_validation_engine import FindingValidationEngine, ValidationResult
+from oneinfinity.finding_validation_engine import FindingValidationEngine, ValidationResult
 
 
 def _make_result():

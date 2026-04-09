@@ -202,7 +202,7 @@ async def list_agents():
 async def list_workflows():
     """Return available business logic workflows."""
     try:
-        from workflow_simulation_engine import WorkflowSimulationEngine, AttackCategory
+        from oneinfinity.workflow_simulation_engine import WorkflowSimulationEngine, AttackCategory
         engine = WorkflowSimulationEngine()
         return {
             "workflows":  engine.list_workflows(),
@@ -366,8 +366,8 @@ async def _run_swarm_scan_bg(session_id: str, req: SwarmScanRequest):
         session["progress"] = 5
         session["log"].append(f"[*] Starting {len(session['agents'])} agents…")
 
-        from agent_swarm_coordinator import run_swarm
-        from swarm_intelligence_engine import AgentType
+        from oneinfinity.agent_swarm_coordinator import run_swarm
+        from oneinfinity.swarm_intelligence_engine import AgentType
 
         agent_types = None
         if req.agents:
@@ -460,7 +460,7 @@ async def get_simulation(session_id: str):
 async def _run_simulation_bg(session_id: str, req: SimulateRequest):
     session = SIM_SESSIONS[session_id]
     try:
-        from attack_simulation_engine import AttackSimulationEngine
+        from oneinfinity.attack_simulation_engine import AttackSimulationEngine
         engine  = AttackSimulationEngine()
         context = {"tech_stack": req.tech_stack, "waf_detected": req.waf}
         results = await engine.simulate_all_paths(req.target, context)
@@ -525,7 +525,7 @@ async def get_workflow_simulation(session_id: str):
 async def _run_workflow_bg(session_id: str, req: WorkflowSimRequest):
     session = WORKFLOW_SESSIONS[session_id]
     try:
-        from workflow_simulation_engine import WorkflowSimulationEngine, AttackCategory
+        from oneinfinity.workflow_simulation_engine import WorkflowSimulationEngine, AttackCategory
 
         categories = None
         if req.categories:
@@ -576,7 +576,7 @@ async def _run_workflow_bg(session_id: str, req: WorkflowSimRequest):
 def swarm_status():
     """Return a quick status summary for the swarm intelligence system."""
     try:
-        from agent_swarm_coordinator import get_coordinator
+        from oneinfinity.agent_swarm_coordinator import get_coordinator
         coord = get_coordinator()
         return {
             "status": "active" if coord else "idle",
