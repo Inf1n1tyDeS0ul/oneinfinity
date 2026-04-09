@@ -14,7 +14,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
 
-from oneinfinity.attack_graph.graph import AttackGraph, Node, Edge, NodeType, EdgeType, SEVERITY_WEIGHT
+from oneinfinity.attack_graph_core.graph import AttackGraph, Node, Edge, NodeType, EdgeType, SEVERITY_WEIGHT
 
 
 @dataclass

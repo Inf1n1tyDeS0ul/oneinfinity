@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from oneinfinity.attack_graph.graph import AttackGraph, Node, Edge, NodeType, EdgeType
+from oneinfinity.attack_graph_core.graph import AttackGraph, Node, Edge, NodeType, EdgeType
 
 
 class AttackGraphBuilder:

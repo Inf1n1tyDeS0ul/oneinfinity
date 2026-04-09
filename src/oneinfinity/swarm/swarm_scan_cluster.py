@@ -193,7 +193,7 @@ class SwarmScanCluster:
 
         graph_nodes = 0
         try:
-            from oneinfinity.attack_graph.graph import AttackGraph
+            from oneinfinity.attack_graph_core.graph import AttackGraph
             # Master may have a shared graph reference
             if hasattr(self._master, "_graph") and self._master._graph:
                 graph_nodes = len(self._master._graph.nodes)

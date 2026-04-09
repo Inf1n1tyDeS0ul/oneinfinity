@@ -536,8 +536,8 @@ class SwarmWorker:
         if not findings:
             return
         try:
-            from oneinfinity.attack_graph.builder import AttackGraphBuilder
-            from oneinfinity.attack_graph.graph import AttackGraph
+            from oneinfinity.attack_graph_core.builder import AttackGraphBuilder
+            from oneinfinity.attack_graph_core.graph import AttackGraph
             graph = AttackGraph(task.target)
             builder = AttackGraphBuilder(target=task.target, graph=graph)
             for finding in findings:

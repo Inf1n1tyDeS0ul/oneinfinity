@@ -1469,7 +1469,7 @@ class AdaptiveReconEngine:
     def _update_attack_graph(self, tasks: list[ReconTask]):
         """Push intelligence into the attack graph."""
         try:
-            from oneinfinity.attack_graph.graph import Node, NodeType, Edge, EdgeType
+            from oneinfinity.attack_graph_core.graph import Node, NodeType, Edge, EdgeType
 
             for host in self._alive_hosts:
                 url = host.get("url", "")
@@ -1662,7 +1662,7 @@ def main_cli(args):
     attack_graph = None
     if not getattr(args, "no_graph", False):
         try:
-            from oneinfinity.attack_graph import AttackGraph, AttackGraphBuilder
+            from oneinfinity.attack_graph_core import AttackGraph, AttackGraphBuilder
             out_path = Path(output)
             if out_path.exists():
                 builder = AttackGraphBuilder(target)

@@ -75,7 +75,7 @@ def cmd_agents(args):
         # Initialize subsystems
         attack_graph = None
         if not args.no_graph:
-            from oneinfinity.attack_graph import AttackGraph
+            from oneinfinity.attack_graph_core import AttackGraph
             attack_graph = AttackGraph(target)
 
         learning_system = None
@@ -143,7 +143,7 @@ def cmd_agents(args):
         # Save attack graph if built
         if attack_graph:
             from pathlib import Path
-            from oneinfinity.attack_graph import AttackGraphAnalyzer, AttackGraphVisualizer
+            from oneinfinity.attack_graph_core import AttackGraphAnalyzer, AttackGraphVisualizer
             graph_path = str(Path(output_dir) / target / "attack_graph.json")
             attack_graph.save(graph_path)
             ok(f"Attack graph: {graph_path}")

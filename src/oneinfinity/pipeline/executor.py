@@ -1153,7 +1153,7 @@ class CanonicalExecutor:
 
     def _inline_attack_graph(self, target: str, out: Path) -> List[dict]:
         try:
-            from oneinfinity.attack_graph import AttackGraphBuilder
+            from oneinfinity.attack_graph_core import AttackGraphBuilder
             builder = AttackGraphBuilder(target)
             builder.from_recon_dir(str(out))
             graph = builder.build()

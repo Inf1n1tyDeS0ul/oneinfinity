@@ -422,8 +422,8 @@ class ResultAggregator:
 
         # Try to build an AttackGraph from scratch
         try:
-            from oneinfinity.attack_graph.graph import AttackGraph
-            from oneinfinity.attack_graph.builder import AttackGraphBuilder
+            from oneinfinity.attack_graph_core.graph import AttackGraph
+            from oneinfinity.attack_graph_core.builder import AttackGraphBuilder
 
             graph = AttackGraph(target)
             builder = AttackGraphBuilder(target=target, graph=graph)

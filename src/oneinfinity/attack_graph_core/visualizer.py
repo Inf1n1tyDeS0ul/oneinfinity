@@ -10,8 +10,8 @@ Renders the attack graph as:
 
 from __future__ import annotations
 
-from oneinfinity.attack_graph.graph import AttackGraph, NodeType, EdgeType
-from oneinfinity.attack_graph.analyzer import AttackGraphAnalyzer, AnalysisReport
+from oneinfinity.attack_graph_core.graph import AttackGraph, NodeType, EdgeType
+from oneinfinity.attack_graph_core.analyzer import AttackGraphAnalyzer, AnalysisReport
 
 
 # Severity colour codes (ANSI)

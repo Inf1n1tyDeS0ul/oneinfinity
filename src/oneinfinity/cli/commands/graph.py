@@ -109,8 +109,8 @@ def cmd_attack_graph(args):
 
     banner(f"Attack Graph — {target}")
 
-    from oneinfinity.attack_graph import AttackGraph, AttackGraphBuilder, AttackGraphAnalyzer, AttackGraphVisualizer
-    from oneinfinity.attack_graph.graph import Node, NodeType
+    from oneinfinity.attack_graph_core import AttackGraph, AttackGraphBuilder, AttackGraphAnalyzer, AttackGraphVisualizer
+    from oneinfinity.attack_graph_core.graph import Node, NodeType
 
     # Build the graph from recon output
     builder = AttackGraphBuilder(target)

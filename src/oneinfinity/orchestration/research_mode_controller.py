@@ -739,7 +739,7 @@ class ResearchModeController:
         if not self.attack_graph:
             return
         try:
-            from oneinfinity.attack_graph.graph import Node, NodeType, Edge, EdgeType
+            from oneinfinity.attack_graph_core.graph import Node, NodeType, Edge, EdgeType
             for ep in app_model.sensitive_endpoints[:10]:
                 node_id = f"ep:{ep}"
                 self.attack_graph.add_node(Node(
@@ -919,13 +919,13 @@ def main_cli(args):
     attack_graph = None
     if not getattr(args, "no_graph", False):
         try:
-            from oneinfinity.attack_graph import AttackGraph, AttackGraphBuilder
+            from oneinfinity.attack_graph_core import AttackGraph, AttackGraphBuilder
             out_path = Path(output)
             if out_path.exists():
                 builder = AttackGraphBuilder(target)
                 attack_graph = builder.from_recon_dir(str(out_path))
             else:
-                from oneinfinity.attack_graph import AttackGraph
+                from oneinfinity.attack_graph_core import AttackGraph
                 attack_graph = AttackGraph(target)
             info("Attack graph: enabled")
         except Exception:

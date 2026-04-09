@@ -79,7 +79,7 @@ class TargetDiscoveryEngine:
             return self._graph
         try:
             from oneinfinity.attack_graph_core import AttackGraphEngine
-            from oneinfinity.attack_graph import get_graph  # noqa: F401  (may not exist)
+            from oneinfinity.attack_graph_core import get_graph  # noqa: F401  (may not exist)
             return get_graph()
         except Exception:
             try:

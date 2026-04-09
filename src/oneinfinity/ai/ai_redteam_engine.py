@@ -336,7 +336,7 @@ def main_cli(args) -> None:
     # Attack graph integration
     attack_graph = None
     try:
-        from oneinfinity.attack_graph.graph_engine import AttackGraph
+        from oneinfinity.attack_graph_core.graph_engine import AttackGraph
         ag_path = Path("recon") / target / "attack_graph.json"
         attack_graph = AttackGraph(target)
         if ag_path.exists():
