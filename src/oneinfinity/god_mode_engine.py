@@ -358,7 +358,7 @@ class FullScanMission(Mission):
         # Push findings into the ingestion engine so ReportMission can read them
         if result and result.findings:
             try:
-                from oneinfinity.result_ingestion_engine import get_ingestion_engine, RawResult
+                from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
                 bus = get_ingestion_engine()
                 for f in result.findings:
                     fd = f if isinstance(f, dict) else (f.__dict__ if hasattr(f, "__dict__") else {})
@@ -461,7 +461,7 @@ class SwarmMission(Mission):
 
         # Publish to ingestion bus
         try:
-            from oneinfinity.result_ingestion_engine import get_ingestion_engine, RawResult
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
             sid = session.scan_id
             bus = get_ingestion_engine()
             for f in (result.findings if result and hasattr(result, "findings") else []):
@@ -488,7 +488,7 @@ class ChainsMission(Mission):
 
     def _run(self, session: GodModeSession) -> None:
         from oneinfinity.exploit_chains import ExploitChainEngine
-        from oneinfinity.result_ingestion_engine import get_ingestion_engine
+        from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
 
         log.info("[GOD MODE] ChainsMission: running chain analysis for %s", session.target)
 
@@ -539,7 +539,7 @@ class ReportMission(Mission):
     def _run(self, session: GodModeSession) -> None:
         # Step 1: validate findings
         try:
-            from oneinfinity.result_ingestion_engine import get_ingestion_engine
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
             from oneinfinity.enforcement_controller import get_enforcement_controller
             raw_findings = get_ingestion_engine().get_findings(scan_id=session.scan_id, target=session.target) or []
             validated = get_enforcement_controller().validate_findings(raw_findings)
@@ -770,7 +770,7 @@ class GodModeConductor:
             # Convergence
             found_types: list[str] = []
             try:
-                from oneinfinity.result_ingestion_engine import get_ingestion_engine
+                from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
                 findings = get_ingestion_engine().get_findings() or []
                 found_types = [f.get("vuln_type", "") for f in findings if isinstance(f, dict)]
             except Exception:

@@ -148,7 +148,7 @@ def cmd_swarm_scan(args):
     except Exception:
         pass
     try:
-        from oneinfinity.result_ingestion_engine import get_ingestion_engine as _get_ie, RawResult as _RR
+        from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine as _get_ie, RawResult as _RR
         import uuid as _sw_uuid
         _sw_sid = str(_sw_uuid.uuid4())[:8]
         _sw_bus = _get_ie()

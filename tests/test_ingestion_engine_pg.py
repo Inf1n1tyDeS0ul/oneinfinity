@@ -12,8 +12,8 @@ def test_ingest_delegates_to_db_manager_save_finding():
     mock_mgr.mode = "postgres"
     mock_mgr.sync_check_and_save_finding = lambda f: saved.append(f) or True
 
-    with patch("oneinfinity.result_ingestion_engine._require_pg", return_value=mock_mgr):
-        from oneinfinity.result_ingestion_engine import ResultIngestionEngine, RawResult
+    with patch("oneinfinity.findings.result_ingestion_engine._require_pg", return_value=mock_mgr):
+        from oneinfinity.findings.result_ingestion_engine import ResultIngestionEngine, RawResult
         engine = ResultIngestionEngine()
         raw = RawResult(scan_id="scan-1", source="nuclei", raw={
             "template-id": "xss-001", "info": {"severity": "high"},
@@ -25,9 +25,9 @@ def test_ingest_delegates_to_db_manager_save_finding():
 
 def test_ingest_raises_when_pg_unavailable():
     """ResultIngestionEngine.ingest() must catch RuntimeError when PG is unavailable."""
-    with patch("oneinfinity.result_ingestion_engine._require_pg",
+    with patch("oneinfinity.findings.result_ingestion_engine._require_pg",
                side_effect=RuntimeError("PostgreSQL is required")):
-        from oneinfinity.result_ingestion_engine import ResultIngestionEngine, RawResult
+        from oneinfinity.findings.result_ingestion_engine import ResultIngestionEngine, RawResult
         engine = ResultIngestionEngine()
         raw = RawResult(scan_id="scan-1", source="nuclei", raw={
             "template-id": "test-001", "info": {"severity": "low"},

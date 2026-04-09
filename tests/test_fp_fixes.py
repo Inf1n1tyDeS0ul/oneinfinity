@@ -95,7 +95,7 @@ def test_401_to_200_fires_auth_bypass():
 
 
 # SQLi time-blind FP fix
-from oneinfinity.finding_validation_engine import TIMING_THRESHOLD_S
+from oneinfinity.findings.finding_validation_engine import TIMING_THRESHOLD_S
 
 def test_sqli_timing_threshold_is_six_seconds():
     assert TIMING_THRESHOLD_S == 6.0, f"Expected 6.0, got {TIMING_THRESHOLD_S}"

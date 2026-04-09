@@ -194,7 +194,7 @@ class DBManager:
     def _sqlite_save_finding(self, finding: dict) -> None:
         """Delegate to existing ResultIngestionEngine (SQLite fallback)."""
         try:
-            from oneinfinity.result_ingestion_engine import get_ingestion_engine
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
             ie = get_ingestion_engine()
             # persist_finding accepts a dict and handles NormalizedFinding construction internally
             ie.persist_finding(finding)

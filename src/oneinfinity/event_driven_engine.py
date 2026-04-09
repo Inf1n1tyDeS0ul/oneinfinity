@@ -392,7 +392,7 @@ class EventDrivenEngine:
                 self._findings_fed += 1
             # Persist to SQLite so get_findings() and graph_vuln_update can see it
             try:
-                from oneinfinity.result_ingestion_engine import get_ingestion_engine, RawResult
+                from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
                 get_ingestion_engine().ingest(RawResult(
                     scan_id=finding.get("scan_id", "agent_direct"),
                     source=agent_type,

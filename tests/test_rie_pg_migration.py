@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 def _get_rie_source():
-    return Path("oneinfinity.result_ingestion_engine.py").read_text()
+    return Path("src/oneinfinity/findings/result_ingestion_engine.py").read_text()
 
 
 def test_no_sqlite_import():

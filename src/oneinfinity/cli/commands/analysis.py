@@ -68,7 +68,7 @@ def cmd_org_intel(args):
 
     # Persist as recon assets (best-effort)
     try:
-        from oneinfinity.result_ingestion_engine import get_ingestion_engine
+        from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
         eng = get_ingestion_engine()
         scan_id = f"org-intel:{res.org}"
         for d in res.domains:

@@ -186,7 +186,7 @@ def cmd_proxy_set(args):
 
 def cmd_replay_findings(args):
     """oneinfinity replay <findings_file> — convert findings to reproducible CLI workflows."""
-    from oneinfinity.finding_replay_engine import replay_findings_file
+    from oneinfinity.findings.finding_replay_engine import replay_findings_file
 
     findings_file   = args.findings_file
     run             = getattr(args, "run", False)

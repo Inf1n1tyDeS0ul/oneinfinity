@@ -12,7 +12,7 @@ def make_pg_mgr(mode="postgres"):
 
 
 def _make_engine():
-    import oneinfinity.result_ingestion_engine as rie
+    import oneinfinity.findings.result_ingestion_engine as rie
     engine = rie.ResultIngestionEngine.__new__(rie.ResultIngestionEngine)
     engine._broadcast_cb = None
     return engine
@@ -22,8 +22,8 @@ def _make_engine():
 
 def test_check_and_store_uses_pg_when_available():
     """In PG mode, _check_and_store delegates to mgr.sync_check_and_save_finding."""
-    from oneinfinity.result_ingestion_engine import NormalizedFinding
-    import oneinfinity.result_ingestion_engine as rie
+    from oneinfinity.findings.result_ingestion_engine import NormalizedFinding
+    import oneinfinity.findings.result_ingestion_engine as rie
 
     mock_mgr = make_pg_mgr()
     mock_mgr.sync_check_and_save_finding.return_value = True
@@ -35,7 +35,7 @@ def test_check_and_store_uses_pg_when_available():
     )
 
     engine = _make_engine()
-    with patch("oneinfinity.result_ingestion_engine._require_pg", return_value=mock_mgr):
+    with patch("oneinfinity.findings.result_ingestion_engine._require_pg", return_value=mock_mgr):
         result = engine._check_and_store(finding)
 
     assert result is True
@@ -44,8 +44,8 @@ def test_check_and_store_uses_pg_when_available():
 
 def test_check_and_store_returns_false_for_duplicate():
     """In PG mode, _check_and_store returns False when DBManager signals duplicate."""
-    from oneinfinity.result_ingestion_engine import NormalizedFinding
-    import oneinfinity.result_ingestion_engine as rie
+    from oneinfinity.findings.result_ingestion_engine import NormalizedFinding
+    import oneinfinity.findings.result_ingestion_engine as rie
 
     mock_mgr = make_pg_mgr()
     mock_mgr.sync_check_and_save_finding.return_value = False
@@ -57,7 +57,7 @@ def test_check_and_store_returns_false_for_duplicate():
     )
 
     engine = _make_engine()
-    with patch("oneinfinity.result_ingestion_engine._require_pg", return_value=mock_mgr):
+    with patch("oneinfinity.findings.result_ingestion_engine._require_pg", return_value=mock_mgr):
         result = engine._check_and_store(finding)
 
     assert result is False
@@ -67,13 +67,13 @@ def test_check_and_store_returns_false_for_duplicate():
 
 def test_get_findings_uses_pg_when_available():
     """In PG mode, get_findings delegates to mgr.sync_get_findings."""
-    import oneinfinity.result_ingestion_engine as rie
+    import oneinfinity.findings.result_ingestion_engine as rie
 
     mock_mgr = make_pg_mgr()
     mock_mgr.sync_get_findings.return_value = [{"finding_id": "f1", "vuln_type": "xss"}]
 
     engine = _make_engine()
-    with patch("oneinfinity.result_ingestion_engine._require_pg", return_value=mock_mgr):
+    with patch("oneinfinity.findings.result_ingestion_engine._require_pg", return_value=mock_mgr):
         results = engine.get_findings(scan_id="scan1")
 
     assert len(results) == 1
@@ -85,12 +85,12 @@ def test_get_findings_uses_pg_when_available():
 
 def test_ingest_recon_asset_uses_pg_when_available():
     """In PG mode, ingest_recon_asset delegates to mgr.sync_save_recon_asset."""
-    import oneinfinity.result_ingestion_engine as rie
+    import oneinfinity.findings.result_ingestion_engine as rie
 
     mock_mgr = make_pg_mgr()
 
     engine = _make_engine()
-    with patch("oneinfinity.result_ingestion_engine._require_pg", return_value=mock_mgr):
+    with patch("oneinfinity.findings.result_ingestion_engine._require_pg", return_value=mock_mgr):
         engine.ingest_recon_asset("scan1", "subdomain", "sub.example.com", {"ip": "1.2.3.4"})
 
     mock_mgr.sync_save_recon_asset.assert_called_once()
@@ -105,13 +105,13 @@ def test_ingest_recon_asset_uses_pg_when_available():
 
 def test_get_recon_assets_uses_pg_when_available():
     """In PG mode, get_recon_assets delegates to mgr.sync_get_recon_assets."""
-    import oneinfinity.result_ingestion_engine as rie
+    import oneinfinity.findings.result_ingestion_engine as rie
 
     mock_mgr = make_pg_mgr()
     mock_mgr.sync_get_recon_assets.return_value = [{"asset_id": "a1", "value": "sub.example.com"}]
 
     engine = _make_engine()
-    with patch("oneinfinity.result_ingestion_engine._require_pg", return_value=mock_mgr):
+    with patch("oneinfinity.findings.result_ingestion_engine._require_pg", return_value=mock_mgr):
         results = engine.get_recon_assets(scan_id="scan1", asset_type="subdomain")
 
     assert len(results) == 1
@@ -122,14 +122,14 @@ def test_get_recon_assets_uses_pg_when_available():
 
 def test_store_raw_findings_uses_pg_when_available():
     """In PG mode, store_raw_findings delegates to mgr.sync_store_raw_findings."""
-    import oneinfinity.result_ingestion_engine as rie
+    import oneinfinity.findings.result_ingestion_engine as rie
 
     mock_mgr = make_pg_mgr()
     mock_mgr.sync_store_raw_findings.return_value = 2
 
     engine = _make_engine()
     findings = [{"tool": "nuclei"}, {"tool": "dalfox"}]
-    with patch("oneinfinity.result_ingestion_engine._require_pg", return_value=mock_mgr):
+    with patch("oneinfinity.findings.result_ingestion_engine._require_pg", return_value=mock_mgr):
         count = engine.store_raw_findings(findings)
 
     assert count == 2
@@ -140,13 +140,13 @@ def test_store_raw_findings_uses_pg_when_available():
 
 def test_delete_findings_for_scan_uses_pg_when_available():
     """In PG mode, delete_findings_for_scan delegates to mgr.sync_delete_findings_for_scan."""
-    import oneinfinity.result_ingestion_engine as rie
+    import oneinfinity.findings.result_ingestion_engine as rie
 
     mock_mgr = make_pg_mgr()
     mock_mgr.sync_delete_findings_for_scan.return_value = 5
 
     engine = _make_engine()
-    with patch("oneinfinity.result_ingestion_engine._require_pg", return_value=mock_mgr):
+    with patch("oneinfinity.findings.result_ingestion_engine._require_pg", return_value=mock_mgr):
         count = engine.delete_findings_for_scan("scan1")
 
     assert count == 5
@@ -157,13 +157,13 @@ def test_delete_findings_for_scan_uses_pg_when_available():
 
 def test_finding_count_uses_pg_when_available():
     """In PG mode, finding_count delegates to mgr.sync_finding_count."""
-    import oneinfinity.result_ingestion_engine as rie
+    import oneinfinity.findings.result_ingestion_engine as rie
 
     mock_mgr = make_pg_mgr()
     mock_mgr.sync_finding_count.return_value = 7
 
     engine = _make_engine()
-    with patch("oneinfinity.result_ingestion_engine._require_pg", return_value=mock_mgr):
+    with patch("oneinfinity.findings.result_ingestion_engine._require_pg", return_value=mock_mgr):
         count = engine.finding_count("scan1")
 
     assert count == 7

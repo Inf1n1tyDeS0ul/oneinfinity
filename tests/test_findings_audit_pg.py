@@ -15,7 +15,7 @@ def test_log_action_does_not_open_sqlite_connection():
     mock_engine.persist_finding = MagicMock()
     mock_engine._init_db = MagicMock()
 
-    with patch("oneinfinity.result_ingestion_engine.get_ingestion_engine", return_value=mock_engine), \
+    with patch("oneinfinity.findings.result_ingestion_engine.get_ingestion_engine", return_value=mock_engine), \
          patch("oneinfinity.modules.findings._save_audit_event") as mock_save:
         from oneinfinity.modules.findings import FindingsDB
         db = FindingsDB()

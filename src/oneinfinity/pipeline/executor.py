@@ -714,7 +714,7 @@ class CanonicalExecutor:
 
         # ── Original validation engine ─────────────────────────────────────
         try:
-            from oneinfinity.validation_engine_web import WebValidationEngine
+            from oneinfinity.findings.validation_engine_web import WebValidationEngine
             existing = self._load_findings_from_dir(out)
             engine = WebValidationEngine()
             waf_detected = waf.get("waf_detected", False)
@@ -1106,7 +1106,7 @@ class CanonicalExecutor:
     def _inline_exploit_validation(self, target: str, out: Path) -> List[dict]:
         findings = []
         try:
-            from oneinfinity.validation_engine_web import WebValidationEngine
+            from oneinfinity.findings.validation_engine_web import WebValidationEngine
             all_f = self._load_findings_from_dir(out)
             engine = WebValidationEngine()
             results = engine.validate_all(all_f)

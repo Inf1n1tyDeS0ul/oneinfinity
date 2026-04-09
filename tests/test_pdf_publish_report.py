@@ -96,7 +96,7 @@ def test_publish_endpoint_returns_pdf(tmp_path, monkeypatch):
         def get_findings(self, scan_id=None, **kwargs):
             return [mock_finding]
 
-    import oneinfinity.result_ingestion_engine as rie
+    import oneinfinity.findings.result_ingestion_engine as rie
     monkeypatch.setattr(rie, "get_ingestion_engine", lambda: MockIngestion())
 
     # Mock god mode state file

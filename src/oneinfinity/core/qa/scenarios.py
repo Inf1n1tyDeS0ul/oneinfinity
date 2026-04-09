@@ -46,7 +46,7 @@ async def ingestion_db_scenario() -> Dict[str, Any]:
     """Validate findings DB initialization (real)."""
     await asyncio.sleep(0.05)
     try:
-        from oneinfinity.result_ingestion_engine import get_ingestion_engine
+        from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
         eng = get_ingestion_engine()
         return {
             "status": "success",

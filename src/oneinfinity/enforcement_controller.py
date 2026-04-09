@@ -130,7 +130,7 @@ class EnforcementController:
         if not raw_findings:
             return []
         try:
-            from oneinfinity.finding_validation_engine import FindingValidationEngine
+            from oneinfinity.findings.finding_validation_engine import FindingValidationEngine
             from oneinfinity.core.deduplicator import Deduplicator
 
             engine = FindingValidationEngine(timeout=15, max_retries=2)

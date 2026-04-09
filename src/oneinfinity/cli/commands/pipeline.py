@@ -615,7 +615,7 @@ def cmd_full_scan(args):
     # Generate reports
     if report_fmt != "none" and _validated:
         try:
-            from oneinfinity.confidence_engine import ConfidenceEngine
+            from oneinfinity.findings.confidence_engine import ConfidenceEngine
             from oneinfinity.core.reporter import Reporter
             scored = ConfidenceEngine().score_findings(_validated)
             reporter = Reporter(output, target=target, platform="HackerOne")

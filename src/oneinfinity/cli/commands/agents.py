@@ -116,7 +116,7 @@ def cmd_agents(args):
 
         # ── Publish agent findings to shared endpoint bus ─────────────────────
         try:
-            from oneinfinity.result_ingestion_engine import get_ingestion_engine, RawResult
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
             import uuid as _uuid
             _bus = get_ingestion_engine()
             _sid = str(_uuid.uuid4())[:8]

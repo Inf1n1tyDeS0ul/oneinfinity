@@ -18,7 +18,7 @@ def test_findings_db_log_action_persists():
     async def fake_save(event):
         dispatched.append(event)
 
-    with patch("oneinfinity.result_ingestion_engine.get_ingestion_engine", return_value=mock_engine), \
+    with patch("oneinfinity.findings.result_ingestion_engine.get_ingestion_engine", return_value=mock_engine), \
          patch("oneinfinity.modules.findings._save_audit_event", side_effect=fake_save):
         from oneinfinity.modules.findings import FindingsDB
         db = FindingsDB()

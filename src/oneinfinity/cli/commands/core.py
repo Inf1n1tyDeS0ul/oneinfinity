@@ -345,7 +345,7 @@ def cmd_debug(args):
     if not db_file.exists():
         err(f"  Findings DB missing: {db_file}")
         if args.self_heal:
-            from oneinfinity.result_ingestion_engine import get_ingestion_engine
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
             try:
                 get_ingestion_engine()._init_db()
                 ok("    [HEALED] Re-initialized database schema.")
@@ -354,7 +354,7 @@ def cmd_debug(args):
     else:
         ok(f"  Findings DB exists: {db_file}")
         try:
-            from oneinfinity.result_ingestion_engine import get_ingestion_engine
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
             engine = get_ingestion_engine()
             count = engine.finding_count("check")
             ok(f"  Schema check: OK (accessible via ResultIngestionEngine)")

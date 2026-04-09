@@ -548,7 +548,7 @@ class UnifiedScanEngine:
 
         # Persist recon assets (best-effort)
         try:
-            from oneinfinity.result_ingestion_engine import get_ingestion_engine
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
             eng = get_ingestion_engine()
             scan_id = session.scan_id
 
@@ -1455,7 +1455,7 @@ class UnifiedScanEngine:
 
         log.info("Raw findings (pre-validation): %d", len(findings))
         try:
-            from oneinfinity.result_ingestion_engine import get_ingestion_engine
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
             eng = get_ingestion_engine()
             stored = eng.store_raw_findings(findings)
             log.info("Raw findings stored: %d", stored)
@@ -2134,7 +2134,7 @@ class UnifiedScanEngine:
             )
 
             if chains:
-                from oneinfinity.result_ingestion_engine import NormalizedFinding
+                from oneinfinity.findings.result_ingestion_engine import NormalizedFinding
                 for chain in chains:
                     nf = NormalizedFinding(
                         scan_id=session.scan_id,
@@ -2295,7 +2295,7 @@ class UnifiedScanEngine:
             log.warning("Deduplicator failed (non-fatal): %s", exc)
 
         try:
-            from oneinfinity.result_ingestion_engine import get_ingestion_engine, RawResult
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
             eng = get_ingestion_engine()
             raw_results = [
                 RawResult(
@@ -2338,7 +2338,7 @@ class UnifiedScanEngine:
     def _phase_severity_followup(self, session: ScanSession, ctx: dict) -> None:
         """Run deeper targeted scans for high/critical findings."""
         try:
-            from oneinfinity.result_ingestion_engine import get_ingestion_engine
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
             findings = get_ingestion_engine().get_findings(scan_id=session.scan_id)
         except Exception as exc:
             log.warning("severity_followup: could not load findings: %s", exc)
@@ -2389,7 +2389,7 @@ class UnifiedScanEngine:
 
         if new_findings:
             try:
-                from oneinfinity.result_ingestion_engine import get_ingestion_engine, RawResult
+                from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
                 eng = get_ingestion_engine()
                 raw = [
                     RawResult(scan_id=session.scan_id, source=nf.get("tool", "followup"), raw=nf)
@@ -2418,7 +2418,7 @@ class UnifiedScanEngine:
             return
 
         try:
-            from oneinfinity.result_ingestion_engine import get_ingestion_engine
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
             findings = get_ingestion_engine().get_findings(scan_id=session.scan_id)
         except Exception as exc:
             log.warning("graph_vuln_update: could not load findings from DB: %s", exc)
@@ -2565,7 +2565,7 @@ class UnifiedScanEngine:
 
         # ── Scan Quality Metrics ─────────────────────────────────────────────
         try:
-            from oneinfinity.result_ingestion_engine import get_ingestion_engine
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
             db_findings = get_ingestion_engine().get_findings(scan_id=session.scan_id)
         except Exception:
             db_findings = session.findings

@@ -677,7 +677,7 @@ class SecretIntelAgent:
         _raw_value is guaranteed to have been stripped before this call.
         """
         try:
-            from oneinfinity.result_ingestion_engine import get_ingestion_engine
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
             engine  = get_ingestion_engine()
             scan_id = str(uuid.uuid4())[:8]
             for f in findings:

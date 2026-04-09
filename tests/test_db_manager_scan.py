@@ -74,7 +74,7 @@ def test_findings_check_and_store_uses_dbmanager_sqlite(tmp_db, monkeypatch):
     monkeypatch.setattr(dm.DBManager, "_sqlite_save_finding", spy)
 
     import sys
-    import oneinfinity.result_ingestion_engine as rie
+    import oneinfinity.findings.result_ingestion_engine as rie
 
     # Reset singleton so it picks up our monkeypatched DBManager
     rie._engine = None

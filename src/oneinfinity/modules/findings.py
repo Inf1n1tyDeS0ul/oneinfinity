@@ -6,7 +6,7 @@ import logging
 import uuid
 import asyncio as _asyncio
 from datetime import datetime, timezone
-from oneinfinity.result_ingestion_engine import get_ingestion_engine
+from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
 from oneinfinity.modules.utils import (banner, section, ok, info, warn, err, ask,
                            table, sev, bold, green, yellow, red, cyan, now_str)
 

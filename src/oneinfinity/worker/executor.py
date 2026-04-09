@@ -355,7 +355,7 @@ class TaskExecutor:
 
             # Score findings
             try:
-                from oneinfinity.confidence_engine import ConfidenceEngine
+                from oneinfinity.findings.confidence_engine import ConfidenceEngine
                 scored = ConfidenceEngine().score_findings(result.findings)
             except Exception:
                 scored = result.findings
