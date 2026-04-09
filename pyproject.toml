@@ -87,8 +87,8 @@ dev = [
     "oneinfinity[ai,mobile,web]",
 ]
 
-# [project.scripts] — defined in Phase 4 after CLI is split into cli/main.py
-# oneinfinity = "oneinfinity.cli.main:main"
+[project.scripts]
+oneinfinity = "oneinfinity.cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
