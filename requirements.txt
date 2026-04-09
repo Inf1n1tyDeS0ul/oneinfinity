@@ -1,3 +1,9 @@
-# Development install — pulls all optional extras.
-# For production use: pip install -e ".[web]" (or whichever extras apply).
+# Development install — installs all extras from pyproject.toml.
+# All dependency declarations live in pyproject.toml.
+#
+# Usage:
+#   pip install -e "."              # core only
+#   pip install -e ".[web]"         # core + web dashboard
+#   pip install -e ".[ai,mobile]"   # core + AI/mobile tools
+#   pip install -e ".[ai,mobile,web]" # everything (dev default)
 -e ".[ai,mobile,web]"

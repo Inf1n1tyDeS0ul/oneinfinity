@@ -97,4 +97,4 @@ where = ["src"]
 "" = "src"
 
 [tool.setuptools.package-data]
-"oneinfinity" = ["config/*.yaml", "db/schema.sql"]
+"oneinfinity" = []
