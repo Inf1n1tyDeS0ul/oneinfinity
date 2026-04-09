@@ -119,7 +119,7 @@ def cmd_scan(args):
             info("Starting 9-phase scan pipeline …")
             print()
             try:
-                from oneinfinity.unified_scan_engine import get_engine
+                from oneinfinity.scan.unified_scan_engine import get_engine
                 engine = get_engine()
 
                 def _progress(phase: str, pct: int, msg: str):
@@ -375,7 +375,7 @@ def cmd_debug(args):
         err(f"  AttackGraphBrain: FAILED: {e}")
 
     try:
-        from oneinfinity.unified_scan_engine import get_engine
+        from oneinfinity.scan.unified_scan_engine import get_engine
         engine = get_engine()
         ok("  UnifiedScanEngine: OK")
     except Exception as e:

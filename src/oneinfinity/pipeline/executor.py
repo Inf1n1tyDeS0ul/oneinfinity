@@ -1197,7 +1197,7 @@ class CanonicalExecutor:
         """Run GraphQL security scan: introspection, fuzzing, mutation testing, IDOR."""
         findings: List[dict] = []
         try:
-            from oneinfinity.graphql_scan_engine import GraphQLScanEngine
+            from oneinfinity.scan.graphql_scan_engine import GraphQLScanEngine
             probe_url = target if target.startswith("http") else f"https://{target}"
             engine = GraphQLScanEngine(target=probe_url, output_dir=str(out))
             findings = engine.run()
@@ -1219,7 +1219,7 @@ class CanonicalExecutor:
         # ── Headless browser engine ────────────────────────────────────────
         js_urls: List[str] = []
         try:
-            from oneinfinity.headless_browser_engine import HeadlessBrowserEngine
+            from oneinfinity.scan.headless_browser_engine import HeadlessBrowserEngine
             engine = HeadlessBrowserEngine(target=probe_url, output_dir=str(out))
             result = engine.run()
             all_f = result.get("findings", []) + result.get("js_secrets", [])
@@ -1297,7 +1297,7 @@ class CanonicalExecutor:
         # Primary: dedicated engine
         engine_succeeded = False
         try:
-            from oneinfinity.smuggling_engine import SmugglingEngine
+            from oneinfinity.scan.smuggling_engine import SmugglingEngine
             engine = SmugglingEngine(target=probe_url, timeout=8)
             findings = engine.run() or []
             engine_succeeded = True
@@ -1329,7 +1329,7 @@ class CanonicalExecutor:
         """Poll OOB callback server for interactions triggered during this scan."""
         findings: List[dict] = []
         try:
-            from oneinfinity.oob_engine import OOBEngine
+            from oneinfinity.scan.oob_engine import OOBEngine
             import uuid as _uuid
             # Use a stable scan_id derived from target+out
             scan_id = _uuid.uuid5(_uuid.NAMESPACE_URL, str(out)).hex[:12]

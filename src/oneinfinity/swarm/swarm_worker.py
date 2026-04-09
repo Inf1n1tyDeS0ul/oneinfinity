@@ -267,8 +267,8 @@ class SwarmWorker:
         target = task.target
         log.info("[worker:%s] Recon: %s", self.worker_id, target)
         try:
-            from oneinfinity.autonomous_scan_pipeline import autonomous_scan_pipeline
-            from oneinfinity.autonomous_scan_pipeline import PipelineConfig, PipelinePhase
+            from oneinfinity.scan.autonomous_scan_pipeline import autonomous_scan_pipeline
+            from oneinfinity.scan.autonomous_scan_pipeline import PipelineConfig, PipelinePhase
 
             config = PipelineConfig(
                 target=target,
@@ -447,8 +447,8 @@ class SwarmWorker:
         phase_results = {}
 
         try:
-            from oneinfinity.autonomous_scan_pipeline import autonomous_scan_pipeline
-            from oneinfinity.autonomous_scan_pipeline import PipelineConfig, PipelinePhase
+            from oneinfinity.scan.autonomous_scan_pipeline import autonomous_scan_pipeline
+            from oneinfinity.scan.autonomous_scan_pipeline import PipelineConfig, PipelinePhase
 
             phase_map = {
                 "recon":     [PipelinePhase.DISCOVERY, PipelinePhase.RECON, PipelinePhase.CRAWL],

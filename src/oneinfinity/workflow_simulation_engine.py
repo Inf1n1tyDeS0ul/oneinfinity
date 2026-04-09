@@ -798,7 +798,7 @@ class WorkflowSimulationEngine:
 
         # 3. Execute HTTP Call
         try:
-            from oneinfinity.traffic_capture_engine import RequestCapture
+            from oneinfinity.scan.traffic_capture_engine import RequestCapture
             with RequestCapture(source="workflow", method=step.method, url=url, 
                                headers=headers, body=json.dumps(resolved_params)) as cap:
                 

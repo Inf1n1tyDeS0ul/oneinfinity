@@ -63,7 +63,7 @@ def cmd_hunter_start(args):
 def cmd_hunter_scan(args):
     """Deploy autonomous 9-phase scan pipeline against a target."""
     from oneinfinity.modules.utils import banner, info, ok, err, ask
-    from oneinfinity.unified_scan_engine import get_engine
+    from oneinfinity.scan.unified_scan_engine import get_engine
 
     target = args.target
     yes = getattr(args, "yes", False)

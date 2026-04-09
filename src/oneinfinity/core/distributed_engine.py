@@ -272,7 +272,7 @@ class WorkerNode:
     def _default_scan(target: str, config: dict) -> dict:
         """Default scan: delegate to unified_scan_engine."""
         try:
-            from oneinfinity.unified_scan_engine import get_engine
+            from oneinfinity.scan.unified_scan_engine import get_engine
             engine = get_engine()
             session = engine.scan(target)
             result = session.to_dict() if hasattr(session, "to_dict") else {}

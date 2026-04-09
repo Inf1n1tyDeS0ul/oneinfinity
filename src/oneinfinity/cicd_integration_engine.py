@@ -366,7 +366,7 @@ security-report:
                 echo 'Running static source code analysis...'
                 sh '''
                     python3 -c "
-from oneinfinity.source_analysis_engine import source_analysis_engine
+from oneinfinity.scan.source_analysis_engine import source_analysis_engine
 import json, os
 result = source_analysis_engine.analyze_directory('.')
 data = result.to_dict()

@@ -59,7 +59,7 @@ async def unified_scan_engine_scenario() -> Dict[str, Any]:
     """Import UnifiedScanEngine to ensure core pipeline is available."""
     await asyncio.sleep(0.05)
     try:
-        from oneinfinity.unified_scan_engine import get_engine
+        from oneinfinity.scan.unified_scan_engine import get_engine
         eng = get_engine()
         return {"status": "success", "engine": str(type(eng).__name__)}
     except Exception as exc:

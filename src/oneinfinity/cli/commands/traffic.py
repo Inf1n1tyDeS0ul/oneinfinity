@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 def cmd_traffic_list(args):
     """oneinfinity traffic-list — list captured HTTP traffic."""
-    from oneinfinity.traffic_capture_engine import traffic_capture_engine
+    from oneinfinity.scan.traffic_capture_engine import traffic_capture_engine
     requests = traffic_capture_engine.list(
         target=getattr(args, "target", "") or None,
         source=getattr(args, "source", "") or None,
@@ -44,7 +44,7 @@ def cmd_traffic_list(args):
 
 def cmd_traffic_export(args):
     """oneinfinity traffic-export — export captured traffic."""
-    from oneinfinity.traffic_capture_engine import traffic_capture_engine
+    from oneinfinity.scan.traffic_capture_engine import traffic_capture_engine
     fmt = getattr(args, "format", "json")
     output = getattr(args, "output", "traffic_export")
     target = getattr(args, "target", "") or None
@@ -65,7 +65,7 @@ def cmd_traffic_export(args):
 
 def cmd_replay_request(args):
     """oneinfinity replay-request <request_id> — replay a captured request."""
-    from oneinfinity.traffic_replay_engine import traffic_replay_engine
+    from oneinfinity.scan.traffic_replay_engine import traffic_replay_engine
     from oneinfinity.proxy_manager import configure_proxy_from_args
 
     configure_proxy_from_args(args)
@@ -113,7 +113,7 @@ def cmd_replay_request(args):
 def cmd_replay_attack(args):
     """oneinfinity replay-attack <attack_id> — replay a discovered attack."""
     from attack_replay_engine import attack_replay_engine, PAYLOAD_LIBRARY
-    from oneinfinity.traffic_capture_engine import traffic_capture_engine
+    from oneinfinity.scan.traffic_capture_engine import traffic_capture_engine
     from oneinfinity.proxy_manager import configure_proxy_from_args
 
     configure_proxy_from_args(args)

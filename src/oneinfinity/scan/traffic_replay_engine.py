@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
-from oneinfinity.traffic_capture_engine import CapturedRequest, traffic_capture_engine
+from oneinfinity.scan.traffic_capture_engine import CapturedRequest, traffic_capture_engine
 
 log = logging.getLogger("oneinfinity.replay")
 

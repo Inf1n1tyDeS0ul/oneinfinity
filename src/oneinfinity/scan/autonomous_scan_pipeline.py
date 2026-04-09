@@ -8,7 +8,7 @@ import logging
 import uuid
 import time
 from dataclasses import dataclass, field
-from oneinfinity.unified_scan_engine import get_engine
+from oneinfinity.scan.unified_scan_engine import get_engine
 
 logger = logging.getLogger(__name__)
 

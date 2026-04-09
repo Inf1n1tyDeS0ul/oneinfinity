@@ -41,7 +41,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from oneinfinity.traffic_capture_engine import traffic_capture_engine, CapturedRequest
+from oneinfinity.scan.traffic_capture_engine import traffic_capture_engine, CapturedRequest
 
 log = logging.getLogger("oneinfinity.proxy")
 

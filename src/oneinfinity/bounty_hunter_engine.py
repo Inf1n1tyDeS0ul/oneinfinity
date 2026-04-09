@@ -221,7 +221,7 @@ class BountyHunterEngine:
             pass
 
         try:
-            from oneinfinity.unified_scan_engine import get_engine
+            from oneinfinity.scan.unified_scan_engine import get_engine
             self._pipeline = get_engine()
         except ImportError:
             pass
@@ -234,7 +234,7 @@ class BountyHunterEngine:
             pass
 
         try:
-            from oneinfinity.parallel_scan_engine import parallel_scan_engine
+            from oneinfinity.scan.parallel_scan_engine import parallel_scan_engine
             self._parallel_engine = parallel_scan_engine
         except ImportError:
             pass

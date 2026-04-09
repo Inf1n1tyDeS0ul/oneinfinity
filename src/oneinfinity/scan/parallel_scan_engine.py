@@ -6,14 +6,14 @@ across multiple worker coroutines, with per-domain rate limiting to avoid
 hammering the same target simultaneously.
 
 Usage:
-    from oneinfinity.parallel_scan_engine import parallel_scan_engine
+    from oneinfinity.scan.parallel_scan_engine import parallel_scan_engine
 
     task_id = parallel_scan_engine.submit("example.com", priority=8)
     parallel_scan_engine.run_until_complete()
     result = parallel_scan_engine.get_status(task_id)
 
     # Or via the simple wrapper:
-    from oneinfinity.parallel_scan_engine import scan_queue_manager
+    from oneinfinity.scan.parallel_scan_engine import scan_queue_manager
     scan_queue_manager.add_target("example.com", priority=5)
     scan_queue_manager.process_all()
     results = scan_queue_manager.get_results()
@@ -454,7 +454,7 @@ class ParallelScanEngine:
 
         try:
             # Build PipelineConfig from task config dict
-            from oneinfinity.autonomous_scan_pipeline import (
+            from oneinfinity.scan.autonomous_scan_pipeline import (
                 autonomous_scan_pipeline, PipelineConfig, PipelinePhase
             )
 

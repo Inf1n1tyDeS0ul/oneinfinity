@@ -31,7 +31,7 @@ def cmd_pipeline_recon(args):
 
     # WAF detection before recon
     try:
-        from oneinfinity.waf_detection_engine import WAFDetectionEngine
+        from oneinfinity.scan.waf_detection_engine import WAFDetectionEngine
         print("[*] Detecting WAF...")
         waf_engine = WAFDetectionEngine()
         scheme = "https" if not target.startswith("http") else ""
@@ -95,7 +95,7 @@ def cmd_pipeline_vulnscan(args):
 
     # WAF detection before vuln scan
     try:
-        from oneinfinity.waf_detection_engine import WAFDetectionEngine
+        from oneinfinity.scan.waf_detection_engine import WAFDetectionEngine
         print("[*] Detecting WAF...")
         waf_engine = WAFDetectionEngine()
         if target.startswith("http"):
@@ -467,7 +467,7 @@ def cmd_full_scan(args):
     waf_profile = {}
     if not no_waf:
         try:
-            from oneinfinity.waf_detection_engine import WAFDetectionEngine
+            from oneinfinity.scan.waf_detection_engine import WAFDetectionEngine
             info("Detecting WAF...")
             probe_url = target if target.startswith("http") else f"https://{target}"
             waf_engine = WAFDetectionEngine()
@@ -669,7 +669,7 @@ def cmd_graphql_scan(args):
     banner(f"GraphQL Security Scan — {probe_url}")
 
     try:
-        from oneinfinity.graphql_scan_engine import GraphQLScanEngine
+        from oneinfinity.scan.graphql_scan_engine import GraphQLScanEngine
     except ImportError as e:
         err(f"graphql_scan_engine unavailable: {e}")
         sys.exit(1)
@@ -711,7 +711,7 @@ def cmd_browser_scan(args):
     banner(f"Headless Browser Analysis — {probe_url}")
 
     try:
-        from oneinfinity.headless_browser_engine import HeadlessBrowserEngine
+        from oneinfinity.scan.headless_browser_engine import HeadlessBrowserEngine
     except ImportError as e:
         err(f"headless_browser_engine unavailable: {e}")
         sys.exit(1)
@@ -803,7 +803,7 @@ def cmd_smuggling_scan(args):
     banner(f"HTTP Request Smuggling — {probe_url}")
 
     try:
-        from oneinfinity.smuggling_engine import SmugglingEngine
+        from oneinfinity.scan.smuggling_engine import SmugglingEngine
     except ImportError as e:
         err(f"smuggling_engine unavailable: {e}")
         sys.exit(1)

@@ -331,7 +331,7 @@ class TaskExecutor:
             # WAF detection
             waf_profile = {}
             try:
-                from oneinfinity.waf_detection_engine import WAFDetectionEngine
+                from oneinfinity.scan.waf_detection_engine import WAFDetectionEngine
                 probe = self.target if self.target.startswith("http") else f"https://{self.target}"
                 waf_p = WAFDetectionEngine().detect(probe)
                 waf_profile = waf_p.as_scan_config()

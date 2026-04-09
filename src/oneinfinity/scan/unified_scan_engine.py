@@ -1262,7 +1262,7 @@ class UnifiedScanEngine:
                 elif tool_name == "graphql_scan":
                     # RULE 3: GraphQL security testing via dedicated engine
                     try:
-                        from oneinfinity.graphql_scan_engine import GraphQLScanEngine
+                        from oneinfinity.scan.graphql_scan_engine import GraphQLScanEngine
                         _gql_engine = GraphQLScanEngine(target=session.target)
                         auth_mgr = ctx.get("auth_manager")
                         if auth_mgr:
@@ -1750,7 +1750,7 @@ class UnifiedScanEngine:
     def _phase_oob_init(self, session: ScanSession, ctx: dict) -> None:
         """Start OOB (out-of-band) callback listener for DNS/HTTP interaction detection."""
         try:
-            from oneinfinity.oob_engine import OOBEngine
+            from oneinfinity.scan.oob_engine import OOBEngine
             oob = OOBEngine(scan_id=session.scan_id)
             domain = oob.start()
             ctx["oob_engine"] = oob
@@ -1819,7 +1819,7 @@ class UnifiedScanEngine:
     def _phase_graphql_scan(self, session: ScanSession, ctx: dict) -> None:
         """Detect GraphQL endpoints and run security tests (introspection, fuzzing, IDOR)."""
         try:
-            from oneinfinity.graphql_scan_engine import GraphQLScanEngine
+            from oneinfinity.scan.graphql_scan_engine import GraphQLScanEngine
         except ImportError as exc:
             log.warning("graphql_scan: engine unavailable: %s", exc)
             return
@@ -1872,7 +1872,7 @@ class UnifiedScanEngine:
             return
 
         try:
-            from oneinfinity.headless_browser_engine import HeadlessBrowserEngine
+            from oneinfinity.scan.headless_browser_engine import HeadlessBrowserEngine
         except ImportError as exc:
             log.warning("browser_analysis: engine unavailable: %s", exc)
             return
@@ -1986,7 +1986,7 @@ class UnifiedScanEngine:
             return
 
         try:
-            from oneinfinity.smuggling_engine import SmugglingEngine
+            from oneinfinity.scan.smuggling_engine import SmugglingEngine
         except ImportError as exc:
             log.warning("smuggling_test: engine unavailable: %s", exc)
             return

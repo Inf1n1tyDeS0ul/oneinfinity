@@ -673,7 +673,7 @@ class MobileSecurityEngine:
             # Legacy fuzzing via TrafficReplayEngine
             results = []
             try:
-                from oneinfinity.traffic_replay_engine import TrafficReplayEngine
+                from oneinfinity.scan.traffic_replay_engine import TrafficReplayEngine
                 engine = TrafficReplayEngine()
                 for ep in endpoints[:20]:
                     url = ep.get("full_url") or ep.get("url") or ep.get("path", "")

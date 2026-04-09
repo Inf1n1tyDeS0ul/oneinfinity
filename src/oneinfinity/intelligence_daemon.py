@@ -495,7 +495,7 @@ class TrafficReplayWorker(WorkerEngine):
 
     def _replay(self, data: dict) -> dict | None:
         try:
-            from oneinfinity.traffic_replay_engine import TrafficReplayEngine
+            from oneinfinity.scan.traffic_replay_engine import TrafficReplayEngine
             engine = TrafficReplayEngine()
             url    = data.get("url", "")
             method = data.get("method", "GET")

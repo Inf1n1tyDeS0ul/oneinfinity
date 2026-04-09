@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 def cmd_run(args):
     """Autonomous framework: run all phases for a target."""
     from oneinfinity.modules.utils import banner, info, warn, err
-    from oneinfinity.unified_scan_engine import get_engine
+    from oneinfinity.scan.unified_scan_engine import get_engine
 
     banner(f"Starting Unified Scan: {args.target}")
 
