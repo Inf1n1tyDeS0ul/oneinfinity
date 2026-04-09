@@ -24,7 +24,7 @@ Nine built-in capabilities
 
 Usage
 -----
-    from oneinfinity.intelligence_daemon import get_daemon, DaemonConfig
+    from oneinfinity.intelligence.intelligence_daemon import get_daemon, DaemonConfig
     daemon = get_daemon()
     daemon.start(target="example.com")
     # ... runs indefinitely in background ...
@@ -47,7 +47,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
-from oneinfinity.event_bus import EventBus, BusEvent, EventType, Priority, get_bus
+from oneinfinity.orchestration.event_bus import EventBus, BusEvent, EventType, Priority, get_bus
 
 log = logging.getLogger("oneinfinity.daemon")
 
@@ -238,8 +238,8 @@ class HypothesisWorker(WorkerEngine):
     def _generate(self, event: BusEvent) -> list[dict]:
         theories = []
         try:
-            from oneinfinity.vulnerability_theory_engine import VulnerabilityTheoryEngine
-            from oneinfinity.application_intelligence import AppIntelligence
+            from oneinfinity.attack.vulnerability_theory_engine import VulnerabilityTheoryEngine
+            from oneinfinity.intelligence.application_intelligence import AppIntelligence
             target = event.data.get("target", event.data.get("url", ""))
             domain = _to_domain(target)
             app = AppIntelligence()
@@ -431,7 +431,7 @@ class PayloadMutationWorker(WorkerEngine):
     def _mutate(self, payload: str, vuln_type: str) -> list[tuple[str, str]]:
         results: list[tuple[str, str]] = []
         try:
-            from oneinfinity.exploit_generator import ExploitGenerator
+            from oneinfinity.attack.exploit_generator import ExploitGenerator
             gen = ExploitGenerator()
             variants = gen.mutate(payload, vuln_type, strategies=self.STRATEGIES)
             results = [(v, s) for v, s in zip(variants, self.STRATEGIES)]
@@ -570,8 +570,8 @@ class BusinessLogicWorker(WorkerEngine):
     def _attack(self, data: dict) -> list[dict]:
         findings = []
         try:
-            from oneinfinity.workflow_simulation_engine import WorkflowSimulationEngine
-            from oneinfinity.business_logic_attack_engine import BusinessLogicAttackEngine
+            from oneinfinity.orchestration.workflow_simulation_engine import WorkflowSimulationEngine
+            from oneinfinity.attack.business_logic_attack_engine import BusinessLogicAttackEngine
             target = data.get("target", "")
             wf_type = data.get("workflow_type", "checkout")
 

@@ -30,7 +30,7 @@ def test_redis_swarm_state_works_without_redis():
 
 def test_event_bus_publishes_without_redis():
     """EventBus must publish and dispatch events without Redis."""
-    from oneinfinity.event_bus import EventBus, EventType
+    from oneinfinity.orchestration.event_bus import EventBus, EventType
     received = []
     bus = EventBus()
     bus.on(EventType.NEW_TARGET, lambda e: received.append(e.data))

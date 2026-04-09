@@ -348,7 +348,7 @@ class AutonomousDecisionEngine:
             from oneinfinity.attack_graph_core.graph_engine import NodeType as NT
 
             # Map of agent types per node type
-            from oneinfinity.attack_graph_brain import _TYPE_AGENTS
+            from oneinfinity.intelligence.attack_graph_brain import _TYPE_AGENTS
             for node in nodes:
                 type_str    = str(node.node_type).split(".")[-1]
                 agents      = _TYPE_AGENTS.get(type_str, [])

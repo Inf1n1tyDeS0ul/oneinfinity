@@ -4,7 +4,7 @@ def test_event_bus_init_does_not_require_sqlite():
     import os
     from unittest.mock import patch
     with patch.dict(os.environ, {}, clear=True):
-        from oneinfinity.event_bus import EventBus, EventType
+        from oneinfinity.orchestration.event_bus import EventBus, EventType
         bus = EventBus()
         bus.publish(EventType.NEW_TARGET, {"target": "example.com"})
         import time; time.sleep(0.05)

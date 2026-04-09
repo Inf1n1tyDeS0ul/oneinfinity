@@ -22,7 +22,7 @@ def test_write_calls_dbmanager_sync_save_scan(tmp_path, monkeypatch):
     monkeypatch.setattr(dm.DBManager, "sync_save_scan", capture_save)
 
     import sys
-    from oneinfinity.god_mode_engine import GodModeStateFile, GodModeSession
+    from oneinfinity.orchestration.god_mode_engine import GodModeStateFile, GodModeSession
 
     sf = GodModeStateFile.__new__(GodModeStateFile)
     sf.path = tmp_path / "god-mode-test.json"
@@ -55,7 +55,7 @@ def test_write_falls_back_to_json_when_dbmanager_fails(tmp_path, monkeypatch, ca
     monkeypatch.setattr(dm.DBManager, "sync_save_scan", raise_error)
 
     import sys
-    from oneinfinity.god_mode_engine import GodModeStateFile, GodModeSession
+    from oneinfinity.orchestration.god_mode_engine import GodModeStateFile, GodModeSession
     import logging
 
     sf = GodModeStateFile.__new__(GodModeStateFile)

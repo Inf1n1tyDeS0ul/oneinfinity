@@ -273,7 +273,7 @@ class EnforcementController:
             self._recursion_states[scan_id] = state
 
         try:
-            from oneinfinity.event_bus import get_bus, EventType
+            from oneinfinity.orchestration.event_bus import get_bus, EventType
             bus = get_bus()
 
             def _on_new_endpoint(event):
@@ -356,7 +356,7 @@ class EnforcementController:
                 )
                 def _run_graph():
                     try:
-                        from oneinfinity.attack_graph_brain import get_brain
+                        from oneinfinity.intelligence.attack_graph_brain import get_brain
                         get_brain().integrate_vuln(finding)
                     except Exception as exc:
                         log.warning("Recursive graph update failed: %s", exc)
@@ -385,7 +385,7 @@ class EnforcementController:
         if not state:
             return
         try:
-            from oneinfinity.event_bus import get_bus
+            from oneinfinity.orchestration.event_bus import get_bus
             bus = get_bus()
             for event_type, handler in state._handlers:
                 bus.off(event_type, handler)

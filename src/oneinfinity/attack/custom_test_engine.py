@@ -1440,7 +1440,7 @@ def main_cli(args):
         warn("No theories.json found. Run: oneinfinity generate-theories <domain> first")
         return
 
-    from oneinfinity.vulnerability_theory_engine import TheorySet, VulnTheory
+    from oneinfinity.attack.vulnerability_theory_engine import TheorySet, VulnTheory
     data = json.loads(theories_file.read_text())
     theories = [
         VulnTheory(

@@ -2,7 +2,7 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from oneinfinity.zero_day_engine import ZeroDayEngine, ResponseProfile, _TIMING_THRESHOLD_MS, _SIZE_DEVIATION_PCT, _CONFIDENCE_FLOOR, _MEANINGFUL_PAYLOAD_CHARS
+from oneinfinity.attack.zero_day_engine import ZeroDayEngine, ResponseProfile, _TIMING_THRESHOLD_MS, _SIZE_DEVIATION_PCT, _CONFIDENCE_FLOOR, _MEANINGFUL_PAYLOAD_CHARS
 
 def _make_baseline(status=200, length=500, time_ms=100.0):
     return ResponseProfile(url="http://test.local/api", status_code=status,

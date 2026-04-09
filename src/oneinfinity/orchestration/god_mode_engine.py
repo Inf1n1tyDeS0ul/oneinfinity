@@ -293,7 +293,7 @@ class FoundationMission(Mission):
         # ── Step 3: analyze-app ───────────────────────────────────────────
         log.info("[GOD MODE] Foundation Step 3: analyze-app")
         try:
-            from oneinfinity.application_intelligence import ApplicationIntelligenceEngine
+            from oneinfinity.intelligence.application_intelligence import ApplicationIntelligenceEngine
             tech_profile = None
             if self.recon and hasattr(self.recon, "tech_profile"):
                 tech_profile = vars(self.recon.tech_profile) if self.recon.tech_profile else None
@@ -370,7 +370,7 @@ class FullScanMission(Mission):
         # Fire NEW_VULNERABILITY events so ResearchMission can unlock
         if result and result.findings:
             try:
-                from oneinfinity.event_bus import get_bus, EventType
+                from oneinfinity.orchestration.event_bus import get_bus, EventType
                 bus = get_bus()
                 for f in result.findings:
                     fd = f if isinstance(f, dict) else {}
@@ -398,7 +398,7 @@ class ResearchMission(Mission):
         self._iterations_done: int = 0
 
     def _run(self, session: GodModeSession) -> None:
-        from oneinfinity.research_mode_controller import ResearchModeController
+        from oneinfinity.orchestration.research_mode_controller import ResearchModeController
 
         log.info("[GOD MODE] ResearchMission: starting research loop for %s", session.target)
 
@@ -540,7 +540,7 @@ class ReportMission(Mission):
         # Step 1: validate findings
         try:
             from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
-            from oneinfinity.enforcement_controller import get_enforcement_controller
+            from oneinfinity.orchestration.enforcement_controller import get_enforcement_controller
             raw_findings = get_ingestion_engine().get_findings(scan_id=session.scan_id, target=session.target) or []
             validated = get_enforcement_controller().validate_findings(raw_findings)
             log.info("[GOD MODE] Report: validated %d/%d findings", len(validated), len(raw_findings))
@@ -620,7 +620,7 @@ class GodModeConductor:
 
     def _subscribe_to_event_bus(self) -> None:
         try:
-            from oneinfinity.event_bus import get_bus, EventType
+            from oneinfinity.orchestration.event_bus import get_bus, EventType
 
             def _on_vuln(event) -> None:
                 with self._lock:
@@ -651,7 +651,7 @@ class GodModeConductor:
 
     def _unsubscribe_from_event_bus(self) -> None:
         try:
-            from oneinfinity.event_bus import get_bus
+            from oneinfinity.orchestration.event_bus import get_bus
             bus = get_bus()
             for event_type, handler in self._bus_handlers:
                 try:
@@ -889,7 +889,7 @@ class GodModeConductor:
         # Start recursive watch — handlers self-unregister on interruption
         _enforcement = None
         try:
-            from oneinfinity.enforcement_controller import get_enforcement_controller
+            from oneinfinity.orchestration.enforcement_controller import get_enforcement_controller
             _enforcement = get_enforcement_controller()
             _enforcement.start_recursive_watch(session.scan_id, session.target)
         except Exception as exc:
@@ -901,7 +901,7 @@ class GodModeConductor:
 
             # Fire NEW_ENDPOINT events from Foundation recon so SwarmMission can unlock
             try:
-                from oneinfinity.event_bus import get_bus, EventType
+                from oneinfinity.orchestration.event_bus import get_bus, EventType
                 bus = get_bus()
                 recon = foundation.recon
                 if recon:

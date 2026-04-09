@@ -116,13 +116,13 @@ class EventDrivenEngine:
 
     def _get_brain(self):
         if self._brain is None:
-            from oneinfinity.attack_graph_brain import get_brain
+            from oneinfinity.intelligence.attack_graph_brain import get_brain
             self._brain = get_brain()
         return self._brain
 
     def _get_bus(self):
         if self._bus is None:
-            from oneinfinity.event_bus import get_bus
+            from oneinfinity.orchestration.event_bus import get_bus
             self._bus = get_bus()
         return self._bus
 
@@ -409,7 +409,7 @@ class EventDrivenEngine:
 
     def _publish_event(self, event_type: str, data: dict) -> None:
         try:
-            from oneinfinity.event_bus import get_bus, EventType
+            from oneinfinity.orchestration.event_bus import get_bus, EventType
             try:
                 et = EventType(event_type)
             except ValueError:

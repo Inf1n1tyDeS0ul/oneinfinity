@@ -19,7 +19,7 @@ from oneinfinity.attack_graph_core.graph_updater import GraphUpdater
 from oneinfinity.attack_graph_core.graph_query_engine import GraphQueryEngine
 from oneinfinity.attack_graph_core.exploit_chain_engine import ExploitChainEngine as InnerChainEngine
 from oneinfinity.attack_graph_core.graph_store import GraphStore
-from oneinfinity.attack_graph_brain import AttackGraphBrain
+from oneinfinity.intelligence.attack_graph_brain import AttackGraphBrain
 from oneinfinity.core.token_execution_engine import TokenExecutionEngine
 
 

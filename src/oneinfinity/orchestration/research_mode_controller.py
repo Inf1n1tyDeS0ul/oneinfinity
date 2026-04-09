@@ -555,7 +555,7 @@ class ResearchModeController:
 
         # ── Phase 1: Application Analysis ─────────────────────────────────────
         self._log("Phase 1: Application structure analysis...")
-        from oneinfinity.application_intelligence import ApplicationIntelligenceEngine
+        from oneinfinity.intelligence.application_intelligence import ApplicationIntelligenceEngine
         self._app_engine = ApplicationIntelligenceEngine(
             self.target, str(self.output_dir)
         )
@@ -602,7 +602,7 @@ class ResearchModeController:
 
         # ── Phase 2: Vulnerability Theory Generation ───────────────────────────
         self._log("Phase 2: Generating vulnerability theories...")
-        from oneinfinity.vulnerability_theory_engine import VulnTheoryEngine
+        from oneinfinity.attack.vulnerability_theory_engine import VulnTheoryEngine
         self._theory_engine = VulnTheoryEngine()
         theory_set = self._theory_engine.generate_vulnerability_theories(app_model)
 
@@ -634,7 +634,7 @@ class ResearchModeController:
         # ── Phase 3: Custom Test Design & Execution ────────────────────────────
         self._log("Phase 3: Designing and executing custom attack tests...")
         base_url = self._detect_base_url()
-        from oneinfinity.custom_test_engine import CustomTestEngine
+        from oneinfinity.attack.custom_test_engine import CustomTestEngine
         self._test_engine = CustomTestEngine(
             target=self.target,
             output_dir=str(self.output_dir),
@@ -669,7 +669,7 @@ class ResearchModeController:
         # ── Phase 4: Zero-Day Anomaly Detection ────────────────────────────────
         if time.time() < deadline:
             self._log("Phase 4: Zero-day anomaly detection...")
-            from oneinfinity.zero_day_engine import ZeroDayEngine
+            from oneinfinity.attack.zero_day_engine import ZeroDayEngine
             self._zd_engine = ZeroDayEngine(
                 target=self.target,
                 output_dir=str(self.output_dir),

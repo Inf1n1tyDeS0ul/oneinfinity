@@ -1013,7 +1013,7 @@ class AttackGraphBrain:
 
     def _publish(self, event_type: BrainEventType, data: dict) -> None:
         try:
-            from oneinfinity.event_bus import get_bus, EventType
+            from oneinfinity.orchestration.event_bus import get_bus, EventType
             # Map brain events onto bus events where appropriate
             mapping = {
                 BrainEventType.FINDING_INTEGRATED: "NEW_VULNERABILITY",

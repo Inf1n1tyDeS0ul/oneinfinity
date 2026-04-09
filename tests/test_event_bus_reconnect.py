@@ -18,7 +18,7 @@ def test_redis_listener_retries_on_disconnect(monkeypatch):
 
     import sys
     import oneinfinity.event_bus as eb
-    from oneinfinity.event_bus import EventBus
+    from oneinfinity.orchestration.event_bus import EventBus
     import queue
     bus = EventBus.__new__(EventBus)
     bus._running = True

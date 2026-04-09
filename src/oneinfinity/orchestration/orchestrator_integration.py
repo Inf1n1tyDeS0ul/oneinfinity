@@ -12,7 +12,7 @@ and degrade gracefully when the orchestrator or AI APIs are unavailable.
 The rest of the platform keeps working without AI enrichment.
 
 Activation:
-    from oneinfinity.orchestrator_integration import activate
+    from oneinfinity.orchestration.orchestrator_integration import activate
     activate()          # call once at startup (e.g. from main.py)
 """
 
@@ -56,7 +56,7 @@ def _ede_post_hook(output, classification) -> None:
         if not content:
             return
         # Publish AI analysis as an event
-        from oneinfinity.event_bus import get_bus, EventType
+        from oneinfinity.orchestration.event_bus import get_bus, EventType
         get_bus().publish(
             event_type=EventType.HYPOTHESIS_CREATED,
             source="orchestrator_integration",
@@ -74,8 +74,8 @@ def _ede_post_hook(output, classification) -> None:
 
 def _wire_ede() -> bool:
     try:
-        from oneinfinity.event_driven_engine import get_engine
-        from oneinfinity.model_orchestrator import get_orchestrator
+        from oneinfinity.orchestration.event_driven_engine import get_engine
+        from oneinfinity.orchestration.model_orchestrator import get_orchestrator
         orch = get_orchestrator()
         orch.add_post_hook(_ede_post_hook)
         log.info("Orchestrator wired into EventDrivenEngine (post-hook)")
@@ -99,12 +99,12 @@ def _trigger_callback(firing) -> None:
 
 def _trigger_ai_call(firing) -> None:
     try:
-        from oneinfinity.model_orchestrator import get_orchestrator
+        from oneinfinity.orchestration.model_orchestrator import get_orchestrator
         orch   = get_orchestrator()
         output = orch.execute_for_trigger(firing)
         if output and output.confidence >= 0.6 and output.content:
             # Feed AI guidance back into the event bus
-            from oneinfinity.event_bus import get_bus, EventType
+            from oneinfinity.orchestration.event_bus import get_bus, EventType
             get_bus().publish(
                 event_type=EventType.HYPOTHESIS_CREATED,
                 source="orchestrator_trigger",
@@ -125,7 +125,7 @@ def _trigger_ai_call(firing) -> None:
 
 def _wire_triggers() -> bool:
     try:
-        from oneinfinity.graph_trigger_engine import get_trigger_engine
+        from oneinfinity.orchestration.graph_trigger_engine import get_trigger_engine
         get_trigger_engine().set_trigger_callback(_trigger_callback)
         log.info("Orchestrator wired into GraphTriggerEngine (callback)")
         return True
@@ -149,7 +149,7 @@ def _fabric_finding_hook(finding: dict) -> None:
 
 def _fabric_ai_enrich(finding: dict) -> None:
     try:
-        from oneinfinity.model_orchestrator import get_orchestrator
+        from oneinfinity.orchestration.model_orchestrator import get_orchestrator
         orch = get_orchestrator()
         task = {
             "description": (
@@ -169,7 +169,7 @@ def _fabric_ai_enrich(finding: dict) -> None:
         output = orch.execute(task, task_id=f"fabric:{finding.get('finding_id','?')}")
         if output and output.confidence >= 0.55:
             # Merge AI analysis into the original finding and re-publish
-            from oneinfinity.event_bus import get_bus, EventType
+            from oneinfinity.orchestration.event_bus import get_bus, EventType
             enriched = {
                 **finding,
                 "ai_analysis":  output.content[:2000],
@@ -227,7 +227,7 @@ def _patch_daemon_workers() -> bool:
                 # If we got very few theories, augment with AI
                 if len(results) < 3:
                     try:
-                        from oneinfinity.model_orchestrator import get_orchestrator
+                        from oneinfinity.orchestration.model_orchestrator import get_orchestrator
                         orch   = get_orchestrator()
                         output = orch.execute_for_daemon("HypothesisWorker", {
                             "event_type": str(event.event_type),

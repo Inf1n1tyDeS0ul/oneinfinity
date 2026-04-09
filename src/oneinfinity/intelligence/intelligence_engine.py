@@ -287,7 +287,7 @@ class IntelligenceEngine:
             theory's confidence score, and ``severity`` from the theory.
         """
         try:
-            from oneinfinity.vulnerability_theory_engine import VulnTheoryEngine
+            from oneinfinity.attack.vulnerability_theory_engine import VulnTheoryEngine
         except ImportError as exc:
             log.error("generate_theories: vulnerability_theory_engine unavailable — %s", exc)
             return []
@@ -330,7 +330,7 @@ class IntelligenceEngine:
         """
         options = options or {}
         try:
-            from oneinfinity.zero_day_engine import ZeroDayEngine
+            from oneinfinity.attack.zero_day_engine import ZeroDayEngine
         except ImportError as exc:
             log.error("run_zero_day: zero_day_engine unavailable — %s", exc)
             return []
