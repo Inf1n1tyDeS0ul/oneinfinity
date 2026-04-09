@@ -3,12 +3,13 @@ result_ingestion_engine.py — Fixes the tool→output→parser→database→gra
 
 Every tool result (nuclei, dalfox, sqlmap, subfinder, httpx, etc.) must flow through here.
 No silent failures — every error is logged with the source.
+
+Storage: PostgreSQL (hard requirement).
 """
 from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import threading
 import time
 import uuid
@@ -21,13 +22,18 @@ import path_manager
 log = logging.getLogger("oneinfinity.result_ingestion")
 
 
-def _get_db_manager_sync():
-    """Get DBManager synchronously for use in sync ingestion code."""
+def _require_pg():
+    """Return DBManager in PG mode, or raise if unavailable."""
     try:
         from core.db_manager import get_db_manager_sync
-        return get_db_manager_sync()
-    except Exception:
-        return None
+        mgr = get_db_manager_sync()
+        if mgr is not None and mgr.mode in ("distributed", "postgres"):
+            return mgr
+    except Exception as exc:
+        raise RuntimeError(f"PostgreSQL is required but DBManager unavailable: {exc}") from exc
+    raise RuntimeError(
+        "PostgreSQL is required. Set DB_MODE=postgres or DB_MODE=distributed."
+    )
 
 
 def _get_graph_learning_writer():
@@ -336,88 +342,16 @@ _PARSER_MAP: dict[str, Callable[[dict, str], Optional[NormalizedFinding]]] = {
     "httpx": _parse_httpx,
 }
 
-_CREATE_FINDINGS_TABLE = """
-CREATE TABLE IF NOT EXISTS findings (
-    finding_id  TEXT PRIMARY KEY,
-    scan_id     TEXT NOT NULL,
-    target      TEXT,
-    title       TEXT,
-    severity    TEXT,
-    vuln_type   TEXT,
-    evidence    TEXT,
-    payload     TEXT,
-    url         TEXT,
-    tool        TEXT,
-    confidence  REAL,
-    cvss        REAL,
-    status      TEXT DEFAULT 'new',
-    source_type TEXT DEFAULT 'tool',
-    created_at  TEXT,
-    raw_json    TEXT
-);
-"""
-
-_CREATE_RECON_ASSETS_TABLE = """
-CREATE TABLE IF NOT EXISTS recon_assets (
-    asset_id      TEXT PRIMARY KEY,
-    scan_id       TEXT NOT NULL,
-    asset_type    TEXT,
-    value         TEXT,
-    metadata_json TEXT,
-    created_at    TEXT
-);
-"""
-
-_CREATE_RAW_FINDINGS_TABLE = """
-CREATE TABLE IF NOT EXISTS raw_findings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    tool TEXT,
-    raw_json TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-"""
-
 
 class ResultIngestionEngine:
-    """Central funnel for all tool results → SQLite → attack graph → UI broadcast."""
+    """Central funnel for all tool results → PostgreSQL → attack graph → UI broadcast."""
 
     def __init__(self) -> None:
-        self._db_path = path_manager.findings_db_path()   # canonical: ~/.oneinfinity/databases/findings.db
-        self._lock = threading.Lock()
         self._broadcast_cb: Optional[Callable[[dict], None]] = None
-        self._init_db()
-
-    # ------------------------------------------------------------------
-    # Setup
-    # ------------------------------------------------------------------
 
     def _init_db(self) -> None:
-        # In PG mode, DBManager._ensure_schema() handles table creation.
-        mgr = _get_db_manager_sync()
-        if mgr is not None and mgr.mode in ("distributed", "postgres"):
-            log.debug("ResultIngestionEngine: PG mode — skipping SQLite table creation")
-            return
-        try:
-            with sqlite3.connect(str(self._db_path), timeout=30) as conn:
-                conn.execute("PRAGMA journal_mode=WAL;")
-                conn.execute("PRAGMA synchronous=FULL;")
-                conn.execute(_CREATE_FINDINGS_TABLE)
-                conn.execute(_CREATE_RECON_ASSETS_TABLE)
-                conn.execute(_CREATE_RAW_FINDINGS_TABLE)
-                # Schema migration: add source_type column if missing (existing DBs)
-                existing_cols = {
-                    row[1] for row in conn.execute("PRAGMA table_info(findings)").fetchall()
-                }
-                if "source_type" not in existing_cols:
-                    conn.execute(
-                        "ALTER TABLE findings ADD COLUMN source_type TEXT DEFAULT 'tool'"
-                    )
-                    log.info("ResultIngestionEngine: migrated findings table — added source_type column")
-                conn.commit()
-            log.debug("ResultIngestionEngine: DB initialised at %s", self._db_path)
-        except Exception as exc:
-            log.error("ResultIngestionEngine: DB init failed: %s", exc)
-            raise RuntimeError("ResultIngestionEngine DB init failed") from exc
+        """No-op: PG schema is managed by DBManager._ensure_schema(). Kept for backwards compatibility."""
+        pass
 
     def set_broadcast_callback(self, cb: Callable[[dict], None]) -> None:
         """Register a callback(finding_dict) called for each new finding."""
@@ -444,7 +378,7 @@ class ResultIngestionEngine:
                      finding.confidence, confidence_threshold, finding.vuln_type)
             return None
 
-        # 2. Check-then-store atomically under the write lock to avoid TOCTOU.
+        # 2. Check-then-store
         try:
             stored = self._check_and_store(finding)
         except Exception as exc:
@@ -472,72 +406,8 @@ class ResultIngestionEngine:
         return finding
 
     def _check_and_store(self, finding: NormalizedFinding) -> bool:
-        """Atomically check for duplicate and store if new. Returns True if stored."""
-        # Try Postgres first (via DBManager)
-        mgr = _get_db_manager_sync()
-        if mgr is not None and mgr.mode in ("distributed", "postgres"):
-            try:
-                return mgr.sync_check_and_save_finding(finding.to_dict())
-            except Exception as exc:
-                log.warning("DBManager check_and_save failed, falling back to SQLite: %s", exc)
-        # SQLite fallback — route through DBManager abstraction
-        last_exc: Optional[Exception] = None
-        for attempt in range(3):
-            try:
-                with self._lock:
-                    with sqlite3.connect(str(self._db_path), timeout=30) as conn:
-                        conn.execute("PRAGMA journal_mode=WAL;")
-                        # Dedup check only — no INSERT here
-                        row = conn.execute(
-                            "SELECT 1 FROM findings "
-                            "WHERE (scan_id=? AND vuln_type=? AND url=?) "
-                            "OR (vuln_type=? AND url=? AND created_at > datetime('now', '-1 day')) "
-                            "LIMIT 1",
-                            (finding.scan_id, finding.vuln_type, finding.url,
-                             finding.vuln_type, finding.url),
-                        ).fetchone()
-                        if row is not None:
-                            return False
-                # Delegate INSERT to DBManager to maintain single write path
-                mgr = _get_db_manager_sync()
-                if mgr is not None:
-                    mgr._sqlite_save_finding(finding.to_dict())
-                    return True
-                # Last-resort direct write only if DBManager itself is unavailable
-                log.warning(
-                    "FALLBACK TRIGGERED: DBManager unavailable — writing finding directly to SQLite"
-                )
-                with self._lock:
-                    with sqlite3.connect(str(self._db_path), timeout=30) as conn:
-                        conn.execute("PRAGMA synchronous=FULL;")
-                        conn.execute(
-                            "INSERT OR REPLACE INTO findings "
-                            "(finding_id, scan_id, target, title, severity, vuln_type, "
-                            " evidence, payload, url, tool, confidence, cvss, status, "
-                            " source_type, created_at, raw_json) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (
-                                finding.finding_id, finding.scan_id, finding.target,
-                                finding.title, finding.severity, finding.vuln_type,
-                                finding.evidence, finding.payload, finding.url, finding.tool,
-                                finding.confidence, finding.cvss, finding.status,
-                                finding.source_type, finding.created_at, finding.safe_raw_json(),
-                            ),
-                        )
-                        conn.commit()
-                        return True
-            except sqlite3.OperationalError as exc:
-                last_exc = exc
-                if "locked" in str(exc).lower() and attempt < 2:
-                    import time as _t; _t.sleep(0.2 * (2 ** attempt))
-                    continue
-                raise
-            except Exception as exc:
-                last_exc = exc
-                raise
-        if last_exc:
-            raise RuntimeError("Failed to store finding") from last_exc
-        return False
+        """Atomically check for duplicate and store if new via PostgreSQL."""
+        return _require_pg().sync_check_and_save_finding(finding.to_dict())
 
     def ingest_batch(self, results: List[RawResult]) -> List[NormalizedFinding]:
         """Ingest a list of RawResults; returns list of successfully parsed findings."""
@@ -559,53 +429,11 @@ class ResultIngestionEngine:
         if metadata is None:
             metadata = {}
         asset_id = str(uuid.uuid4())[:12]
-        mgr = _get_db_manager_sync()
-        if mgr is not None and mgr.mode in ("distributed", "postgres"):
-            try:
-                mgr.sync_save_recon_asset(asset_id, scan_id, asset_type, value, metadata)
-                return
-            except Exception as exc:
-                log.warning("DBManager save_recon_asset failed, falling back to SQLite: %s", exc)
-        created_at = datetime.utcnow().isoformat()
-        try:
-            with self._lock:
-                with sqlite3.connect(str(self._db_path)) as conn:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO recon_assets "
-                        "(asset_id, scan_id, asset_type, value, metadata_json, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        (asset_id, scan_id, asset_type, value, json.dumps(metadata), created_at),
-                    )
-                    conn.commit()
-        except Exception as exc:
-            log.error("ingest_recon_asset: DB error [scan=%s asset_type=%s value=%s]: %s",
-                      scan_id, asset_type, value, exc)
+        _require_pg().sync_save_recon_asset(asset_id, scan_id, asset_type, value, metadata)
 
     def store_raw_findings(self, findings: List[dict]) -> int:
         """Store raw findings before validation."""
-        mgr = _get_db_manager_sync()
-        if mgr is not None and mgr.mode in ("distributed", "postgres"):
-            try:
-                return mgr.sync_store_raw_findings(findings)
-            except Exception as exc:
-                log.warning("DBManager store_raw_findings failed, falling back to SQLite: %s", exc)
-        inserted = 0
-        try:
-            with self._lock:
-                with sqlite3.connect(str(self._db_path), timeout=30) as conn:
-                    conn.execute("PRAGMA journal_mode=WAL;")
-                    conn.execute("PRAGMA synchronous=FULL;")
-                    for f in findings:
-                        tool = f.get("tool") or f.get("source_tool") or "unknown"
-                        conn.execute(
-                            "INSERT INTO raw_findings (tool, raw_json) VALUES (?, ?)",
-                            (tool, json.dumps(f, default=str)),
-                        )
-                        inserted += 1
-                    conn.commit()
-        except Exception as exc:
-            log.error("store_raw_findings: DB error: %s", exc)
-        return inserted
+        return _require_pg().sync_store_raw_findings(findings)
 
     def persist_finding(self, finding: dict) -> None:
         """Persist an already-normalised finding dict to the findings table."""
@@ -636,61 +464,11 @@ class ResultIngestionEngine:
         severity: str = None,
     ) -> List[dict]:
         """Query findings with optional filters."""
-        mgr = _get_db_manager_sync()
-        if mgr is not None and mgr.mode in ("distributed", "postgres"):
-            try:
-                return mgr.sync_get_findings(scan_id=scan_id, target=target, severity=severity)
-            except Exception as exc:
-                log.warning("DBManager get_findings failed, falling back to SQLite: %s", exc)
-        clauses: List[str] = []
-        params: List = []
-        if scan_id:
-            clauses.append("scan_id = ?")
-            params.append(scan_id)
-        if target:
-            clauses.append("target = ?")
-            params.append(target)
-        if severity:
-            clauses.append("severity = ?")
-            params.append(severity)
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        sql = f"SELECT * FROM findings {where} ORDER BY created_at DESC"
-        try:
-            with sqlite3.connect(str(self._db_path)) as conn:
-                conn.row_factory = sqlite3.Row
-                rows = conn.execute(sql, params).fetchall()
-                results = []
-                for row in rows:
-                    d = dict(row)
-                    # Compatibility aliases for legacy code
-                    d["id"] = d.get("finding_id")
-                    d["cvss_score"] = d.get("cvss")
-                    try:
-                        d["raw"] = json.loads(d.pop("raw_json", "{}") or "{}")
-                    except Exception:
-                        d["raw"] = {}
-                    results.append(d)
-                return results
-        except Exception as exc:
-            log.error("get_findings: DB error: %s", exc)
-            return []
+        return _require_pg().sync_get_findings(scan_id=scan_id, target=target, severity=severity)
 
     def delete_findings_for_scan(self, scan_id: str) -> int:
         """Delete all findings for the given scan_id. Returns the count deleted."""
-        mgr = _get_db_manager_sync()
-        if mgr is not None and mgr.mode in ("distributed", "postgres"):
-            try:
-                return mgr.sync_delete_findings_for_scan(scan_id)
-            except Exception as exc:
-                log.warning("DBManager delete_findings_for_scan failed, falling back to SQLite: %s", exc)
-        try:
-            with sqlite3.connect(str(self._db_path)) as conn:
-                cur = conn.execute("DELETE FROM findings WHERE scan_id = ?", (scan_id,))
-                conn.commit()
-                return cur.rowcount
-        except Exception as exc:
-            log.error("delete_findings_for_scan: DB error: %s", exc)
-            return 0
+        return _require_pg().sync_delete_findings_for_scan(scan_id)
 
     def get_recon_assets(
         self,
@@ -698,56 +476,11 @@ class ResultIngestionEngine:
         asset_type: str = None,
     ) -> List[dict]:
         """Query recon assets with optional filters."""
-        mgr = _get_db_manager_sync()
-        if mgr is not None and mgr.mode in ("distributed", "postgres"):
-            try:
-                return mgr.sync_get_recon_assets(scan_id=scan_id, asset_type=asset_type)
-            except Exception as exc:
-                log.warning("DBManager get_recon_assets failed, falling back to SQLite: %s", exc)
-        clauses: List[str] = []
-        params: List = []
-        if scan_id:
-            clauses.append("scan_id = ?")
-            params.append(scan_id)
-        if asset_type:
-            clauses.append("asset_type = ?")
-            params.append(asset_type)
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        sql = f"SELECT * FROM recon_assets {where} ORDER BY created_at DESC"
-        try:
-            with sqlite3.connect(str(self._db_path)) as conn:
-                conn.row_factory = sqlite3.Row
-                rows = conn.execute(sql, params).fetchall()
-                results = []
-                for row in rows:
-                    d = dict(row)
-                    try:
-                        d["metadata"] = json.loads(d.pop("metadata_json", "{}") or "{}")
-                    except Exception:
-                        d["metadata"] = {}
-                    results.append(d)
-                return results
-        except Exception as exc:
-            log.error("get_recon_assets: DB error: %s", exc)
-            return []
+        return _require_pg().sync_get_recon_assets(scan_id=scan_id, asset_type=asset_type)
 
     def finding_count(self, scan_id: str) -> int:
         """Return number of findings for a given scan_id."""
-        mgr = _get_db_manager_sync()
-        if mgr is not None and mgr.mode in ("distributed", "postgres"):
-            try:
-                return mgr.sync_finding_count(scan_id)
-            except Exception as exc:
-                log.warning("DBManager finding_count failed, falling back to SQLite: %s", exc)
-        try:
-            with sqlite3.connect(str(self._db_path)) as conn:
-                row = conn.execute(
-                    "SELECT COUNT(*) FROM findings WHERE scan_id = ?", (scan_id,)
-                ).fetchone()
-                return row[0] if row else 0
-        except Exception as exc:
-            log.error("finding_count: DB error [scan=%s]: %s", scan_id, exc)
-            return 0
+        return _require_pg().sync_finding_count(scan_id)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -762,63 +495,7 @@ class ResultIngestionEngine:
 
     def _store_finding(self, finding: NormalizedFinding) -> None:
         """Unconditionally persist a finding (used by persist_finding, no dup check)."""
-        # Try Postgres first (via DBManager)
-        mgr = _get_db_manager_sync()
-        if mgr is not None and mgr.mode in ("distributed", "postgres"):
-            try:
-                mgr.sync_save_finding(finding.to_dict())
-                return
-            except Exception as exc:
-                log.warning("DBManager save failed, falling back to SQLite: %s", exc)
-        # SQLite fallback (existing logic continues below)
-        last_exc: Optional[Exception] = None
-        for attempt in range(3):
-            try:
-                with self._lock:
-                    with sqlite3.connect(str(self._db_path), timeout=30) as conn:
-                        conn.execute("PRAGMA journal_mode=WAL;")
-                        conn.execute("PRAGMA synchronous=FULL;")
-                        conn.execute(
-                            "INSERT OR REPLACE INTO findings "
-                            "(finding_id, scan_id, target, title, severity, vuln_type, "
-                            " evidence, payload, url, tool, confidence, cvss, status, "
-                            " source_type, created_at, raw_json) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (
-                                finding.finding_id,
-                                finding.scan_id,
-                                finding.target,
-                                finding.title,
-                                finding.severity,
-                                finding.vuln_type,
-                                finding.evidence,
-                                finding.payload,
-                                finding.url,
-                                finding.tool,
-                                finding.confidence,
-                                finding.cvss,
-                                finding.status,
-                                finding.source_type,
-                                finding.created_at,
-                                finding.safe_raw_json(),
-                            ),
-                        )
-                        conn.commit()
-                return
-            except sqlite3.OperationalError as exc:
-                last_exc = exc
-                if "locked" in str(exc).lower() and attempt < 2:
-                    time.sleep(0.2 * (2 ** attempt))
-                    continue
-                raise
-            except Exception as exc:
-                last_exc = exc
-                raise
-
-        log.error("_store_finding: DB error [finding=%s scan=%s]: %s",
-                  finding.finding_id, finding.scan_id, last_exc)
-        if last_exc:
-            raise RuntimeError("Failed to store finding in DB") from last_exc
+        _require_pg().sync_save_finding(finding.to_dict())
 
     def _update_graph(self, finding: NormalizedFinding) -> None:
         """Push finding into AttackGraphBrain as a VULNERABILITY node."""

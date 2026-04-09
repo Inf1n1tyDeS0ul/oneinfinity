@@ -421,42 +421,74 @@ class TestPhase4GraphDensity:
 
 class TestPhase5Persistence:
 
-    def test_graph_survives_sqlite_roundtrip(self, sim_graph):
-        """Nodes and edges must survive a write-to-SQLite + read-from-SQLite cycle."""
+    def test_graph_survives_pg_roundtrip(self, sim_graph):
+        """Nodes and edges must survive a write-to-PG + read-from-PG cycle."""
+        import json
         engine = sim_graph["engine"]
         original_node_count = len(engine._nodes)
         original_edge_count = len(engine._edges)
         assert original_node_count > 0, "Session fixture produced empty graph"
 
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            tmp_path = f.name
-        try:
-            # Write all nodes and edges to a fresh SQLite store
-            store1 = GraphStore(db_path=tmp_path, use_memory=True)
+        # Shared in-memory PG simulation (row dicts keyed by id)
+        pg_nodes: dict = {}
+        pg_edges: dict = {}
+
+        def mock_write(sql, params):
+            if "graph_nodes" in sql:
+                pg_nodes[params[0]] = {
+                    "id": params[0], "node_type": params[1], "label": params[2],
+                    "properties_json": params[3], "severity": params[4],
+                    "risk_score": params[5], "exploitable": params[6],
+                    "validated": params[7], "discovered_at": params[8],
+                    "updated_at": params[9], "source": params[10],
+                    "tags_json": params[11],
+                }
+            elif "graph_edges" in sql:
+                pg_edges[params[0]] = {
+                    "id": params[0], "source_id": params[1], "target_id": params[2],
+                    "edge_type": params[3], "label": params[4],
+                    "properties_json": params[5], "probability": params[6],
+                    "weight": params[7], "requires_auth": params[8],
+                    "created_at": params[9], "source_engine": params[10],
+                }
+            return 1
+
+        def mock_read(sql, params=()):
+            if "graph_nodes" in sql:
+                return list(pg_nodes.values())
+            if "graph_edges" in sql:
+                return list(pg_edges.values())
+            return []
+
+        mock_mgr = MagicMock()
+        mock_mgr.sync_pg_execute_write = MagicMock(side_effect=mock_write)
+        mock_mgr.sync_pg_execute_read = MagicMock(side_effect=mock_read)
+
+        with patch("attack_graph_core.graph_store.SQLiteStore._get_pg", return_value=mock_mgr):
+            # Write all nodes and edges to PG via store1
+            store1 = GraphStore(use_memory=True)
             store1.initialize()
             for node in engine._nodes.values():
                 store1.save_node(node)
             for edge in engine._edges.values():
                 store1.save_edge(edge)
 
-            # Load into a brand-new store from the same SQLite file
-            store2 = GraphStore(db_path=tmp_path, use_memory=True)
-            store2.initialize()   # warms memory from SQLite
+            # Load into a brand-new store reading from the same mock PG
+            store2 = GraphStore(use_memory=True)
+            store2.initialize()   # warms memory from PG
             engine2 = AttackGraphEngine(store=store2)
 
-            assert len(engine2._nodes) == original_node_count, (
-                f"Node count after reload: {len(engine2._nodes)} vs original {original_node_count}"
-            )
-            assert len(engine2._edges) == original_edge_count, (
-                f"Edge count after reload: {len(engine2._edges)} vs original {original_edge_count}"
-            )
+        assert len(engine2._nodes) == original_node_count, (
+            f"Node count after PG reload: {len(engine2._nodes)} vs original {original_node_count}"
+        )
+        assert len(engine2._edges) == original_edge_count, (
+            f"Edge count after PG reload: {len(engine2._edges)} vs original {original_edge_count}"
+        )
 
-            # Specific node must be retrievable
-            target_id = engine2._label_index.get((NodeType.TARGET, "vulnbank.org"))
-            assert target_id is not None, \
-                "Target node 'vulnbank.org' not found after SQLite reload"
-        finally:
-            os.unlink(tmp_path)
+        # Specific node must be retrievable
+        target_id = engine2._label_index.get((NodeType.TARGET, "vulnbank.org"))
+        assert target_id is not None, \
+            "Target node 'vulnbank.org' not found after PG reload"
 
 
 # ---------------------------------------------------------------------------

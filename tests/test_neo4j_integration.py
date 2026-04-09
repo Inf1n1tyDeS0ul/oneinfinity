@@ -13,24 +13,30 @@ from attack_graph_core.graph_query_engine import GraphQueryEngine
 
 
 def test_graph_store_sync_backend_called():
+    from unittest.mock import patch
     backend = MagicMock()
-    store = GraphStore(db_path=":memory:", use_memory=True, sync_backend=backend)
-    store.initialize()
+    mock_mgr = MagicMock()
+    mock_mgr.sync_pg_execute_write = MagicMock(return_value=1)
+    mock_mgr.sync_pg_execute_read = MagicMock(return_value=[])
 
-    n = {
-        "id": "n1", "node_type": "target", "label": "t.com",
-        "properties": {}, "discovered_at": "0", "updated_at": "0",
-    }
-    store.save_node(n)
-    backend.on_node_saved.assert_called_once()
+    with patch("attack_graph_core.graph_store.SQLiteStore._get_pg", return_value=mock_mgr):
+        store = GraphStore(db_path=":memory:", use_memory=True, sync_backend=backend)
+        store.initialize()
 
-    e = {
-        "id": "e1", "source_id": "n1", "target_id": "n1",
-        "edge_type": "hosts", "label": "", "properties": {},
-        "created_at": "0",
-    }
-    store.save_edge(e)
-    assert backend.on_edge_saved.call_count >= 1
+        n = {
+            "id": "n1", "node_type": "target", "label": "t.com",
+            "properties": {}, "discovered_at": "0", "updated_at": "0",
+        }
+        store.save_node(n)
+        backend.on_node_saved.assert_called_once()
+
+        e = {
+            "id": "e1", "source_id": "n1", "target_id": "n1",
+            "edge_type": "hosts", "label": "", "properties": {},
+            "created_at": "0",
+        }
+        store.save_edge(e)
+        assert backend.on_edge_saved.call_count >= 1
 
 
 def test_hybrid_dfs_falls_back_when_no_neo4j():

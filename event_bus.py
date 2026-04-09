@@ -9,7 +9,7 @@ Architecture
 - Single asyncio event loop running in a dedicated daemon thread
 - Per-topic subscriber registries (coroutines + sync callables)
 - Ring-buffer event log (configurable, default 2000 events)
-- SQLite persistence for events (optional, enabled by default)
+- PostgreSQL persistence for events via DBManager
 - WebSocket broadcast interface: register_ws_client() / unregister_ws_client()
 - Priority queuing: HIGH / NORMAL / LOW
 - Dead-letter queue for failed handlers
@@ -40,7 +40,6 @@ import asyncio
 import json
 import logging
 import queue
-import sqlite3
 import threading
 import time
 import uuid
@@ -51,8 +50,6 @@ from pathlib import Path
 from typing import Any, Callable, Coroutine, Optional, Union
 
 log = logging.getLogger("oneinfinity.event_bus")
-
-from path_manager import db_path as db_path_fn
 
 # ── Event types ───────────────────────────────────────────────────────────────
 
@@ -151,7 +148,7 @@ class EventBus:
 
     RING_BUFFER_SIZE = 2000
 
-    def __init__(self, db_path: Optional[Path] = None, persist: bool = True):
+    def __init__(self):
         self._lock = threading.Lock()
         # topic → list of subscriptions
         self._subs: dict[str | None, list[_Subscription]] = {}
@@ -178,13 +175,6 @@ class EventBus:
         self._running = False
         self._thread: Optional[threading.Thread] = None
 
-        # SQLite persistence
-        self._persist = persist
-        self._db: Optional[sqlite3.Connection] = None
-        if persist:
-            db_path = db_path or db_path_fn("event_bus.db")
-            self._init_db(db_path)
-
         self._start()
 
         # Redis transport (optional — falls back to local-only when unavailable)
@@ -195,24 +185,6 @@ class EventBus:
         self._init_redis_transport()
 
     # ── Init ──────────────────────────────────────────────────────────────────
-
-    def _init_db(self, db_path: Path):
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(str(db_path), check_same_thread=False)
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("""
-            CREATE TABLE IF NOT EXISTS events (
-                event_id     TEXT PRIMARY KEY,
-                event_type   TEXT NOT NULL,
-                source       TEXT,
-                data         TEXT,
-                timestamp    REAL,
-                correlation_id TEXT
-            )
-        """)
-        self._db.execute("CREATE INDEX IF NOT EXISTS idx_evt_type ON events(event_type)")
-        self._db.execute("CREATE INDEX IF NOT EXISTS idx_evt_ts   ON events(timestamp)")
-        self._db.commit()
 
     def _start(self):
         self._running = True
@@ -363,24 +335,12 @@ class EventBus:
                 if sub in lst:
                     lst.remove(sub)
 
-        # Persist
-        if self._persist:
-            try:
-                d = event.to_dict()
-                await _persist_event_coro(d)
-            except Exception:
-                pass
-            if self._db:
-                try:
-                    self._db.execute(
-                        "INSERT OR IGNORE INTO events(event_id,event_type,source,data,timestamp,correlation_id)"
-                        " VALUES(?,?,?,?,?,?)",
-                        (d["event_id"], d["event_type"], d["source"],
-                         json.dumps(d["data"]), d["timestamp"], d["correlation_id"])
-                    )
-                    self._db.commit()
-                except Exception:
-                    pass
+        # Persist to PostgreSQL
+        try:
+            d = event.to_dict()
+            await _persist_event_coro(d)
+        except Exception:
+            pass
 
         # Ring buffer
         d = event.to_dict()
@@ -544,22 +504,33 @@ class EventBus:
         return events[:limit]
 
     def query_db(self, event_type: str = "", since: float = 0.0, limit: int = 200) -> list[dict]:
-        """Query persisted events from SQLite."""
-        if not self._db:
-            return self.recent(limit=limit, event_type=event_type)
-        q = "SELECT event_id,event_type,source,data,timestamp FROM events WHERE 1=1"
-        params: list = []
-        if event_type:
-            q += " AND event_type=?"
-            params.append(event_type)
-        if since > 0:
-            q += " AND timestamp>=?"
-            params.append(since)
-        q += " ORDER BY timestamp DESC LIMIT ?"
-        params.append(limit)
-        rows = self._db.execute(q, params).fetchall()
-        return [{"event_id": r[0], "event_type": r[1], "source": r[2],
-                 "data": json.loads(r[3] or "{}"), "timestamp": r[4]} for r in rows]
+        """Query persisted events from PostgreSQL (falls back to ring buffer if PG unavailable)."""
+        try:
+            from core.db_manager import get_db_manager_sync
+            mgr = get_db_manager_sync()
+            if mgr and mgr.mode in ("distributed", "postgres"):
+                q = ("SELECT event_id, event_type, source, data, timestamp "
+                     "FROM events WHERE 1=1")
+                params: list = []
+                if event_type:
+                    q += " AND event_type=%s"
+                    params.append(event_type)
+                if since > 0:
+                    q += " AND timestamp>=%s"
+                    params.append(since)
+                q += " ORDER BY timestamp DESC LIMIT %s"
+                params.append(limit)
+                rows = mgr.sync_pg_execute_read(q, tuple(params))
+                return [
+                    {"event_id": r["event_id"], "event_type": r["event_type"],
+                     "source": r["source"],
+                     "data": json.loads(r["data"] or "{}") if isinstance(r["data"], str) else (r["data"] or {}),
+                     "timestamp": r["timestamp"]}
+                    for r in rows
+                ]
+        except Exception:
+            pass
+        return self.recent(limit=limit, event_type=event_type)
 
     def stats(self) -> dict:
         with self._lock:
@@ -589,7 +560,6 @@ async def _persist_event_coro(event_dict: dict) -> None:
             await mgr.save_event(event_dict)
     except Exception:
         pass
-    # SQLite fallback handled by caller
 
 
 # ── Singleton ─────────────────────────────────────────────────────────────────
@@ -604,8 +574,7 @@ def get_bus() -> EventBus:
     if _bus is None:
         with _bus_lock:
             if _bus is None:
-                db = db_path_fn("event_bus.db")
-                _bus = EventBus(db_path=db)
+                _bus = EventBus()
     return _bus
 
 

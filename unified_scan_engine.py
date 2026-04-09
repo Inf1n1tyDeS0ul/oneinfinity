@@ -29,7 +29,6 @@ import asyncio
 import json
 import logging
 import re
-import sqlite3
 import threading
 import time
 import uuid
@@ -144,64 +143,46 @@ class ScanSession:
 # Database helpers
 # ---------------------------------------------------------------------------
 
-_DB_SCHEMA = """
-CREATE TABLE IF NOT EXISTS scans (
-    scan_id       TEXT PRIMARY KEY,
-    target        TEXT NOT NULL,
-    target_type   TEXT NOT NULL,
-    status        TEXT NOT NULL,
-    start_time    REAL,
-    end_time      REAL,
-    findings_json TEXT,
-    phases_json   TEXT,
-    error         TEXT
-);
-"""
-
-
-def _get_db_conn() -> sqlite3.Connection:
-    path = db_path("metadata.db")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), check_same_thread=False)
-    conn.execute(_DB_SCHEMA)
-    conn.commit()
-    return conn
+def _require_pg():
+    """Return DBManager in PG mode, or raise if unavailable."""
+    try:
+        from core.db_manager import get_db_manager_sync
+        mgr = get_db_manager_sync()
+        if mgr is not None and mgr.mode in ("distributed", "postgres"):
+            return mgr
+    except Exception as exc:
+        raise RuntimeError(f"PostgreSQL is required but DBManager unavailable: {exc}") from exc
+    raise RuntimeError(
+        "PostgreSQL is required. Set DB_MODE=postgres or DB_MODE=distributed."
+    )
 
 
 def _persist_session(session: ScanSession) -> None:
-    """Write (upsert) the session record to SQLite."""
+    """Write (upsert) the session record to PostgreSQL."""
     try:
-        conn = _get_db_conn()
+        pg = _require_pg()
         phases_json = json.dumps(
             {n: {"status": pr.status, "error": pr.error} for n, pr in session.phases.items()}
         )
-        conn.execute(
+        data_json = json.dumps({
+            "target_type":    session.target_type,
+            "start_time":     session.start_time,
+            "end_time":       session.end_time,
+            "findings_count": len(session.findings),
+            "phases":         phases_json,
+            "error":          session.error,
+        })
+        pg.sync_pg_execute_write(
             """
-            INSERT INTO scans
-                (scan_id, target, target_type, status, start_time, end_time,
-                 findings_json, phases_json, error)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(scan_id) DO UPDATE SET
-                status        = excluded.status,
-                end_time      = excluded.end_time,
-                findings_json = excluded.findings_json,
-                phases_json   = excluded.phases_json,
-                error         = excluded.error
+            INSERT INTO scans (scan_id, target, scan_type, status, data)
+            VALUES (%s, %s, %s, %s, %s::jsonb)
+            ON CONFLICT (scan_id) DO UPDATE SET
+                status = EXCLUDED.status,
+                data   = EXCLUDED.data
             """,
-            (
-                session.scan_id,
-                session.target,
-                session.target_type,
-                session.status,
-                session.start_time,
-                session.end_time,
-                json.dumps(session.findings),
-                phases_json,
-                session.error,
-            ),
+            (session.scan_id, session.target, session.target_type,
+             session.status, data_json),
         )
-        conn.commit()
-        conn.close()
     except Exception as exc:
         log.warning("Failed to persist scan session %s: %s", session.scan_id, exc)
 

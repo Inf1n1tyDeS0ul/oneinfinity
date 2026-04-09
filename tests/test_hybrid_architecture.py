@@ -32,7 +32,7 @@ def test_event_bus_publishes_without_redis():
     """EventBus must publish and dispatch events without Redis."""
     from event_bus import EventBus, EventType
     received = []
-    bus = EventBus(persist=False)
+    bus = EventBus()
     bus.on(EventType.NEW_TARGET, lambda e: received.append(e.data))
     bus.publish(EventType.NEW_TARGET, {"target": "test.com"}, correlation_id="scan-1")
     import time; time.sleep(0.15)

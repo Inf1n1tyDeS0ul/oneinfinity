@@ -1,14 +1,13 @@
 # tests/test_model_budget_pg.py
 """
-Tests for ModelBudgetManager PG-first migration.
-Verifies that PG mode routes writes/reads through DBManager helpers.
+Tests for ModelBudgetManager PG-only migration.
+Verifies that PG mode routes writes/reads through _require_pg.
 """
 import sys
 import os
 import time
 from unittest.mock import MagicMock, patch
 
-# Ensure the repo root is on sys.path so model_budget_manager can be imported
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
@@ -23,14 +22,11 @@ def _make_pg_mgr(write_results=None, read_results=None):
     return mgr
 
 
-def _make_budget_manager_pg(mock_mgr, tmp_path):
+def _make_budget_manager_pg(mock_mgr):
     """Instantiate ModelBudgetManager with PG mock injected."""
     from model_budget_manager import ModelBudgetManager
-    with patch(
-        "model_budget_manager.ModelBudgetManager._pg",
-        return_value=mock_mgr,
-    ):
-        bm = ModelBudgetManager(db_path=tmp_path / "model_usage.db")
+    with patch("model_budget_manager._require_pg", return_value=mock_mgr):
+        bm = ModelBudgetManager()
     return bm
 
 
@@ -40,12 +36,9 @@ def test_record_calls_pg_execute_write(tmp_path):
     """record() must call sync_pg_execute_write with SQL targeting model_usage."""
     mock_mgr = _make_pg_mgr()
 
-    with patch(
-        "model_budget_manager.ModelBudgetManager._pg",
-        return_value=mock_mgr,
-    ):
+    with patch("model_budget_manager._require_pg", return_value=mock_mgr):
         from model_budget_manager import ModelBudgetManager
-        bm = ModelBudgetManager(db_path=tmp_path / "model_usage.db")
+        bm = ModelBudgetManager()
 
         # Call record
         bm.record(
@@ -64,7 +57,7 @@ def test_record_calls_pg_execute_write(tmp_path):
         "sync_pg_execute_write should have been called"
 
     call_args = mock_mgr.sync_pg_execute_write.call_args
-    sql = call_args[0][0]  # first positional arg is the SQL string
+    sql = call_args[0][0]
     assert "model_usage" in sql, \
         f"SQL should target model_usage table, got: {sql!r}"
 
@@ -80,12 +73,9 @@ def test_refresh_cache_calls_pg_execute_read(tmp_path):
     """_refresh_cache() must call sync_pg_execute_read in PG mode."""
     mock_mgr = _make_pg_mgr(read_results=[])
 
-    with patch(
-        "model_budget_manager.ModelBudgetManager._pg",
-        return_value=mock_mgr,
-    ):
+    with patch("model_budget_manager._require_pg", return_value=mock_mgr):
         from model_budget_manager import ModelBudgetManager
-        bm = ModelBudgetManager(db_path=tmp_path / "model_usage.db")
+        bm = ModelBudgetManager()
 
         # _refresh_cache is called during __init__; reset call count then call again
         mock_mgr.sync_pg_execute_read.reset_mock()
@@ -107,12 +97,9 @@ def test_record_escalation_bool_in_pg_mode(tmp_path):
     """In PG mode, escalation must be sent as Python bool, not int."""
     mock_mgr = _make_pg_mgr()
 
-    with patch(
-        "model_budget_manager.ModelBudgetManager._pg",
-        return_value=mock_mgr,
-    ):
+    with patch("model_budget_manager._require_pg", return_value=mock_mgr):
         from model_budget_manager import ModelBudgetManager
-        bm = ModelBudgetManager(db_path=tmp_path / "model_usage.db")
+        bm = ModelBudgetManager()
 
         bm.record(
             model_id="claude-3-haiku",
@@ -133,31 +120,28 @@ def test_record_escalation_bool_in_pg_mode(tmp_path):
     assert escalation_val is False
 
 
-# ── Test 4: SQLite fallback when PG unavailable ────────────────────────────────
+# ── Test 4: RuntimeError when PG unavailable ────────────────────────────────────
 
-def test_record_falls_back_to_sqlite_when_no_pg(tmp_path):
-    """When _pg() returns None, record() should write to SQLite without error."""
-    with patch(
-        "model_budget_manager.ModelBudgetManager._pg",
-        return_value=None,
-    ):
+def test_record_raises_when_pg_unavailable(tmp_path):
+    """When PG is unavailable, record() must raise RuntimeError."""
+    mock_mgr = _make_pg_mgr()
+
+    with patch("model_budget_manager._require_pg", return_value=mock_mgr):
         from model_budget_manager import ModelBudgetManager
-        bm = ModelBudgetManager(db_path=tmp_path / "model_usage.db")
+        bm = ModelBudgetManager()
 
-        # Should not raise
-        bm.record(
-            model_id="gpt-3.5-turbo",
-            provider="openai",
-            task_id="task-003",
-            task_category="GENERAL",
-            input_tokens=50,
-            output_tokens=20,
-            cost_usd=0.00005,
-        )
-
-    # Verify it actually wrote to SQLite
-    import sqlite3
-    conn = sqlite3.connect(str(tmp_path / "model_usage.db"))
-    count = conn.execute("SELECT COUNT(*) FROM model_usage").fetchone()[0]
-    conn.close()
-    assert count == 1, f"Expected 1 row in SQLite, got {count}"
+    with patch("model_budget_manager._require_pg",
+               side_effect=RuntimeError("PostgreSQL is required")):
+        try:
+            bm.record(
+                model_id="gpt-3.5-turbo",
+                provider="openai",
+                task_id="task-003",
+                task_category="GENERAL",
+                input_tokens=50,
+                output_tokens=20,
+                cost_usd=0.00005,
+            )
+            assert False, "Expected RuntimeError"
+        except RuntimeError as exc:
+            assert "PostgreSQL" in str(exc)

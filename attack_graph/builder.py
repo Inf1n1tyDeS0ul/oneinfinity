@@ -243,16 +243,17 @@ class AttackGraphBuilder:
 
     # ── From ResultIngestionEngine findings.db ────────────────────────────────
 
-    def from_findings_db(self, db_path: str) -> "AttackGraphBuilder":
-        """Load findings from ResultIngestionEngine's findings.db into the graph."""
-        import sqlite3
+    def from_findings_db(self, db_path: str = "") -> "AttackGraphBuilder":
+        """Load findings from PostgreSQL into the graph."""
         try:
-            with sqlite3.connect(db_path) as conn:
-                conn.row_factory = sqlite3.Row
-                rows = conn.execute(
-                    "SELECT * FROM findings WHERE status NOT IN ('false_positive') "
-                    "ORDER BY created_at DESC"
-                ).fetchall()
+            from core.db_manager import get_db_manager_sync
+            mgr = get_db_manager_sync()
+            if mgr is None or mgr.mode not in ("distributed", "postgres"):
+                raise RuntimeError("PostgreSQL is required")
+            rows = mgr.sync_pg_execute_read(
+                "SELECT * FROM findings WHERE status NOT IN ('false_positive') "
+                "ORDER BY created_at DESC"
+            )
             for i, row in enumerate(rows):
                 r = dict(row)
                 self._add_finding({

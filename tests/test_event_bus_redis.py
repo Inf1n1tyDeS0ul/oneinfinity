@@ -9,7 +9,7 @@ def test_event_bus_publishes_to_redis_when_available():
 
     with patch("core.redis_client.get_redis", return_value=mock_redis):
         from event_bus import EventBus, EventType
-        bus = EventBus(persist=False)
+        bus = EventBus()
         bus._redis = mock_redis  # inject after construction
         bus.publish(EventType.NEW_TARGET, {"target": "example.com"})
         import time; time.sleep(0.05)
@@ -22,7 +22,7 @@ def test_event_bus_falls_back_when_redis_none():
     with patch("core.redis_client.get_redis", return_value=None):
         from event_bus import EventBus, EventType
         received = []
-        bus = EventBus(persist=False)
+        bus = EventBus()
         bus.on(EventType.NEW_TARGET, lambda e: received.append(e))
         bus.publish(EventType.NEW_TARGET, {"target": "fallback.com"})
         import time; time.sleep(0.1)

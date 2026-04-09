@@ -67,10 +67,15 @@ def test_record_result_calls_pg_execute_write(tmp_path):
         f"At least one SQL should target test_results, got: {sqls}"
 
 
-def test_save_gene_falls_back_to_sqlite_when_pg_none(tmp_path):
-    """When _pg() returns None, save_gene() should write to SQLite without error."""
+def test_save_gene_raises_when_pg_unavailable(tmp_path):
+    """When _pg() raises, save_gene() must propagate the RuntimeError."""
     from ai_security.adversarial_prompt_evolution import EvolutionDB
 
-    with patch("ai_security.adversarial_prompt_evolution.EvolutionDB._pg", return_value=None):
+    with patch("ai_security.adversarial_prompt_evolution.EvolutionDB._pg",
+               side_effect=RuntimeError("PostgreSQL is required")):
         db = EvolutionDB(db_path=tmp_path / "evolution.db")
-        db.save_gene(_make_gene())
+        try:
+            db.save_gene(_make_gene())
+            assert False, "Expected RuntimeError"
+        except RuntimeError as exc:
+            assert "PostgreSQL" in str(exc)

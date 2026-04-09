@@ -1,5 +1,5 @@
 # tests/test_db_ext_pg.py
-"""Tests verifying ExtendedDB routes writes/reads through DBManager in PG mode."""
+"""Tests verifying ExtendedDB routes writes/reads through _require_pg in PG-only mode."""
 import sys
 import os
 from unittest.mock import MagicMock, patch
@@ -20,7 +20,7 @@ def _make_pg_mgr(read_results=None):
 def _make_db(tmp_path, pg_mgr=None):
     from framework.db_ext import ExtendedDB
     mock_mgr = pg_mgr or _make_pg_mgr()
-    with patch("framework.db_ext.ExtendedDB._pg", return_value=mock_mgr):
+    with patch("framework.db_ext._require_pg", return_value=mock_mgr):
         db = ExtendedDB(str(tmp_path / "ext.db"))
     return db, mock_mgr
 
@@ -31,7 +31,7 @@ def test_new_session_calls_pg_execute_read_returning(tmp_path):
     """new_session() must use RETURNING id via sync_pg_execute_read."""
     db, mock_mgr = _make_db(tmp_path)
 
-    with patch.object(db, "_pg", return_value=mock_mgr):
+    with patch("framework.db_ext._require_pg", return_value=mock_mgr):
         sid = db.new_session("http://example.com", "bearer", "token-ref")
 
     assert mock_mgr.sync_pg_execute_read.called
@@ -45,7 +45,7 @@ def test_update_session_calls_pg_execute_write(tmp_path):
     """update_session() must call sync_pg_execute_write with UPDATE scan_sessions SQL."""
     db, mock_mgr = _make_db(tmp_path)
 
-    with patch.object(db, "_pg", return_value=mock_mgr):
+    with patch("framework.db_ext._require_pg", return_value=mock_mgr):
         db.update_session(1, status="completed", phase_reached=3)
 
     assert mock_mgr.sync_pg_execute_write.called
@@ -60,7 +60,7 @@ def test_save_asset_calls_pg_execute_write(tmp_path):
     """save_asset() must call sync_pg_execute_write with fw_recon_assets SQL."""
     db, mock_mgr = _make_db(tmp_path)
 
-    with patch.object(db, "_pg", return_value=mock_mgr):
+    with patch("framework.db_ext._require_pg", return_value=mock_mgr):
         db.save_asset(1, "url", "http://target.com/admin", source="recon")
 
     assert mock_mgr.sync_pg_execute_write.called
@@ -72,7 +72,7 @@ def test_get_assets_calls_pg_execute_read(tmp_path):
     """get_assets() must call sync_pg_execute_read with fw_recon_assets SQL."""
     db, mock_mgr = _make_db(tmp_path, _make_pg_mgr(read_results=[]))
 
-    with patch.object(db, "_pg", return_value=mock_mgr):
+    with patch("framework.db_ext._require_pg", return_value=mock_mgr):
         db.get_assets(1, asset_type="url")
 
     assert mock_mgr.sync_pg_execute_read.called
@@ -86,7 +86,7 @@ def test_save_surface_item_calls_pg_execute_write(tmp_path):
     """save_surface_item() must call sync_pg_execute_write with surface_items SQL."""
     db, mock_mgr = _make_db(tmp_path)
 
-    with patch.object(db, "_pg", return_value=mock_mgr):
+    with patch("framework.db_ext._require_pg", return_value=mock_mgr):
         db.save_surface_item(1, "endpoint", "example.com", "/api/v1/users", method="GET")
 
     assert mock_mgr.sync_pg_execute_write.called
@@ -100,7 +100,7 @@ def test_save_candidate_calls_pg_execute_read_returning(tmp_path):
     """save_candidate() must use RETURNING id via sync_pg_execute_read."""
     db, mock_mgr = _make_db(tmp_path)
 
-    with patch.object(db, "_pg", return_value=mock_mgr):
+    with patch("framework.db_ext._require_pg", return_value=mock_mgr):
         cid = db.save_candidate(1, "sqli", "example.com", "/login", parameter="username")
 
     assert mock_mgr.sync_pg_execute_read.called
@@ -114,7 +114,7 @@ def test_confirm_candidate_calls_pg_execute_write(tmp_path):
     """confirm_candidate() must call sync_pg_execute_write with UPDATE vuln_candidates SQL."""
     db, mock_mgr = _make_db(tmp_path)
 
-    with patch.object(db, "_pg", return_value=mock_mgr):
+    with patch("framework.db_ext._require_pg", return_value=mock_mgr):
         db.confirm_candidate(42, 7)
 
     assert mock_mgr.sync_pg_execute_write.called
@@ -123,18 +123,16 @@ def test_confirm_candidate_calls_pg_execute_write(tmp_path):
     assert "UPDATE" in sql.upper()
 
 
-# ── SQLite fallback ───────────────────────────────────────────────────────────
+# ── PG-only: RuntimeError when PG unavailable ─────────────────────────────────
 
-def test_new_session_falls_back_to_sqlite_when_pg_none(tmp_path):
-    """When _pg() returns None, new_session() should write to SQLite."""
+def test_new_session_raises_when_pg_unavailable(tmp_path):
+    """When PG is unavailable, new_session() must raise RuntimeError."""
     from framework.db_ext import ExtendedDB
-    with patch("framework.db_ext.ExtendedDB._pg", return_value=None):
+    with patch("framework.db_ext._require_pg",
+               side_effect=RuntimeError("PostgreSQL is required")):
         db = ExtendedDB(str(tmp_path / "ext.db"))
-        sid = db.new_session("http://localhost", "none", "")
-    assert isinstance(sid, int) and sid > 0
-
-    import sqlite3
-    conn = sqlite3.connect(str(tmp_path / "ext.db"))
-    count = conn.execute("SELECT COUNT(*) FROM scan_sessions").fetchone()[0]
-    conn.close()
-    assert count == 1
+        try:
+            db.new_session("http://localhost", "none", "")
+            assert False, "Expected RuntimeError"
+        except RuntimeError as exc:
+            assert "PostgreSQL" in str(exc)

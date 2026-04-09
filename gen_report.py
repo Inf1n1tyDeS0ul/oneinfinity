@@ -6,53 +6,31 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(__file__))
 
 def _fetch_secret_findings():
-    """Fetch secret findings — PG-first with SQLite fallback."""
-    try:
-        from core.db_manager import get_db_manager_sync
-        mgr = get_db_manager_sync()
-        if mgr is not None and mgr.mode in ("distributed", "postgres"):
-            rows = mgr.sync_pg_execute_read(
-                """
-                SELECT finding_id, scan_id, target, title, severity, vuln_type,
-                       data->>'evidence' AS evidence,
-                       data->>'payload'  AS payload,
-                       url, tool, confidence, cvss, status,
-                       created_at::text  AS created_at,
-                       data->>'raw_json' AS raw_json
-                FROM findings
-                WHERE lower(vuln_type) LIKE '%secret%' OR lower(vuln_type) LIKE '%exposed%'
-                   OR lower(tool) LIKE '%secret%' OR lower(tool) LIKE '%trufflehog%'
-                   OR lower(tool) LIKE '%gitleaks%'
-                ORDER BY
-                  CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2
-                                WHEN 'medium'   THEN 3 WHEN 'low'  THEN 4 ELSE 5 END,
-                  created_at DESC
-                """
-            )
-            return rows
-    except Exception:
-        pass
-    # SQLite fallback
-    import sqlite3
-    from path_manager import findings_db_path
-    conn = sqlite3.connect(str(findings_db_path()))
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-    cur.execute("""
+    """Fetch secret findings from PostgreSQL (hard requirement)."""
+    from core.db_manager import get_db_manager_sync
+    mgr = get_db_manager_sync()
+    if mgr is None or mgr.mode not in ("distributed", "postgres"):
+        raise RuntimeError(
+            "PostgreSQL is required. Set DB_MODE=postgres or DB_MODE=distributed."
+        )
+    return mgr.sync_pg_execute_read(
+        """
         SELECT finding_id, scan_id, target, title, severity, vuln_type,
-               evidence, payload, url, tool, confidence, cvss, status,
-               created_at, raw_json
+               data->>'evidence' AS evidence,
+               data->>'payload'  AS payload,
+               url, tool, confidence, cvss, status,
+               created_at::text  AS created_at,
+               data->>'raw_json' AS raw_json
         FROM findings
         WHERE lower(vuln_type) LIKE '%secret%' OR lower(vuln_type) LIKE '%exposed%'
            OR lower(tool) LIKE '%secret%' OR lower(tool) LIKE '%trufflehog%'
            OR lower(tool) LIKE '%gitleaks%'
-        ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2
-                               WHEN 'medium'   THEN 3 WHEN 'low'  THEN 4 ELSE 5 END,
-                 created_at DESC
-    """)
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    return rows
+        ORDER BY
+          CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2
+                        WHEN 'medium'   THEN 3 WHEN 'low'  THEN 4 ELSE 5 END,
+          created_at DESC
+        """
+    )
 
 
 raw_rows = _fetch_secret_findings()

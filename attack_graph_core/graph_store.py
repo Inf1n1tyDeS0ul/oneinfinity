@@ -1,13 +1,10 @@
 """
-graph_store.py — Dual-mode storage: in-memory dict (fast analysis) + PG/SQLite persistence.
-GraphStore delegates to InMemoryStore for speed and SQLiteStore for durability.
-SQLiteStore is PG-first: uses PostgreSQL when DBManager is available in pg/distributed
-mode, and falls back to SQLite otherwise.
+graph_store.py — Dual-mode storage: in-memory dict (fast analysis) + PG persistence.
+GraphStore delegates to InMemoryStore for speed and PostgreSQL for durability.
+PostgreSQL is a hard requirement.
 """
 
-import sqlite3
 import json
-import threading
 import logging
 import time
 from pathlib import Path
@@ -111,99 +108,36 @@ class InMemoryStore:
 
 
 # ---------------------------------------------------------------------------
-# SQLiteStore — durable persistence backend
+# PGStore — durable persistence backend (PostgreSQL only)
 # ---------------------------------------------------------------------------
 
 class SQLiteStore:
     """
-    PG-first storage for nodes and edges with SQLite fallback.
-
-    On initialisation, checks whether a DBManager is available in postgres or
-    distributed mode. If so, all reads/writes go to PostgreSQL (graph_nodes /
-    graph_edges tables already created by db/schema.sql). Otherwise the
-    existing SQLite code path is used unchanged.
+    PostgreSQL-backed persistence for nodes and edges.
+    Class name kept as SQLiteStore for compatibility with GraphStore references.
+    PostgreSQL is a hard requirement — raises RuntimeError if unavailable.
     """
-
-    # ── SQLite DDL (fallback only) ──────────────────────────────────────────
-
-    CREATE_NODES_TABLE = """
-    CREATE TABLE IF NOT EXISTS nodes (
-        id              TEXT PRIMARY KEY,
-        node_type       TEXT NOT NULL,
-        label           TEXT NOT NULL,
-        properties_json TEXT DEFAULT '{}',
-        severity        TEXT,
-        risk_score      REAL DEFAULT 0.0,
-        exploitable     INTEGER DEFAULT 0,
-        validated       INTEGER DEFAULT 0,
-        discovered_at   TEXT,
-        updated_at      TEXT,
-        source          TEXT DEFAULT '',
-        tags_json       TEXT DEFAULT '[]'
-    )
-    """
-
-    CREATE_EDGES_TABLE = """
-    CREATE TABLE IF NOT EXISTS edges (
-        id              TEXT PRIMARY KEY,
-        source_id       TEXT NOT NULL,
-        target_id       TEXT NOT NULL,
-        edge_type       TEXT NOT NULL,
-        label           TEXT DEFAULT '',
-        properties_json TEXT DEFAULT '{}',
-        probability     REAL DEFAULT 1.0,
-        weight          REAL DEFAULT 1.0,
-        requires_auth   INTEGER DEFAULT 0,
-        created_at      TEXT,
-        source_engine   TEXT DEFAULT ''
-    )
-    """
-
-    CREATE_NODE_LABEL_INDEX = "CREATE INDEX IF NOT EXISTS idx_nodes_label ON nodes(label)"
-    CREATE_NODE_TYPE_INDEX  = "CREATE INDEX IF NOT EXISTS idx_nodes_type  ON nodes(node_type)"
-    CREATE_EDGE_SRC_INDEX   = "CREATE INDEX IF NOT EXISTS idx_edges_src   ON edges(source_id)"
-    CREATE_EDGE_DST_INDEX   = "CREATE INDEX IF NOT EXISTS idx_edges_dst   ON edges(target_id)"
 
     def __init__(self, db_path: str):
-        self._db_path = db_path
-        self._lock = threading.Lock()
-        self._conn: Optional[sqlite3.Connection] = None
-
-    # ── PG mode detection ───────────────────────────────────────────────────
+        pass  # db_path kept for API compatibility only
 
     @staticmethod
     def _get_pg():
-        """Return (mgr, is_pg) tuple. mgr may be None on import error."""
+        """Return DBManager in PG mode, or raise if unavailable."""
         try:
             from core.db_manager import get_db_manager_sync
             mgr = get_db_manager_sync()
-            is_pg = mgr is not None and mgr.mode in ("postgres", "distributed")
-            return mgr, is_pg
-        except Exception:
-            return None, False
-
-    # ── Initialisation ──────────────────────────────────────────────────────
+            if mgr is not None and mgr.mode in ("postgres", "distributed"):
+                return mgr
+        except Exception as exc:
+            raise RuntimeError(f"PostgreSQL is required but DBManager unavailable: {exc}") from exc
+        raise RuntimeError(
+            "PostgreSQL is required. Set DB_MODE=postgres or DB_MODE=distributed."
+        )
 
     def initialize(self):
-        _mgr, _is_pg = self._get_pg()
-        if _is_pg:
-            logger.info("SQLiteStore.initialize: PG mode — skipping SQLite init")
-            return
-
-        # SQLite path
-        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        with self._lock:
-            cur = self._conn.cursor()
-            cur.execute(self.CREATE_NODES_TABLE)
-            cur.execute(self.CREATE_EDGES_TABLE)
-            cur.execute(self.CREATE_NODE_LABEL_INDEX)
-            cur.execute(self.CREATE_NODE_TYPE_INDEX)
-            cur.execute(self.CREATE_EDGE_SRC_INDEX)
-            cur.execute(self.CREATE_EDGE_DST_INDEX)
-            self._conn.commit()
-        logger.info(f"SQLiteStore initialised at {self._db_path}")
+        """Schema already applied via db/schema.sql at startup."""
+        logger.info("SQLiteStore.initialize: PG mode — schema managed by db/schema.sql")
 
     # ── Row conversion helpers (shared by both backends) ───────────────────
 
@@ -223,12 +157,7 @@ class SQLiteStore:
             json.dumps(node_dict.get("tags", [])),
         )
 
-    def _row_to_node(self, row) -> dict:
-        # row may be a sqlite3.Row (subscript by name) or a plain dict (from PG)
-        if isinstance(row, dict):
-            get = row.get
-        else:
-            get = lambda k, d=None: row[k] if k in row.keys() else d  # noqa: E731
+    def _row_to_node(self, row: dict) -> dict:
         return {
             "id": row["id"],
             "node_type": row["node_type"],
@@ -277,206 +206,101 @@ class SQLiteStore:
     # ── Write operations ────────────────────────────────────────────────────
 
     def save_node(self, node_dict: dict):
-        row = self._node_to_row(node_dict)
-        mgr, _is_pg = self._get_pg()
-        if _is_pg:
-            mgr.sync_pg_execute_write(
-                """INSERT INTO graph_nodes
-                       (id, node_type, label, properties_json, severity, risk_score,
-                        exploitable, validated, discovered_at, updated_at, source, tags_json)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                   ON CONFLICT (id) DO UPDATE SET
-                       node_type=EXCLUDED.node_type, label=EXCLUDED.label,
-                       properties_json=EXCLUDED.properties_json, severity=EXCLUDED.severity,
-                       risk_score=EXCLUDED.risk_score, exploitable=EXCLUDED.exploitable,
-                       validated=EXCLUDED.validated, discovered_at=EXCLUDED.discovered_at,
-                       updated_at=EXCLUDED.updated_at, source=EXCLUDED.source,
-                       tags_json=EXCLUDED.tags_json""",
-                row,
-            )
-            return
-        # SQLite fallback
-        with self._lock:
-            self._conn.execute(
-                """INSERT OR REPLACE INTO nodes
+        self._get_pg().sync_pg_execute_write(
+            """INSERT INTO graph_nodes
                    (id, node_type, label, properties_json, severity, risk_score,
                     exploitable, validated, discovered_at, updated_at, source, tags_json)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                row,
-            )
-            self._conn.commit()
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (id) DO UPDATE SET
+                   node_type=EXCLUDED.node_type, label=EXCLUDED.label,
+                   properties_json=EXCLUDED.properties_json, severity=EXCLUDED.severity,
+                   risk_score=EXCLUDED.risk_score, exploitable=EXCLUDED.exploitable,
+                   validated=EXCLUDED.validated, discovered_at=EXCLUDED.discovered_at,
+                   updated_at=EXCLUDED.updated_at, source=EXCLUDED.source,
+                   tags_json=EXCLUDED.tags_json""",
+            self._node_to_row(node_dict),
+        )
 
     def save_edge(self, edge_dict: dict):
-        row = self._edge_to_row(edge_dict)
-        mgr, _is_pg = self._get_pg()
-        if _is_pg:
-            mgr.sync_pg_execute_write(
-                """INSERT INTO graph_edges
-                       (id, source_id, target_id, edge_type, label, properties_json,
-                        probability, weight, requires_auth, created_at, source_engine)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                   ON CONFLICT (id) DO UPDATE SET
-                       source_id=EXCLUDED.source_id, target_id=EXCLUDED.target_id,
-                       edge_type=EXCLUDED.edge_type, label=EXCLUDED.label,
-                       properties_json=EXCLUDED.properties_json, probability=EXCLUDED.probability,
-                       weight=EXCLUDED.weight, requires_auth=EXCLUDED.requires_auth,
-                       created_at=EXCLUDED.created_at, source_engine=EXCLUDED.source_engine""",
-                row,
-            )
-            return
-        # SQLite fallback
-        with self._lock:
-            self._conn.execute(
-                """INSERT OR REPLACE INTO edges
+        self._get_pg().sync_pg_execute_write(
+            """INSERT INTO graph_edges
                    (id, source_id, target_id, edge_type, label, properties_json,
                     probability, weight, requires_auth, created_at, source_engine)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                row,
-            )
-            self._conn.commit()
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (id) DO UPDATE SET
+                   source_id=EXCLUDED.source_id, target_id=EXCLUDED.target_id,
+                   edge_type=EXCLUDED.edge_type, label=EXCLUDED.label,
+                   properties_json=EXCLUDED.properties_json, probability=EXCLUDED.probability,
+                   weight=EXCLUDED.weight, requires_auth=EXCLUDED.requires_auth,
+                   created_at=EXCLUDED.created_at, source_engine=EXCLUDED.source_engine""",
+            self._edge_to_row(edge_dict),
+        )
 
     def delete_node(self, node_id: str):
-        mgr, _is_pg = self._get_pg()
-        if _is_pg:
-            mgr.sync_pg_execute_write(
-                "DELETE FROM graph_nodes WHERE id = %s", (node_id,)
-            )
-            return
-        with self._lock:
-            self._conn.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
-            self._conn.commit()
+        self._get_pg().sync_pg_execute_write(
+            "DELETE FROM graph_nodes WHERE id = %s", (node_id,)
+        )
 
     def delete_edge(self, edge_id: str):
-        mgr, _is_pg = self._get_pg()
-        if _is_pg:
-            mgr.sync_pg_execute_write(
-                "DELETE FROM graph_edges WHERE id = %s", (edge_id,)
-            )
-            return
-        with self._lock:
-            self._conn.execute("DELETE FROM edges WHERE id = ?", (edge_id,))
-            self._conn.commit()
+        self._get_pg().sync_pg_execute_write(
+            "DELETE FROM graph_edges WHERE id = %s", (edge_id,)
+        )
 
     # ── Read operations ─────────────────────────────────────────────────────
 
     def load_node(self, node_id: str) -> Optional[dict]:
-        mgr, _is_pg = self._get_pg()
-        if _is_pg:
-            rows = mgr.sync_pg_execute_read(
-                "SELECT * FROM graph_nodes WHERE id = %s", (node_id,)
-            )
-            return self._row_to_node(rows[0]) if rows else None
-        with self._lock:
-            cur = self._conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,))
-            row = cur.fetchone()
-        return self._row_to_node(row) if row else None
+        rows = self._get_pg().sync_pg_execute_read(
+            "SELECT * FROM graph_nodes WHERE id = %s", (node_id,)
+        )
+        return self._row_to_node(rows[0]) if rows else None
 
     def load_edge(self, edge_id: str) -> Optional[dict]:
-        mgr, _is_pg = self._get_pg()
-        if _is_pg:
-            rows = mgr.sync_pg_execute_read(
-                "SELECT * FROM graph_edges WHERE id = %s", (edge_id,)
-            )
-            return self._row_to_edge(rows[0]) if rows else None
-        with self._lock:
-            cur = self._conn.execute("SELECT * FROM edges WHERE id = ?", (edge_id,))
-            row = cur.fetchone()
-        return self._row_to_edge(row) if row else None
+        rows = self._get_pg().sync_pg_execute_read(
+            "SELECT * FROM graph_edges WHERE id = %s", (edge_id,)
+        )
+        return self._row_to_edge(rows[0]) if rows else None
 
     def load_all_nodes(self, node_type: str = None) -> list:
-        mgr, _is_pg = self._get_pg()
-        if _is_pg:
-            if node_type:
-                rows = mgr.sync_pg_execute_read(
-                    "SELECT * FROM graph_nodes WHERE node_type = %s", (node_type,)
-                )
-            else:
-                rows = mgr.sync_pg_execute_read(
-                    "SELECT * FROM graph_nodes", ()
-                )
-            return [self._row_to_node(r) for r in rows]
-        # SQLite fallback
-        with self._lock:
-            if node_type:
-                cur = self._conn.execute("SELECT * FROM nodes WHERE node_type = ?", (node_type,))
-            else:
-                cur = self._conn.execute("SELECT * FROM nodes")
-            rows = cur.fetchall()
+        if node_type:
+            rows = self._get_pg().sync_pg_execute_read(
+                "SELECT * FROM graph_nodes WHERE node_type = %s", (node_type,)
+            )
+        else:
+            rows = self._get_pg().sync_pg_execute_read("SELECT * FROM graph_nodes", ())
         return [self._row_to_node(r) for r in rows]
 
     def load_all_edges(self) -> list:
-        mgr, _is_pg = self._get_pg()
-        if _is_pg:
-            rows = mgr.sync_pg_execute_read("SELECT * FROM graph_edges", ())
-            return [self._row_to_edge(r) for r in rows]
-        with self._lock:
-            cur = self._conn.execute("SELECT * FROM edges")
-            rows = cur.fetchall()
+        rows = self._get_pg().sync_pg_execute_read("SELECT * FROM graph_edges", ())
         return [self._row_to_edge(r) for r in rows]
 
     def search_nodes(self, query: str, node_type: str = None) -> list:
-        mgr, _is_pg = self._get_pg()
         q = f"%{query}%"
-        if _is_pg:
-            if node_type:
-                rows = mgr.sync_pg_execute_read(
-                    "SELECT * FROM graph_nodes WHERE (label LIKE %s OR properties_json LIKE %s) AND node_type = %s",
-                    (q, q, node_type),
-                )
-            else:
-                rows = mgr.sync_pg_execute_read(
-                    "SELECT * FROM graph_nodes WHERE label LIKE %s OR properties_json LIKE %s",
-                    (q, q),
-                )
-            return [self._row_to_node(r) for r in rows]
-        # SQLite fallback
-        with self._lock:
-            if node_type:
-                cur = self._conn.execute(
-                    "SELECT * FROM nodes WHERE (label LIKE ? OR properties_json LIKE ?) AND node_type = ?",
-                    (q, q, node_type),
-                )
-            else:
-                cur = self._conn.execute(
-                    "SELECT * FROM nodes WHERE label LIKE ? OR properties_json LIKE ?",
-                    (q, q),
-                )
-            rows = cur.fetchall()
+        if node_type:
+            rows = self._get_pg().sync_pg_execute_read(
+                "SELECT * FROM graph_nodes WHERE (label LIKE %s OR properties_json LIKE %s) AND node_type = %s",
+                (q, q, node_type),
+            )
+        else:
+            rows = self._get_pg().sync_pg_execute_read(
+                "SELECT * FROM graph_nodes WHERE label LIKE %s OR properties_json LIKE %s",
+                (q, q),
+            )
         return [self._row_to_node(r) for r in rows]
 
     def get_node_by_label(self, label: str, node_type: str) -> Optional[dict]:
-        mgr, _is_pg = self._get_pg()
-        if _is_pg:
-            rows = mgr.sync_pg_execute_read(
-                "SELECT * FROM graph_nodes WHERE label = %s AND node_type = %s",
-                (label, node_type),
-            )
-            return self._row_to_node(rows[0]) if rows else None
-        with self._lock:
-            cur = self._conn.execute(
-                "SELECT * FROM nodes WHERE label = ? AND node_type = ?",
-                (label, node_type),
-            )
-            row = cur.fetchone()
-        return self._row_to_node(row) if row else None
+        rows = self._get_pg().sync_pg_execute_read(
+            "SELECT * FROM graph_nodes WHERE label = %s AND node_type = %s",
+            (label, node_type),
+        )
+        return self._row_to_node(rows[0]) if rows else None
 
     def count_nodes(self) -> int:
-        mgr, _is_pg = self._get_pg()
-        if _is_pg:
-            rows = mgr.sync_pg_execute_read("SELECT COUNT(*) AS cnt FROM graph_nodes", ())
-            return rows[0]["cnt"] if rows else 0
-        with self._lock:
-            cur = self._conn.execute("SELECT COUNT(*) FROM nodes")
-            return cur.fetchone()[0]
+        rows = self._get_pg().sync_pg_execute_read("SELECT COUNT(*) AS cnt FROM graph_nodes", ())
+        return rows[0]["cnt"] if rows else 0
 
     def count_edges(self) -> int:
-        mgr, _is_pg = self._get_pg()
-        if _is_pg:
-            rows = mgr.sync_pg_execute_read("SELECT COUNT(*) AS cnt FROM graph_edges", ())
-            return rows[0]["cnt"] if rows else 0
-        with self._lock:
-            cur = self._conn.execute("SELECT COUNT(*) FROM edges")
-            return cur.fetchone()[0]
+        rows = self._get_pg().sync_pg_execute_read("SELECT COUNT(*) AS cnt FROM graph_edges", ())
+        return rows[0]["cnt"] if rows else 0
 
 
 # ---------------------------------------------------------------------------
@@ -485,11 +309,11 @@ class SQLiteStore:
 
 class GraphStore:
     """
-    Dual-mode graph store. Writes go to both memory and SQLite.
-    Reads prefer memory; fall back to SQLite on miss.
+    Dual-mode graph store. Writes go to both memory and PostgreSQL.
+    Reads prefer memory; fall back to PostgreSQL on miss.
 
     Optional ``sync_backend`` (e.g. Neo4j batched write-through) receives the same
-    node/edge dicts after local persistence — failures are logged and never break SQLite.
+    node/edge dicts after local persistence — failures are logged and never break PG.
     """
 
     def __init__(
@@ -506,7 +330,7 @@ class GraphStore:
         self._initialised = False
 
     def initialize(self):
-        """Create SQLite schema, optionally warm memory from SQLite."""
+        """Warm memory cache from PostgreSQL."""
         self._sqlite.initialize()
         if self._use_memory and self._memory:
             # Warm memory cache from SQLite

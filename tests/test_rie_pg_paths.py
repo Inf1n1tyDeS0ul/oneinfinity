@@ -11,6 +11,13 @@ def make_pg_mgr(mode="postgres"):
     return mgr
 
 
+def _make_engine():
+    import result_ingestion_engine as rie
+    engine = rie.ResultIngestionEngine.__new__(rie.ResultIngestionEngine)
+    engine._broadcast_cb = None
+    return engine
+
+
 # ── _check_and_store ──────────────────────────────────────────────────────────
 
 def test_check_and_store_uses_pg_when_available():
@@ -27,12 +34,8 @@ def test_check_and_store_uses_pg_when_available():
         tool="dalfox", url="https://example.com/q",
     )
 
-    engine = rie.ResultIngestionEngine.__new__(rie.ResultIngestionEngine)
-    engine._db_path = "/tmp/fake.db"
-    engine._lock = __import__("threading").Lock()
-    engine._broadcast_cb = None
-
-    with patch("result_ingestion_engine._get_db_manager_sync", return_value=mock_mgr):
+    engine = _make_engine()
+    with patch("result_ingestion_engine._require_pg", return_value=mock_mgr):
         result = engine._check_and_store(finding)
 
     assert result is True
@@ -53,12 +56,8 @@ def test_check_and_store_returns_false_for_duplicate():
         tool="dalfox", url="https://example.com/q",
     )
 
-    engine = rie.ResultIngestionEngine.__new__(rie.ResultIngestionEngine)
-    engine._db_path = "/tmp/fake.db"
-    engine._lock = __import__("threading").Lock()
-    engine._broadcast_cb = None
-
-    with patch("result_ingestion_engine._get_db_manager_sync", return_value=mock_mgr):
+    engine = _make_engine()
+    with patch("result_ingestion_engine._require_pg", return_value=mock_mgr):
         result = engine._check_and_store(finding)
 
     assert result is False
@@ -73,12 +72,8 @@ def test_get_findings_uses_pg_when_available():
     mock_mgr = make_pg_mgr()
     mock_mgr.sync_get_findings.return_value = [{"finding_id": "f1", "vuln_type": "xss"}]
 
-    engine = rie.ResultIngestionEngine.__new__(rie.ResultIngestionEngine)
-    engine._db_path = "/tmp/fake.db"
-    engine._lock = __import__("threading").Lock()
-    engine._broadcast_cb = None
-
-    with patch("result_ingestion_engine._get_db_manager_sync", return_value=mock_mgr):
+    engine = _make_engine()
+    with patch("result_ingestion_engine._require_pg", return_value=mock_mgr):
         results = engine.get_findings(scan_id="scan1")
 
     assert len(results) == 1
@@ -94,12 +89,8 @@ def test_ingest_recon_asset_uses_pg_when_available():
 
     mock_mgr = make_pg_mgr()
 
-    engine = rie.ResultIngestionEngine.__new__(rie.ResultIngestionEngine)
-    engine._db_path = "/tmp/fake.db"
-    engine._lock = __import__("threading").Lock()
-    engine._broadcast_cb = None
-
-    with patch("result_ingestion_engine._get_db_manager_sync", return_value=mock_mgr):
+    engine = _make_engine()
+    with patch("result_ingestion_engine._require_pg", return_value=mock_mgr):
         engine.ingest_recon_asset("scan1", "subdomain", "sub.example.com", {"ip": "1.2.3.4"})
 
     mock_mgr.sync_save_recon_asset.assert_called_once()
@@ -119,12 +110,8 @@ def test_get_recon_assets_uses_pg_when_available():
     mock_mgr = make_pg_mgr()
     mock_mgr.sync_get_recon_assets.return_value = [{"asset_id": "a1", "value": "sub.example.com"}]
 
-    engine = rie.ResultIngestionEngine.__new__(rie.ResultIngestionEngine)
-    engine._db_path = "/tmp/fake.db"
-    engine._lock = __import__("threading").Lock()
-    engine._broadcast_cb = None
-
-    with patch("result_ingestion_engine._get_db_manager_sync", return_value=mock_mgr):
+    engine = _make_engine()
+    with patch("result_ingestion_engine._require_pg", return_value=mock_mgr):
         results = engine.get_recon_assets(scan_id="scan1", asset_type="subdomain")
 
     assert len(results) == 1
@@ -140,13 +127,9 @@ def test_store_raw_findings_uses_pg_when_available():
     mock_mgr = make_pg_mgr()
     mock_mgr.sync_store_raw_findings.return_value = 2
 
-    engine = rie.ResultIngestionEngine.__new__(rie.ResultIngestionEngine)
-    engine._db_path = "/tmp/fake.db"
-    engine._lock = __import__("threading").Lock()
-    engine._broadcast_cb = None
-
+    engine = _make_engine()
     findings = [{"tool": "nuclei"}, {"tool": "dalfox"}]
-    with patch("result_ingestion_engine._get_db_manager_sync", return_value=mock_mgr):
+    with patch("result_ingestion_engine._require_pg", return_value=mock_mgr):
         count = engine.store_raw_findings(findings)
 
     assert count == 2
@@ -162,12 +145,8 @@ def test_delete_findings_for_scan_uses_pg_when_available():
     mock_mgr = make_pg_mgr()
     mock_mgr.sync_delete_findings_for_scan.return_value = 5
 
-    engine = rie.ResultIngestionEngine.__new__(rie.ResultIngestionEngine)
-    engine._db_path = "/tmp/fake.db"
-    engine._lock = __import__("threading").Lock()
-    engine._broadcast_cb = None
-
-    with patch("result_ingestion_engine._get_db_manager_sync", return_value=mock_mgr):
+    engine = _make_engine()
+    with patch("result_ingestion_engine._require_pg", return_value=mock_mgr):
         count = engine.delete_findings_for_scan("scan1")
 
     assert count == 5
@@ -183,12 +162,8 @@ def test_finding_count_uses_pg_when_available():
     mock_mgr = make_pg_mgr()
     mock_mgr.sync_finding_count.return_value = 7
 
-    engine = rie.ResultIngestionEngine.__new__(rie.ResultIngestionEngine)
-    engine._db_path = "/tmp/fake.db"
-    engine._lock = __import__("threading").Lock()
-    engine._broadcast_cb = None
-
-    with patch("result_ingestion_engine._get_db_manager_sync", return_value=mock_mgr):
+    engine = _make_engine()
+    with patch("result_ingestion_engine._require_pg", return_value=mock_mgr):
         count = engine.finding_count("scan1")
 
     assert count == 7

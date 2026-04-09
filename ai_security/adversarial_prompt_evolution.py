@@ -5,7 +5,7 @@ Learning pipeline:
   prompt → target → response → analysis → success/failure → update strategy → generate improved prompts
 
 Stores:
-  - All prompt→result pairs in SQLite
+  - All prompt→result pairs in PostgreSQL
   - Success rates per strategy/mutation type
   - High-performing prompt "seeds"
   - Cross-target pattern library
@@ -25,13 +25,10 @@ import json
 import logging
 import random
 import re
-import sqlite3
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
-from path_manager import db_path as db_path_fn
 
 from .prompt_generator import AdversarialPrompt, PromptGenerator
 from .payload_mutator import PayloadMutator, MutatedPrompt
@@ -39,7 +36,19 @@ from .vulnerability_detector import AIVulnFinding
 
 log = logging.getLogger(__name__)
 
-_DB_PATH = db_path_fn("prompt_evolution.db")
+
+def _require_pg():
+    """Return DBManager in PG mode, or raise if unavailable."""
+    try:
+        from core.db_manager import get_db_manager_sync
+        mgr = get_db_manager_sync()
+        if mgr is not None and mgr.mode in ("distributed", "postgres"):
+            return mgr
+    except Exception as exc:
+        raise RuntimeError(f"PostgreSQL is required but DBManager unavailable: {exc}") from exc
+    raise RuntimeError(
+        "PostgreSQL is required. Set DB_MODE=postgres or DB_MODE=distributed."
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -76,154 +85,57 @@ class PromptGene:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class EvolutionDB:
-    """SQLite persistence for the evolution engine, with PG-first fallback."""
+    """PostgreSQL persistence for the evolution engine. PG is a hard requirement."""
 
     def _pg(self):
-        """Return DBManager if PG/distributed mode is available, else None."""
-        try:
-            from core.db_manager import get_db_manager_sync
-            mgr = get_db_manager_sync()
-            return mgr if mgr and mgr.mode in ("distributed", "postgres") else None
-        except Exception:
-            return None
+        return _require_pg()
 
     def __init__(self, db_path: Optional[Path] = None) -> None:
-        self._path = db_path or _DB_PATH
-        mgr = self._pg()
-        if mgr is not None:
-            self._conn = None
-        else:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
-        self._init_schema()
-
-    def _init_schema(self) -> None:
-        if self._pg() is not None:
-            # Tables already managed in db/schema.sql
-            return
-        self._conn.executescript("""
-        CREATE TABLE IF NOT EXISTS prompt_genes (
-            prompt_id       TEXT PRIMARY KEY,
-            text            TEXT NOT NULL,
-            attack_type     TEXT NOT NULL,
-            source          TEXT NOT NULL,
-            parent_ids      TEXT DEFAULT '[]',
-            generation      INTEGER DEFAULT 0,
-            mutation_type   TEXT DEFAULT '',
-            times_tested    INTEGER DEFAULT 0,
-            times_succeeded INTEGER DEFAULT 0,
-            last_success_score REAL DEFAULT 0.0,
-            fitness         REAL DEFAULT 0.0,
-            created_at      REAL NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS test_results (
-            result_id       TEXT PRIMARY KEY,
-            prompt_id       TEXT NOT NULL,
-            target          TEXT NOT NULL,
-            response_hash   TEXT NOT NULL,
-            success         INTEGER NOT NULL,
-            score           REAL NOT NULL,
-            attack_type     TEXT NOT NULL,
-            mutation_type   TEXT DEFAULT '',
-            tested_at       REAL NOT NULL,
-            FOREIGN KEY(prompt_id) REFERENCES prompt_genes(prompt_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS strategy_stats (
-            strategy        TEXT NOT NULL,
-            attack_type     TEXT NOT NULL,
-            total_attempts  INTEGER DEFAULT 0,
-            total_successes INTEGER DEFAULT 0,
-            avg_score       REAL DEFAULT 0.0,
-            PRIMARY KEY(strategy, attack_type)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_attack_type ON prompt_genes(attack_type);
-        CREATE INDEX IF NOT EXISTS idx_fitness ON prompt_genes(fitness DESC);
-        CREATE INDEX IF NOT EXISTS idx_target ON test_results(target);
-        """)
-        self._conn.commit()
+        pass  # db_path kept for API compatibility only; schema managed by db/schema.sql
 
     def save_gene(self, gene: PromptGene) -> None:
-        mgr = self._pg()
-        if mgr is not None:
-            mgr.sync_pg_execute_write("""
-                INSERT INTO prompt_genes
-                    (prompt_id, text, attack_type, source, parent_ids, generation,
-                     mutation_type, times_tested, times_succeeded, last_success_score,
-                     fitness, created_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (prompt_id) DO UPDATE SET
-                    text                = EXCLUDED.text,
-                    attack_type         = EXCLUDED.attack_type,
-                    source              = EXCLUDED.source,
-                    parent_ids          = EXCLUDED.parent_ids,
-                    generation          = EXCLUDED.generation,
-                    mutation_type       = EXCLUDED.mutation_type,
-                    times_tested        = EXCLUDED.times_tested,
-                    times_succeeded     = EXCLUDED.times_succeeded,
-                    last_success_score  = EXCLUDED.last_success_score,
-                    fitness             = EXCLUDED.fitness,
-                    created_at          = EXCLUDED.created_at
-            """, (
-                gene.prompt_id, gene.text, gene.attack_type, gene.source,
-                json.dumps(gene.parent_ids), gene.generation, gene.mutation_type,
-                gene.times_tested, gene.times_succeeded, gene.last_success_score,
-                gene.fitness, time.time()
-            ))
-        else:
-            self._conn.execute("""
-                INSERT OR REPLACE INTO prompt_genes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                gene.prompt_id, gene.text, gene.attack_type, gene.source,
-                json.dumps(gene.parent_ids), gene.generation, gene.mutation_type,
-                gene.times_tested, gene.times_succeeded, gene.last_success_score,
-                gene.fitness, time.time()
-            ))
-            self._conn.commit()
+        self._pg().sync_pg_execute_write("""
+            INSERT INTO prompt_genes
+                (prompt_id, text, attack_type, source, parent_ids, generation,
+                 mutation_type, times_tested, times_succeeded, last_success_score,
+                 fitness, created_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (prompt_id) DO UPDATE SET
+                text                = EXCLUDED.text,
+                attack_type         = EXCLUDED.attack_type,
+                source              = EXCLUDED.source,
+                parent_ids          = EXCLUDED.parent_ids,
+                generation          = EXCLUDED.generation,
+                mutation_type       = EXCLUDED.mutation_type,
+                times_tested        = EXCLUDED.times_tested,
+                times_succeeded     = EXCLUDED.times_succeeded,
+                last_success_score  = EXCLUDED.last_success_score,
+                fitness             = EXCLUDED.fitness,
+                created_at          = EXCLUDED.created_at
+        """, (
+            gene.prompt_id, gene.text, gene.attack_type, gene.source,
+            json.dumps(gene.parent_ids), gene.generation, gene.mutation_type,
+            gene.times_tested, gene.times_succeeded, gene.last_success_score,
+            gene.fitness, time.time()
+        ))
 
     def load_gene(self, prompt_id: str) -> Optional[PromptGene]:
-        mgr = self._pg()
-        if mgr is not None:
-            rows = mgr.sync_pg_execute_read(
-                "SELECT * FROM prompt_genes WHERE prompt_id = %s", (prompt_id,)
-            )
-            if not rows:
-                return None
-            return self._row_to_gene(rows[0])
-        else:
-            row = self._conn.execute(
-                "SELECT * FROM prompt_genes WHERE prompt_id = ?", (prompt_id,)
-            ).fetchone()
-            if row is None:
-                return None
-            return self._row_to_gene(row)
+        rows = self._pg().sync_pg_execute_read(
+            "SELECT * FROM prompt_genes WHERE prompt_id = %s", (prompt_id,)
+        )
+        return self._row_to_gene(rows[0]) if rows else None
 
     def update_gene_stats(
         self, prompt_id: str, succeeded: bool, score: float
     ) -> None:
-        mgr = self._pg()
-        if mgr is not None:
-            mgr.sync_pg_execute_write("""
-                UPDATE prompt_genes
-                SET times_tested = times_tested + 1,
-                    times_succeeded = times_succeeded + %s,
-                    last_success_score = %s,
-                    fitness = (CAST(times_succeeded + %s AS REAL) / (times_tested + 1)) * (0.7 + 0.3 * %s)
-                WHERE prompt_id = %s
-            """, (int(succeeded), score, int(succeeded), score, prompt_id))
-        else:
-            self._conn.execute("""
-                UPDATE prompt_genes
-                SET times_tested = times_tested + 1,
-                    times_succeeded = times_succeeded + ?,
-                    last_success_score = ?,
-                    fitness = (CAST(times_succeeded + ? AS REAL) / (times_tested + 1)) * (0.7 + 0.3 * ?)
-                WHERE prompt_id = ?
-            """, (int(succeeded), score, int(succeeded), score, prompt_id))
-            self._conn.commit()
+        self._pg().sync_pg_execute_write("""
+            UPDATE prompt_genes
+            SET times_tested = times_tested + 1,
+                times_succeeded = times_succeeded + %s,
+                last_success_score = %s,
+                fitness = (CAST(times_succeeded + %s AS REAL) / (times_tested + 1)) * (0.7 + 0.3 * %s)
+            WHERE prompt_id = %s
+        """, (int(succeeded), score, int(succeeded), score, prompt_id))
 
     def record_result(
         self, prompt_id: str, target: str, response_hash: str,
@@ -232,121 +144,69 @@ class EvolutionDB:
         import uuid
         result_id = uuid.uuid4().hex[:12]
         mgr = self._pg()
-        if mgr is not None:
-            mgr.sync_pg_execute_write("""
-                INSERT INTO test_results
-                    (result_id, prompt_id, target, response_hash, success,
-                     score, attack_type, mutation_type, tested_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """, (
-                result_id, prompt_id, target, response_hash,
-                int(success), score, attack_type, mutation_type, time.time()
-            ))
-            mgr.sync_pg_execute_write("""
-                INSERT INTO strategy_stats
-                    (strategy, attack_type, total_attempts, total_successes, avg_score)
-                VALUES (%s, %s, 1, %s, %s)
-                ON CONFLICT (strategy, attack_type) DO UPDATE SET
-                    total_attempts  = strategy_stats.total_attempts + 1,
-                    total_successes = strategy_stats.total_successes + %s,
-                    avg_score       = (strategy_stats.avg_score * strategy_stats.total_attempts + %s)
-                                      / (strategy_stats.total_attempts + 1)
-            """, (
-                mutation_type, attack_type, int(success), score,
-                int(success), score
-            ))
-        else:
-            self._conn.execute("""
-                INSERT INTO test_results VALUES (?,?,?,?,?,?,?,?,?)
-            """, (
-                result_id, prompt_id, target, response_hash,
-                int(success), score, attack_type, mutation_type, time.time()
-            ))
-            self._conn.commit()
-            # Update strategy stats
-            self._conn.execute("""
-                INSERT INTO strategy_stats (strategy, attack_type, total_attempts, total_successes, avg_score)
-                VALUES (?, ?, 1, ?, ?)
-                ON CONFLICT(strategy, attack_type) DO UPDATE SET
-                    total_attempts = total_attempts + 1,
-                    total_successes = total_successes + ?,
-                    avg_score = (avg_score * total_attempts + ?) / (total_attempts + 1)
-            """, (
-                mutation_type, attack_type, int(success), score,
-                int(success), score
-            ))
-            self._conn.commit()
+        mgr.sync_pg_execute_write("""
+            INSERT INTO test_results
+                (result_id, prompt_id, target, response_hash, success,
+                 score, attack_type, mutation_type, tested_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """, (
+            result_id, prompt_id, target, response_hash,
+            int(success), score, attack_type, mutation_type, time.time()
+        ))
+        mgr.sync_pg_execute_write("""
+            INSERT INTO strategy_stats
+                (strategy, attack_type, total_attempts, total_successes, avg_score)
+            VALUES (%s, %s, 1, %s, %s)
+            ON CONFLICT (strategy, attack_type) DO UPDATE SET
+                total_attempts  = strategy_stats.total_attempts + 1,
+                total_successes = strategy_stats.total_successes + %s,
+                avg_score       = (strategy_stats.avg_score * strategy_stats.total_attempts + %s)
+                                  / (strategy_stats.total_attempts + 1)
+        """, (
+            mutation_type, attack_type, int(success), score,
+            int(success), score
+        ))
 
     def top_genes(
         self, attack_type: Optional[str] = None,
         limit: int = 50, min_tests: int = 1
     ) -> List[PromptGene]:
-        mgr = self._pg()
-        if mgr is not None:
-            if attack_type:
-                rows = mgr.sync_pg_execute_read(
-                    "SELECT * FROM prompt_genes WHERE times_tested >= %s AND attack_type = %s"
-                    " ORDER BY fitness DESC LIMIT %s",
-                    (min_tests, attack_type, limit)
-                )
-            else:
-                rows = mgr.sync_pg_execute_read(
-                    "SELECT * FROM prompt_genes WHERE times_tested >= %s"
-                    " ORDER BY fitness DESC LIMIT %s",
-                    (min_tests, limit)
-                )
-            return [self._row_to_gene(r) for r in rows]
+        if attack_type:
+            rows = self._pg().sync_pg_execute_read(
+                "SELECT * FROM prompt_genes WHERE times_tested >= %s AND attack_type = %s"
+                " ORDER BY fitness DESC LIMIT %s",
+                (min_tests, attack_type, limit)
+            )
         else:
-            query = "SELECT * FROM prompt_genes WHERE times_tested >= ?"
-            params: list = [min_tests]
-            if attack_type:
-                query += " AND attack_type = ?"
-                params.append(attack_type)
-            query += " ORDER BY fitness DESC LIMIT ?"
-            params.append(limit)
-            rows = self._conn.execute(query, params).fetchall()
-            return [self._row_to_gene(r) for r in rows]
+            rows = self._pg().sync_pg_execute_read(
+                "SELECT * FROM prompt_genes WHERE times_tested >= %s"
+                " ORDER BY fitness DESC LIMIT %s",
+                (min_tests, limit)
+            )
+        return [self._row_to_gene(r) for r in rows]
 
     def top_strategies(self, attack_type: Optional[str] = None) -> List[Dict]:
-        mgr = self._pg()
-        if mgr is not None:
-            if attack_type:
-                rows = mgr.sync_pg_execute_read(
-                    "SELECT * FROM strategy_stats WHERE attack_type = %s"
-                    " ORDER BY CAST(total_successes AS REAL)/GREATEST(total_attempts,1) DESC LIMIT 10",
-                    (attack_type,)
-                )
-            else:
-                rows = mgr.sync_pg_execute_read(
-                    "SELECT * FROM strategy_stats"
-                    " ORDER BY CAST(total_successes AS REAL)/GREATEST(total_attempts,1) DESC LIMIT 10",
-                    ()
-                )
-            return rows  # already list[dict]
+        if attack_type:
+            rows = self._pg().sync_pg_execute_read(
+                "SELECT * FROM strategy_stats WHERE attack_type = %s"
+                " ORDER BY CAST(total_successes AS REAL)/GREATEST(total_attempts,1) DESC LIMIT 10",
+                (attack_type,)
+            )
         else:
-            query = "SELECT * FROM strategy_stats"
-            params = []
-            if attack_type:
-                query += " WHERE attack_type = ?"
-                params.append(attack_type)
-            query += " ORDER BY CAST(total_successes AS REAL)/MAX(total_attempts,1) DESC LIMIT 10"
-            rows = self._conn.execute(query, params).fetchall()
-            return [dict(r) for r in rows]
+            rows = self._pg().sync_pg_execute_read(
+                "SELECT * FROM strategy_stats"
+                " ORDER BY CAST(total_successes AS REAL)/GREATEST(total_attempts,1) DESC LIMIT 10",
+                ()
+            )
+        return rows  # already list[dict]
 
     def stats(self) -> Dict[str, Any]:
         mgr = self._pg()
-        if mgr is not None:
-            total       = (mgr.sync_pg_execute_read("SELECT COUNT(*) AS c FROM prompt_genes", ()) or [{"c": 0}])[0]["c"]
-            tested      = (mgr.sync_pg_execute_read("SELECT COUNT(*) AS c FROM prompt_genes WHERE times_tested > 0", ()) or [{"c": 0}])[0]["c"]
-            high_fitness= (mgr.sync_pg_execute_read("SELECT COUNT(*) AS c FROM prompt_genes WHERE fitness > 0.5", ()) or [{"c": 0}])[0]["c"]
-            total_results=(mgr.sync_pg_execute_read("SELECT COUNT(*) AS c FROM test_results", ()) or [{"c": 0}])[0]["c"]
-            successes   = (mgr.sync_pg_execute_read("SELECT COUNT(*) AS c FROM test_results WHERE success = 1", ()) or [{"c": 0}])[0]["c"]
-        else:
-            total        = self._conn.execute("SELECT COUNT(*) FROM prompt_genes").fetchone()[0]
-            tested       = self._conn.execute("SELECT COUNT(*) FROM prompt_genes WHERE times_tested > 0").fetchone()[0]
-            high_fitness = self._conn.execute("SELECT COUNT(*) FROM prompt_genes WHERE fitness > 0.5").fetchone()[0]
-            total_results= self._conn.execute("SELECT COUNT(*) FROM test_results").fetchone()[0]
-            successes    = self._conn.execute("SELECT COUNT(*) FROM test_results WHERE success = 1").fetchone()[0]
+        total        = (mgr.sync_pg_execute_read("SELECT COUNT(*) AS c FROM prompt_genes", ()) or [{"c": 0}])[0]["c"]
+        tested       = (mgr.sync_pg_execute_read("SELECT COUNT(*) AS c FROM prompt_genes WHERE times_tested > 0", ()) or [{"c": 0}])[0]["c"]
+        high_fitness = (mgr.sync_pg_execute_read("SELECT COUNT(*) AS c FROM prompt_genes WHERE fitness > 0.5", ()) or [{"c": 0}])[0]["c"]
+        total_results= (mgr.sync_pg_execute_read("SELECT COUNT(*) AS c FROM test_results", ()) or [{"c": 0}])[0]["c"]
+        successes    = (mgr.sync_pg_execute_read("SELECT COUNT(*) AS c FROM test_results WHERE success = 1", ()) or [{"c": 0}])[0]["c"]
         return {
             "total_genes": total,
             "tested_genes": tested,
@@ -357,29 +217,24 @@ class EvolutionDB:
         }
 
     @staticmethod
-    def _row_to_gene(row) -> PromptGene:
-        """Convert a sqlite3.Row or a dict (from PG) to a PromptGene."""
-        if isinstance(row, dict):
-            get = row.get
-        else:
-            get = lambda k, default=None: row[k] if k in row.keys() else default  # noqa: E731
-        parent_ids_raw = get("parent_ids") or "[]"
+    def _row_to_gene(row: dict) -> PromptGene:
+        parent_ids_raw = row.get("parent_ids") or "[]"
         if isinstance(parent_ids_raw, list):
             parent_ids = parent_ids_raw
         else:
             parent_ids = json.loads(parent_ids_raw)
         return PromptGene(
-            prompt_id=get("prompt_id"),
-            text=get("text"),
-            attack_type=get("attack_type"),
-            source=get("source"),
+            prompt_id=row["prompt_id"],
+            text=row["text"],
+            attack_type=row["attack_type"],
+            source=row["source"],
             parent_ids=parent_ids,
-            generation=get("generation") or 0,
-            mutation_type=get("mutation_type") or "",
-            times_tested=get("times_tested") or 0,
-            times_succeeded=get("times_succeeded") or 0,
-            last_success_score=get("last_success_score") or 0.0,
-            fitness=get("fitness") or 0.0,
+            generation=row.get("generation") or 0,
+            mutation_type=row.get("mutation_type") or "",
+            times_tested=row.get("times_tested") or 0,
+            times_succeeded=row.get("times_succeeded") or 0,
+            last_success_score=row.get("last_success_score") or 0.0,
+            fitness=row.get("fitness") or 0.0,
         )
 
 
