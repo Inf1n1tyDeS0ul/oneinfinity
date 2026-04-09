@@ -114,21 +114,24 @@ desktop.ini
 gc_api.json
 sc_api.json
 
+# ── AI tool directories ────────────────────────────────────────────────────────
+.claude/
+.gemini/
+.codex/
+.opencode/
+.cursor/
+.superpowers/
+
 # ── OneInfinity runtime data ───────────────────────────────────────────────────
 .oneinfinity/
-.claude/
 uploads/
 tmp/
 data/.gf/.src/
 data/
 oi-backtests/
 .worktrees/
-node_modules/
-dist/
-build/
 .cache/
 logs/
-.worktrees/
 web/backend/.venv/
 web/frontend/node_modules/
 web/frontend/dist/

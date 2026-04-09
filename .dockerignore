@@ -89,6 +89,20 @@ credentials/
 *.log
 logs/
 
+# ── AI tool directories (no runtime value) ───────────────────
+.claude/
+.gemini/
+.codex/
+.opencode/
+.cursor/
+.superpowers/
+
+# ── Frontend build artifacts ──────────────────────────────────
+web/frontend/node_modules/
+web/frontend/.vite/
+web/frontend/dist/
+*.map
+
 # ── Large or unnecessary repo data ───────────────────────────
 # Nuclei templates are downloaded at runtime via entrypoint
 nuclei-templates/
