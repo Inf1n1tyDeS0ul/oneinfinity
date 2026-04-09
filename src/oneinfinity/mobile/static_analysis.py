@@ -51,7 +51,7 @@ except ImportError:
     log.debug("jadx_wrapper not available")
 
 try:
-    from oneinfinity.mobile_tool_registry import UnifiedFinding
+    from oneinfinity.mobile.tool_registry import UnifiedFinding
 except ImportError:
     @dataclass  # type: ignore
     class UnifiedFinding:  # type: ignore

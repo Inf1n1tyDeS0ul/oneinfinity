@@ -20,7 +20,7 @@ except ImportError:
     burp_proxy_wrapper = None  # type: ignore
     BurpConfig = None  # type: ignore
 
-from oneinfinity.mobile_tool_registry import UnifiedFinding
+from oneinfinity.mobile.tool_registry import UnifiedFinding
 
 logger = logging.getLogger("oneinfinity.mobile.network_analysis")
 

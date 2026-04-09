@@ -20,13 +20,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from oneinfinity.mobile_secret_scanner import (
+from oneinfinity.mobile.secret_scanner import (
     MobileSecretScanner,
     SecretFinding,
     _extract_strings,
     _BINARY_EXTENSIONS,
 )
-from oneinfinity.mobile_tool_registry import UnifiedFinding, tool_registry
+from oneinfinity.mobile.tool_registry import UnifiedFinding, tool_registry
 
 log = logging.getLogger("oneinfinity.mobile.secret_detection")
 
@@ -353,7 +353,7 @@ class MobileSecretDetector:
             all_patterns = list(_COMPILED_EXTRA)
             # Import base patterns lazily to avoid circular
             try:
-                from oneinfinity.mobile_secret_scanner import _COMPILED_PATTERNS as _BASE
+                from oneinfinity.mobile.secret_scanner import _COMPILED_PATTERNS as _BASE
                 all_patterns = list(_BASE) + all_patterns
             except ImportError:
                 pass
@@ -457,7 +457,7 @@ class MobileSecretDetector:
             # Apply all patterns
             all_patterns = list(_COMPILED_EXTRA)
             try:
-                from oneinfinity.mobile_secret_scanner import _COMPILED_PATTERNS as _BASE
+                from oneinfinity.mobile.secret_scanner import _COMPILED_PATTERNS as _BASE
                 all_patterns = list(_BASE) + all_patterns
             except ImportError:
                 pass

@@ -27,7 +27,7 @@ except ImportError:  # pragma: no cover
     _urllib_request = None  # type: ignore
     _urllib_error = None  # type: ignore
 
-from oneinfinity.mobile_tool_registry import UnifiedFinding
+from oneinfinity.mobile.tool_registry import UnifiedFinding
 
 logger = logging.getLogger("oneinfinity.mobile.burp_proxy")
 

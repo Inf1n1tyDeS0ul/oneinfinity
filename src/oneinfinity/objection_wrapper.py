@@ -14,7 +14,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-from oneinfinity.mobile_tool_registry import UnifiedFinding
+from oneinfinity.mobile.tool_registry import UnifiedFinding
 
 logger = logging.getLogger("oneinfinity.mobile.objection")
 

@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from oneinfinity.mobile_tool_registry import UnifiedFinding, tool_registry
+from oneinfinity.mobile.tool_registry import UnifiedFinding, tool_registry
 
 log = logging.getLogger("oneinfinity.mobile.jadx")
 

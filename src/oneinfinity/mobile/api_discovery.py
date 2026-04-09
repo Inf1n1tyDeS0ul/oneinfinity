@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from oneinfinity.mobile_tool_registry import UnifiedFinding
+from oneinfinity.mobile.tool_registry import UnifiedFinding
 
 logger = logging.getLogger("oneinfinity.mobile.api_discovery")
 

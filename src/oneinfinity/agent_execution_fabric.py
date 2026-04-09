@@ -549,7 +549,7 @@ class MobileSecurityAgent(GraphAgent):
         findings = []
 
         try:
-            from oneinfinity.mobile_security_engine import MobileSecurityEngine
+            from oneinfinity.mobile.security_engine import MobileSecurityEngine
             engine  = MobileSecurityEngine()
             context = task.context
             apk     = context.get("apk_path", "")

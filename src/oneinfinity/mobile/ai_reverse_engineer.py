@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from oneinfinity.mobile_tool_registry import UnifiedFinding
+from oneinfinity.mobile.tool_registry import UnifiedFinding
 
 log = logging.getLogger("oneinfinity.mobile.ai_reverse_engineer")
 

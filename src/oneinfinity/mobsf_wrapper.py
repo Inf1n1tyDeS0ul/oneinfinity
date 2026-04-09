@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from oneinfinity.mobile_tool_registry import UnifiedFinding, tool_registry
+from oneinfinity.mobile.tool_registry import UnifiedFinding, tool_registry
 
 try:
     import requests as _requests

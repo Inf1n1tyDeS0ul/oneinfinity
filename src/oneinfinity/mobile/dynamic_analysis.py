@@ -42,7 +42,7 @@ try:
 except ImportError:
     frida_script_generator = None  # type: ignore
 
-from oneinfinity.mobile_tool_registry import UnifiedFinding
+from oneinfinity.mobile.tool_registry import UnifiedFinding
 
 # ---------------------------------------------------------------------------
 # Dataclasses

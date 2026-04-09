@@ -3080,7 +3080,7 @@ class MobileSecurityAgent(SwarmAgent):
         super().__init__(AgentType.MOBILE, **kwargs)
         self._mobile_engine = None
         try:
-            from oneinfinity.mobile_security_engine import MobileSecurityEngine
+            from oneinfinity.mobile.security_engine import MobileSecurityEngine
             self._mobile_engine = MobileSecurityEngine()
         except Exception:
             pass

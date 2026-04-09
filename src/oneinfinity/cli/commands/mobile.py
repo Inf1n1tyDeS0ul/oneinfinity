@@ -17,15 +17,15 @@ log = logging.getLogger(__name__)
 
 def cmd_mobile_analyze(args):
     """oneinfinity mobile-analyze <file> — full mobile security pipeline."""
-    from oneinfinity.mobile_security_engine import analyze_cli
+    from oneinfinity.mobile.security_engine import analyze_cli
     analyze_cli(args)
 
 
 def cmd_mobile_static(args):
     """oneinfinity mobile-static <file> — static analysis only."""
     import json as _json
-    from oneinfinity.mobile_upload_manager import mobile_upload_manager
-    from oneinfinity.mobile_static_analyzer import mobile_static_analyzer
+    from oneinfinity.mobile.upload_manager import mobile_upload_manager
+    from oneinfinity.mobile.static_analysis import mobile_static_analyzer
 
     file_path = args.file
     if not os.path.exists(file_path):
@@ -66,7 +66,7 @@ def cmd_mobile_static(args):
 
 def cmd_mobile_dynamic(args):
     """oneinfinity mobile-dynamic <file> <package> — dynamic analysis on device."""
-    from oneinfinity.mobile_dynamic_analyzer import mobile_dynamic_analyzer
+    from oneinfinity.mobile.dynamic_analysis import mobile_dynamic_analyzer
 
     result = mobile_dynamic_analyzer.analyze(
         app_id=Path(args.file).stem,
@@ -96,8 +96,8 @@ def cmd_mobile_dynamic(args):
 def cmd_mobile_api_scan(args):
     """oneinfinity mobile-api-scan <file> — discover and optionally fuzz API endpoints."""
     import json as _json
-    from oneinfinity.mobile_upload_manager import mobile_upload_manager
-    from oneinfinity.mobile_api_discovery import mobile_api_discovery
+    from oneinfinity.mobile.upload_manager import mobile_upload_manager
+    from oneinfinity.mobile.api_discovery import mobile_api_discovery
 
     file_path = args.file
     if not os.path.exists(file_path):
@@ -135,7 +135,7 @@ def cmd_mobile_api_scan(args):
 def cmd_mobile_report(args):
     """oneinfinity mobile-report <app_id> — generate a formatted report."""
     import json as _json
-    from oneinfinity.mobile_upload_manager import mobile_upload_manager
+    from oneinfinity.mobile.upload_manager import mobile_upload_manager
 
     app = mobile_upload_manager.get(args.app_id)
     if not app:

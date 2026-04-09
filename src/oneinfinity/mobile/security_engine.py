@@ -18,6 +18,7 @@ Full mobile penetration testing pipeline:
 
 from __future__ import annotations
 
+import importlib
 import json
 import dataclasses
 import logging
@@ -187,25 +188,25 @@ class MobileSecurityEngine:
         def _try(attr: str, module: str, symbol: str):
             if getattr(self, attr) is None:
                 try:
-                    mod = __import__(module)
+                    mod = importlib.import_module(module)
                     setattr(self, attr, getattr(mod, symbol))
                 except Exception as exc:
                     logger.debug(f"{module}.{symbol} unavailable: {exc}")
 
-        _try("_upload_mgr",       "mobile_upload_manager",      "mobile_upload_manager")
-        _try("_tool_registry",    "mobile_tool_registry",        "tool_registry")
-        _try("_static_analyzer",  "mobile_static_analyzer",      "mobile_static_analyzer")
-        _try("_advanced_static",  "mobile_static_analysis",      "mobile_static_analyzer")
-        _try("_ai_reverser",      "mobile_ai_reverse_engineer",  "mobile_ai_reverse_engineer")
-        _try("_frida_gen",        "frida_script_generator",      "frida_script_generator")
-        _try("_secret_scanner",   "mobile_secret_scanner",       "mobile_secret_scanner")
-        _try("_secret_detector",  "mobile_secret_detection",     "mobile_secret_detector")
-        _try("_api_discovery",    "mobile_api_discovery",        "mobile_api_discovery")
-        _try("_component_tester", "android_component_testing",   "android_component_tester")
-        _try("_dynamic_analyzer", "mobile_dynamic_analysis",     "mobile_dynamic_analyzer")
-        _try("_network_analyzer", "mobile_network_analysis",     "mobile_network_analyzer")
-        _try("_api_attacker",     "mobile_api_attack_engine",    "mobile_api_attack_engine")
-        _try("_android_studio",   "android_studio_integration",  "android_studio_integration")
+        _try("_upload_mgr",       "oneinfinity.mobile.upload_manager",    "mobile_upload_manager")
+        _try("_tool_registry",    "oneinfinity.mobile.tool_registry",     "tool_registry")
+        _try("_static_analyzer",  "oneinfinity.mobile.static_analysis",   "mobile_static_analyzer")
+        _try("_advanced_static",  "oneinfinity.mobile.static_analysis",   "mobile_static_analyzer")
+        _try("_ai_reverser",      "oneinfinity.mobile.ai_reverse_engineer","mobile_ai_reverse_engineer")
+        _try("_frida_gen",        "oneinfinity.frida_script_generator",   "frida_script_generator")
+        _try("_secret_scanner",   "oneinfinity.mobile.secret_scanner",    "mobile_secret_scanner")
+        _try("_secret_detector",  "oneinfinity.mobile.secret_detection",  "mobile_secret_detector")
+        _try("_api_discovery",    "oneinfinity.mobile.api_discovery",     "mobile_api_discovery")
+        _try("_component_tester", "oneinfinity.android_component_testing","android_component_tester")
+        _try("_dynamic_analyzer", "oneinfinity.mobile.dynamic_analysis",  "mobile_dynamic_analyzer")
+        _try("_network_analyzer", "oneinfinity.mobile.network_analysis",  "mobile_network_analyzer")
+        _try("_api_attacker",     "oneinfinity.mobile.api_attack",        "mobile_api_attack_engine")
+        _try("_android_studio",   "android_studio_integration",           "android_studio_integration")
 
     # ─── Main entry ───────────────────────────────────────────────────────────
 

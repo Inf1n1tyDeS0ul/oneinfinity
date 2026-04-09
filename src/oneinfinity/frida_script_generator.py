@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from oneinfinity.mobile_tool_registry import UnifiedFinding  # noqa: F401 — re-exported for consumers
+from oneinfinity.mobile.tool_registry import UnifiedFinding  # noqa: F401 — re-exported for consumers
 
 log = logging.getLogger("oneinfinity.mobile.frida_script_generator")
 

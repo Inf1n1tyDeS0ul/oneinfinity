@@ -1281,7 +1281,7 @@ class UnifiedScanEngine:
                 elif tool_name == "mobile_scan":
                     # RULE 6: Direct MobileSecurityEngine invocation (fallback if fabric unavailable)
                     try:
-                        from oneinfinity.mobile_security_engine import MobileSecurityEngine
+                        from oneinfinity.mobile.security_engine import MobileSecurityEngine
                         _mob_engine = MobileSecurityEngine(target=session.target)
                         _mob_findings = _mob_engine.run() if hasattr(_mob_engine, "run") else []
                         for _f in (_mob_findings or []):

@@ -410,7 +410,7 @@ class SwarmWorker:
         target = task.target
         log.info("[worker:%s] Mobile: %s", self.worker_id, target)
         try:
-            from oneinfinity.mobile_security_engine import MobileSecurityEngine
+            from oneinfinity.mobile.security_engine import MobileSecurityEngine
             apk_path = task.config.get("apk_path") or task.config.get("ipa_path")
             if not apk_path:
                 return {"phase": "mobile", "target": target, "findings": [],
