@@ -51,7 +51,7 @@ def cmd_analyze(args):
 
 
 def cmd_org_intel(args):
-    from oneinfinity.org_intel_mapper import OrgDomainMapper
+    from oneinfinity.recon.org_intel_mapper import OrgDomainMapper
     token = args.github_token or ""
     if not token and args.github_token_file:
         try:
@@ -221,7 +221,7 @@ def cmd_adaptive_recon(args):
     Detects tech stack, maps API endpoints, extracts JS endpoints,
     enumerates cloud assets, and generates a prioritized attack strategy.
     """
-    from oneinfinity.adaptive_recon_engine import main_cli
+    from oneinfinity.recon.adaptive_recon_engine import main_cli
     main_cli(args)
 
 

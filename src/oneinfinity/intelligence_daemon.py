@@ -635,7 +635,7 @@ class OSINTExpansionWorker(WorkerEngine):
     def _collect(self, domain: str) -> list[str]:
         assets: list[str] = []
         try:
-            from oneinfinity.osint_collector import OSINTCollector
+            from oneinfinity.recon.osint_collector import OSINTCollector
             collector = OSINTCollector()
             result = collector.collect(domain)
             assets = list(set(result.subdomains + result.urls))[:50]

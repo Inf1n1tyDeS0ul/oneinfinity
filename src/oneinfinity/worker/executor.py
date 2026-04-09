@@ -172,7 +172,7 @@ class TaskExecutor:
     def _run_recon(self) -> dict:
         """Run adaptive recon and return discovered URLs/hosts."""
         try:
-            from oneinfinity.adaptive_recon_engine import AdaptiveReconEngine  # type: ignore
+            from oneinfinity.recon.adaptive_recon_engine import AdaptiveReconEngine  # type: ignore
             engine = AdaptiveReconEngine(
                 target=self.target,
                 output_dir=str(self.output_dir),

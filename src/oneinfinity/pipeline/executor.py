@@ -510,7 +510,7 @@ class CanonicalExecutor:
 
     def _inline_deep_recon(self, target: str, out: Path, waf: dict) -> List[dict]:
         try:
-            from oneinfinity.adaptive_recon_engine import AdaptiveReconEngine
+            from oneinfinity.recon.adaptive_recon_engine import AdaptiveReconEngine
             engine = AdaptiveReconEngine(
                 target=target,
                 output_dir=str(out),

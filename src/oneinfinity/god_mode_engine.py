@@ -280,7 +280,7 @@ class FoundationMission(Mission):
         # ── Step 2: adaptive-recon --depth deep ───────────────────────────
         log.info("[GOD MODE] Foundation Step 2: adaptive-recon --depth deep")
         try:
-            from oneinfinity.adaptive_recon_engine import AdaptiveReconEngine
+            from oneinfinity.recon.adaptive_recon_engine import AdaptiveReconEngine
             recon_out = str(GOD_MODE_DIR / session.scan_id / "recon")
             self.recon = AdaptiveReconEngine(session.target, output_dir=recon_out, depth="deep").run()
             log.info("[GOD MODE] Recon complete — subdomains=%s apis=%s",

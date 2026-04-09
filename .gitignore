@@ -50,7 +50,7 @@ reports/
 debug_*.json
 raw_*.json
 scan_results/
-recon/
+/recon/
 
 # ── Database files ─────────────────────────────────────────────────────────────
 *.db

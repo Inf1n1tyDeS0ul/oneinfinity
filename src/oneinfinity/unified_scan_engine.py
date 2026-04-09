@@ -514,7 +514,7 @@ class UnifiedScanEngine:
     def _phase_recon(self, session: ScanSession, ctx: dict) -> None:
         """Run adaptive recon: subfinder → httpx → katana → waybackurls."""
         try:
-            from oneinfinity.adaptive_recon_engine import AdaptiveReconEngine
+            from oneinfinity.recon.adaptive_recon_engine import AdaptiveReconEngine
         except ImportError as exc:
             raise RuntimeError("adaptive_recon_engine is unavailable: " + str(exc)) from exc
 

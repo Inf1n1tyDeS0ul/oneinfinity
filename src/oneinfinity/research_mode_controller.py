@@ -567,7 +567,7 @@ class ResearchModeController:
         if self._session.iteration == 1:
             try:
                 self._log("Phase 0: Adaptive recon (first iteration only)...")
-                from oneinfinity.adaptive_recon_engine import AdaptiveReconEngine
+                from oneinfinity.recon.adaptive_recon_engine import AdaptiveReconEngine
                 _recon = AdaptiveReconEngine(
                     self.target,
                     depth="quick",

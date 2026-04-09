@@ -209,13 +209,13 @@ class BountyHunterEngine:
     def _lazy_load(self):
         """Lazily import subsystems."""
         try:
-            from oneinfinity.program_discovery_engine import program_discovery_engine
+            from oneinfinity.recon.program_discovery_engine import program_discovery_engine
             self._discovery = program_discovery_engine
         except ImportError:
             pass
 
         try:
-            from oneinfinity.target_prioritization_engine import target_prioritization_engine
+            from oneinfinity.recon.target_prioritization_engine import target_prioritization_engine
             self._prioritization = target_prioritization_engine
         except ImportError:
             pass
