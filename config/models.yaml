@@ -152,6 +152,39 @@ models:
       - BIZ_LOGIC
       - GENERAL
 
+  # ── Ollama (local) ──────────────────────────────────────────────────────────
+  # These override auto-discovery defaults. Remove entries to use heuristics.
+  # Auto-discovered models not listed here get tier assigned by parameter count.
+
+  deepseek-r1:7b:
+    provider: ollama
+    tier: STANDARD
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    max_context_tokens: 131072
+    latency_class: INTERACTIVE
+    enabled: true
+    capabilities:
+      - VULN_ANALYSIS
+      - HYPOTHESIS
+      - CODE_ANALYSIS
+      - CHAIN_DETECTION
+      - GENERAL
+
+  llama3.2:3b:
+    provider: ollama
+    tier: FAST
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    max_context_tokens: 131072
+    latency_class: INTERACTIVE
+    enabled: true
+    capabilities:
+      - RECON
+      - HYPOTHESIS
+      - OSINT
+      - GENERAL
+
 # ── Budget limits ────────────────────────────────────────────────────────────
 
 budget:
@@ -187,3 +220,22 @@ routing:
     FAST: 0.2
     STANDARD: 0.3
     PREMIUM: 0.4
+
+# ── Ollama configuration ──────────────────────────────────────────────────────
+
+ollama:
+  host: "http://localhost:11434"   # override with OLLAMA_HOST env var
+  auto_discover: true              # register all models returned by /api/tags
+  prefer_over_api: false           # if true, Ollama tried before paid API at same tier
+  discovery_timeout_s: 2
+
+# ── CLI fallback configuration ────────────────────────────────────────────────
+
+cli_fallback:
+  enabled: true
+  codex_model: "o4-mini"           # model passed to: codex exec -m <model>
+  claude_model: "claude-opus-4-6"  # model passed to: claude -p --model <model>
+  max_budget_usd: 0.10             # --max-budget-usd for claude CLI
+  on_errors:
+    - auth    # 401/403 from API
+    - quota   # budget exhausted
