@@ -48,6 +48,11 @@ from oneinfinity.infra.model_budget_manager import (
     ModelBudgetManager, BudgetConfig, BudgetExhaustedError, get_budget_manager,
 )
 
+# Import new backends package — registers OllamaBackend, CodexCliBackend, ClaudeCliBackend at module load
+import oneinfinity.orchestration.backends.ollama  # noqa: F401
+import oneinfinity.orchestration.backends.cli     # noqa: F401
+import oneinfinity.orchestration.backends as _new_backends
+
 log = logging.getLogger("model_orchestrator")
 
 # ── Model tier ─────────────────────────────────────────────────────────────────
@@ -73,6 +78,7 @@ class ModelConfig:
     enabled:             bool = True
     api_base:            str  = ""        # override endpoint
     extra:               dict = field(default_factory=dict)
+    fallback_provider:   Optional[str] = None   # "codex" | "claude-cli" — tried on auth/quota failure
 
     def cost_estimate(self, input_tokens: int, output_tokens: int) -> float:
         return (input_tokens  / 1000 * self.cost_per_1k_input
@@ -563,7 +569,12 @@ class ModelOrchestrator:
     def load_config(self, path: Optional[Path] = None) -> None:
         """Load model registry and routing policy from models.yaml."""
         if path is None:
-            path = Path(__file__).parent / "config" / "models.yaml"
+            # Try canonical project-root config/ first, then local config/ sibling
+            _candidates = [
+                Path(__file__).parent.parent.parent.parent.parent / "config" / "models.yaml",  # project root
+                Path(__file__).parent / "config" / "models.yaml",  # legacy local
+            ]
+            path = next((p for p in _candidates if p.exists()), _candidates[0])
         try:
             import yaml
             with open(path) as f:
@@ -781,6 +792,8 @@ class ModelOrchestrator:
                 "escalated_from": output.escalated_from,
                 "category":       classification.category,
                 "complexity":     classification.complexity.name,
+                "total_tokens":   output.tokens,
+                "duration_ms":    output.duration_ms,
                 "timestamp":      time.time(),
             })
 
@@ -873,7 +886,8 @@ class ModelOrchestrator:
         system  = _build_system_prompt(classification, model_cfg.tier)
         prompt  = _build_prompt(task, classification)
         temp    = self._policy.temperature_by_tier.get(model_cfg.tier.name, 0.3)
-        backend = _BACKENDS.get(model_cfg.provider)
+        # Try new pluggable backends first, fall back to legacy _BACKENDS dict
+        backend = _new_backends.get_backend(model_cfg.provider) or _BACKENDS.get(model_cfg.provider)
 
         if backend is None:
             log.error("No backend registered for provider '%s'", model_cfg.provider)
@@ -887,13 +901,20 @@ class ModelOrchestrator:
 
             try:
                 t0 = time.monotonic()
-                content, in_tok, out_tok = backend.call(
+                _raw = backend.call(
                     model_id=model_cfg.model_id,
                     system=system,
                     prompt=prompt,
                     temperature=temp,
                     max_tokens=min(4096, model_cfg.max_context_tokens // 4),
                 )
+                # New backends return BackendResult; legacy backends return (content, in, out) tuple
+                if hasattr(_raw, "content"):
+                    if _raw.failed:
+                        raise RuntimeError(_raw.error)
+                    content, in_tok, out_tok = _raw.content, _raw.input_tokens, _raw.output_tokens
+                else:
+                    content, in_tok, out_tok = _raw
                 duration_ms = (time.monotonic() - t0) * 1000
                 cost_usd    = model_cfg.cost_estimate(in_tok, out_tok)
 
