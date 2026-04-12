@@ -131,7 +131,14 @@ class OllamaBackend(BaseBackend):
             )
 
         duration_ms = (time.monotonic() - t0) * 1000
-        content = data["choices"][0]["message"]["content"]
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError) as e:
+            return BackendResult(
+                content="", input_tokens=0, output_tokens=0,
+                duration_ms=duration_ms,
+                error=f"Malformed Ollama response: {e}",
+            )
         usage = data.get("usage", {})
         return BackendResult(
             content=content,
