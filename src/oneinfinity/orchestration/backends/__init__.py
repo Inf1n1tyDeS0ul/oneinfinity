@@ -61,6 +61,8 @@ _BACKENDS: dict[str, "BaseBackend"] = {}
 
 def register_backend(backend: BaseBackend) -> None:
     """Register a backend instance under its provider name. Idempotent."""
+    if not backend.provider:
+        raise ValueError(f"Backend {type(backend).__name__} has no provider string set")
     _BACKENDS[backend.provider] = backend
     log.debug("Backend registered: %s", backend.provider)
 
