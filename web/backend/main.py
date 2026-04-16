@@ -423,8 +423,8 @@ async def api_health():
 
 @app.get("/api/auth-token", include_in_schema=False)
 async def get_auth_token():
-    """No-op auth token endpoint — auth is disabled for local tool use."""
-    return {"token": ""}
+    """Return the session API key so the frontend can authenticate requests."""
+    return {"token": _API_KEY}
 
 # Prometheus metrics endpoint
 @app.get("/metrics", include_in_schema=False)
@@ -733,6 +733,48 @@ async def delete_scan(scan_id: str):
         "warn", "scanner", scan_id,
     )
     return {"ok": True, "findings_removed": len(to_remove) + db_deleted}
+
+
+class BulkDeleteScansRequest(BaseModel):
+    scan_ids: list
+
+
+@app.delete("/api/scans", dependencies=[Depends(_require_auth)])
+async def bulk_delete_scans(req: BulkDeleteScansRequest):
+    """Delete multiple scans and their findings in one request."""
+    removed_findings = 0
+    deleted_scans = []
+    not_found = []
+    for scan_id in req.scan_ids:
+        if scan_id not in SCANS:
+            not_found.append(scan_id)
+            continue
+        scan = SCANS[scan_id]
+        if scan.get("status") == "running":
+            pid = scan.get("pid")
+            if pid:
+                try:
+                    psutil.Process(pid).terminate()
+                except Exception:
+                    pass
+        SCANS.delete(scan_id)
+        try:
+            await (await get_mgr()).delete_scan(scan_id)
+        except Exception as exc:
+            log.warning("Could not delete scan %s from DB: %s", scan_id, exc)
+        to_remove = [fid for fid, v in VULNERABILITIES.items() if v.get("scan_id") == scan_id]
+        for fid in to_remove:
+            VULNERABILITIES.delete(fid)
+        removed_findings += len(to_remove)
+        try:
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
+            removed_findings += get_ingestion_engine().delete_findings_for_scan(scan_id)
+        except Exception as exc:
+            log.warning("Could not purge findings from DB for scan %s: %s", scan_id, exc)
+        deleted_scans.append(scan_id)
+        _add_log(f"Scan deleted (bulk): {scan_id}", "warn", "scanner", scan_id)
+    return {"ok": True, "deleted": deleted_scans, "not_found": not_found, "findings_removed": removed_findings}
+
 
 # Vulnerabilities
 @app.get("/api/findings")
@@ -1093,7 +1135,7 @@ async def publish_report(req: PublishReportRequest):
     # Load metadata — try god mode state file first, fall back to SCANS dict
     meta: dict = {}
     try:
-        from oneinfinity.god_mode_engine import GodModeStateFile
+        from oneinfinity.orchestration.god_mode_engine import GodModeStateFile
         state = GodModeStateFile(scan_id).read()
         if state:
             meta = {
@@ -1385,14 +1427,14 @@ async def _run_ai_campaign(campaign_id: str):
 def _get_traffic_engine():
     try:
         sys.path.insert(0, str(ROOT))
-        from oneinfinity.traffic_capture_engine import traffic_capture_engine as tce
+        from oneinfinity.scan.traffic_capture_engine import traffic_capture_engine as tce
         return tce
     except Exception:
         return None
 
 def _get_replay_engine():
     try:
-        from oneinfinity.traffic_replay_engine import traffic_replay_engine as tre
+        from oneinfinity.scan.traffic_replay_engine import traffic_replay_engine as tre
         return tre
     except Exception:
         return None
@@ -1788,7 +1830,7 @@ def _get_mobile_engine():
     try:
         import sys as _sys, os as _os
         _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-        from oneinfinity.mobile_security_engine import MobileSecurityEngine, MobileSecurityConfig
+        from oneinfinity.mobile.security_engine import MobileSecurityEngine, MobileSecurityConfig
         return MobileSecurityEngine, MobileSecurityConfig
     except ImportError:
         return None, None
@@ -1820,7 +1862,7 @@ async def mobile_upload(file: UploadFile, background_tasks: BackgroundTasks):
     try:
         import sys as _sys, os as _os
         _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-        from oneinfinity.mobile_upload_manager import mobile_upload_manager
+        from oneinfinity.mobile.upload_manager import mobile_upload_manager
         app_info = mobile_upload_manager.upload(str(dest), fname)
         if hasattr(app_info, "to_dict"):
             app_info = app_info.to_dict()
@@ -1846,7 +1888,7 @@ async def mobile_list_apps():
     try:
         import sys as _sys, os as _os
         _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-        from oneinfinity.mobile_upload_manager import mobile_upload_manager
+        from oneinfinity.mobile.upload_manager import mobile_upload_manager
         return mobile_upload_manager.list_apps()
     except Exception:
         return list(MOBILE_APPS.values())
@@ -2065,7 +2107,7 @@ def _get_hunter_engine():
 
 def _get_program_engine():
     try:
-        from oneinfinity.program_discovery_engine import program_discovery_engine
+        from oneinfinity.recon.program_discovery_engine import program_discovery_engine
         return program_discovery_engine
     except Exception:
         return None
@@ -2100,30 +2142,83 @@ async def hunter_start(request: Request, background_tasks: BackgroundTasks):
         try:
             if BountyHunterEngine and HunterConfig:
                 engine = BountyHunterEngine()
+
+                # Resolve platforms: accept a single string or a list
+                raw_platform = body.get("platform", "") or ""
+                raw_platforms = body.get("platforms", [])
+                if isinstance(raw_platforms, str):
+                    raw_platforms = [raw_platforms]
+                if raw_platform and raw_platform not in raw_platforms:
+                    raw_platforms = [raw_platform] + raw_platforms
+                platforms = raw_platforms or ["hackerone", "bugcrowd"]
+
+                # Resolve program handle / specific target — strip full URLs to slug
+                handle = body.get("handle", "").strip()
+                if handle.startswith("http"):
+                    handle = handle.rstrip("/").split("/")[-1]
+
+                # Map scan_depth → scan_mode
+                depth_map = {"fast": "fast", "deep": "deep", "thorough": "deep",
+                             "normal": "fast", "api": "api-heavy", "stealth": "stealth"}
+                scan_mode = depth_map.get(body.get("scan_depth", "fast"), "fast")
+
                 cfg = HunterConfig(
                     max_targets=body.get("max_targets", 5),
                     auto_exploit=body.get("auto_exploit", False),
-                    validate_findings=body.get("validate_findings", True),
-                    generate_report=body.get("generate_report", True),
-                    platforms=body.get("platforms", ["hackerone"]),
+                    auto_report=body.get("generate_report", True),
+                    platforms=platforms,
+                    program_filter=handle,
+                    specific_targets=[handle] if handle else [],
+                    scan_mode=scan_mode,
                 )
-                result = engine.run(cfg)
-                if result:
-                    HUNTER_SESSIONS[session_id].update({
-                        "status": "complete",
-                        "progress": 100,
-                        "findings": result.get("findings", []),
-                        "targets_scanned": result.get("targets_scanned", []),
-                    })
-                    HUNTER_SESSIONS[session_id]["progress_log"].append("[✓] Hunt complete")
+
+                # Wire the engine's HunterSession live into HUNTER_SESSIONS so
+                # the status endpoint reflects real-time progress.
+                hunter_session = engine.start_session(cfg)
+                # Mirror live fields back into the API dict on every log call
+                _orig_log = hunter_session.log
+                def _live_log(msg, level="info"):
+                    _orig_log(msg, level)
+                    sd = HUNTER_SESSIONS.get(session_id)
+                    if sd is not None:
+                        sd["progress_log"] = [
+                            e["msg"] if isinstance(e, dict) else e
+                            for e in hunter_session.progress_log
+                        ]
+                        sd["current_target"] = hunter_session.current_target
+                        sd["targets_scanned"] = hunter_session.targets_scanned
+                        sd["progress"] = min(
+                            99,
+                            int(hunter_session.targets_scanned /
+                                max(hunter_session.targets_queued, 1) * 100)
+                        )
+                hunter_session.log = _live_log  # type: ignore[method-assign]
+
+                result = engine.run(session=hunter_session)  # HunterSession object
+                # result is a HunterSession — use to_dict() not .get()
+                result_dict = result.to_dict() if hasattr(result, "to_dict") else {}
+                HUNTER_SESSIONS[session_id].update({
+                    "status": "complete",
+                    "progress": 100,
+                    "findings": result_dict.get("findings", []),
+                    "targets_scanned": result_dict.get("targets_scanned", 0),
+                    "current_target": result_dict.get("current_target", ""),
+                    "progress_log": [
+                        e["msg"] if isinstance(e, dict) else e
+                        for e in result_dict.get("progress_log", [])
+                    ],
+                })
             else:
-                # Demo mode
+                # Demo mode — engine not installed
                 import time as t
                 t.sleep(2)
                 HUNTER_SESSIONS[session_id]["status"] = "complete"
                 HUNTER_SESSIONS[session_id]["progress"] = 100
-                HUNTER_SESSIONS[session_id]["progress_log"].append("[!] Hunter engine not available — demo mode")
+                HUNTER_SESSIONS[session_id]["progress_log"].append(
+                    "[!] Hunter engine not available — demo mode"
+                )
         except Exception as e:
+            log.exception("Hunter session %s failed", session_id)
             HUNTER_SESSIONS[session_id]["status"] = "failed"
             HUNTER_SESSIONS[session_id]["progress_log"].append(f"[✗] Error: {e}")
 
@@ -2153,7 +2248,7 @@ async def hunter_scan_target(request: Request, background_tasks: BackgroundTasks
 
     def _run():
         try:
-            from oneinfinity.autonomous_scan_pipeline import autonomous_scan_pipeline
+            from oneinfinity.scan.autonomous_scan_pipeline import autonomous_scan_pipeline
             result = autonomous_scan_pipeline.run(target)
             if result:
                 rd = result.to_dict() if hasattr(result, "to_dict") else result
@@ -2331,7 +2426,7 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
         try:
             import sys as _s, os as _o
             _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)) + "/../..")
-            from oneinfinity.god_mode_engine import get_god_mode_conductor
+            from oneinfinity.orchestration.god_mode_engine import get_god_mode_conductor
             # Bridge god-mode log records → live WebSocket log panel
             import logging as _logging
             class _WsBridge(_logging.Handler):
@@ -2400,7 +2495,7 @@ async def god_mode_status_latest():
     try:
         import sys as _s, os as _o
         _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)) + "/../..")
-        from oneinfinity.god_mode_engine import get_god_mode_conductor
+        from oneinfinity.orchestration.god_mode_engine import get_god_mode_conductor
         data = get_god_mode_conductor().status()
         return data if data is not None else {"status": "no_session"}
     except Exception as exc:
@@ -2413,7 +2508,7 @@ async def god_mode_status_by_id(scan_id: str):
     try:
         import sys as _s, os as _o
         _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)) + "/../..")
-        from oneinfinity.god_mode_engine import get_god_mode_conductor
+        from oneinfinity.orchestration.god_mode_engine import get_god_mode_conductor
         data = get_god_mode_conductor().status(scan_id)
         if data is None:
             raise HTTPException(status_code=404, detail=f"Session {scan_id} not found")
@@ -2501,7 +2596,7 @@ async def god_mode_stop(request: Request):
     try:
         import sys as _s, os as _o
         _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)) + "/../..")
-        from oneinfinity.god_mode_engine import get_god_mode_conductor
+        from oneinfinity.orchestration.god_mode_engine import get_god_mode_conductor
         ok = get_god_mode_conductor().stop(scan_id)
         return {"stopped": ok}
     except Exception as exc:
@@ -3006,12 +3101,12 @@ def _safe_register(name: str, import_path: str, fn_name: str, *fn_args, **fn_kwa
         log.warning("Router FAILED to register: %s — %s", name, exc)
 
 
-_safe_register("graph", "graph_api", "register_routers", app)
-_safe_register("swarm_intel", "swarm_intel_api", "register_swarm_routes", app)
-_safe_register("system_evolution", "system_evolution_api", "register_evolution_routes", app)
-_safe_register("daemon", "daemon_api", "register_daemon_routes", app)
-_safe_register("graph_brain", "graph_brain_api", "register_brain_routes", app)
-_safe_register("orchestrator", "orchestrator_api", "register_orchestrator_routes", app)
+_safe_register("graph", "graph_api", "register_routers", app, require_auth=_require_auth)
+_safe_register("swarm_intel", "swarm_intel_api", "register_swarm_routes", app, require_auth=_require_auth)
+_safe_register("system_evolution", "system_evolution_api", "register_evolution_routes", app, require_auth=_require_auth)
+_safe_register("daemon", "daemon_api", "register_daemon_routes", app, require_auth=_require_auth)
+_safe_register("graph_brain", "graph_brain_api", "register_brain_routes", app, require_auth=_require_auth)
+_safe_register("orchestrator", "orchestrator_api", "register_orchestrator_routes", app, require_auth=_require_auth)
 
 # orchestrator_integration.activate is not a router-registration function but
 # we still want to track its load status for observability.
@@ -3169,7 +3264,7 @@ async def replay_finding_report(request: Request):
         return {"finding_id": finding_id, "validated": False,
                 "error": f"Finding '{finding_id}' not found", "confidence": 0.0}
     try:
-        from oneinfinity.finding_validation_engine import FindingValidationEngine
+        from oneinfinity.findings.finding_validation_engine import FindingValidationEngine
         result = FindingValidationEngine(timeout=10, max_retries=1).validate(finding)
         return {"finding_id": finding_id, "validated": result.validated,
                 "confidence": result.confidence, "error": result.error}

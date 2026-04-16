@@ -699,9 +699,8 @@ class DBManager:
         try:
             async with self._pg_pool.connection() as conn:
                 rows = await conn.execute(
-                    "SELECT scan_id, target, scan_type, status, data, "
-                    "       started_at, completed_at "
-                    "FROM scans ORDER BY started_at DESC NULLS LAST"
+                    "SELECT scan_id, target, scan_type, status, data, completed_at "
+                    "FROM scans ORDER BY created_at DESC"
                 )
                 results = []
                 async for row in rows:
@@ -709,8 +708,7 @@ class DBManager:
                         "scan_id": row[0], "id": row[0],
                         "target": row[1], "scan_type": row[2],
                         "status": row[3],
-                        "started_at": str(row[5]) if row[5] else None,
-                        "completed_at": str(row[6]) if row[6] else None,
+                        "completed_at": str(row[5]) if row[5] else None,
                         "log_lines": [], "pid": None,
                         "progress": 0, "findings_count": 0, "phase": "",
                     }

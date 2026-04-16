@@ -190,15 +190,32 @@ class MobileUploadManager:
 
     def _extract(self, src: Path, dest: Path) -> None:
         log.debug("Extracting %s → %s", src, dest)
+        dest_resolved = dest.resolve()
         with zipfile.ZipFile(str(src), "r") as z:
             for member in z.namelist():
-                clean = member.lstrip("/").replace("..", "_")
-                target = dest / clean
-                if str(target).startswith(str(dest)):
-                    try:
-                        z.extract(member, str(dest))
-                    except Exception:
-                        pass
+                # Sanitize the member path and resolve the final target
+                # to prevent zip-slip / path traversal attacks.
+                # Strip leading slashes and collapse any ".." components.
+                parts = Path(member).parts
+                safe_parts = [p for p in parts if p not in ("", ".", "..") and p != "/"]
+                if not safe_parts:
+                    continue
+                target = dest_resolved.joinpath(*safe_parts)
+                try:
+                    target_resolved = target.resolve()
+                except Exception:
+                    continue
+                # Reject any path that escapes the destination directory
+                if not str(target_resolved).startswith(str(dest_resolved) + "/") and target_resolved != dest_resolved:
+                    log.warning("Zip-slip attempt blocked: %r → %s", member, target_resolved)
+                    continue
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if not member.endswith("/"):
+                        with z.open(member) as src_f, open(target, "wb") as dst_f:
+                            dst_f.write(src_f.read())
+                except Exception:
+                    pass
         log.debug("Extracted %d files to %s", len(list(dest.rglob("*"))), dest)
 
     # ── Metadata parsing ──────────────────────────────────────────────────────

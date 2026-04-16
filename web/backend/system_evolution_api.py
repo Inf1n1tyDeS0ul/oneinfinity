@@ -25,7 +25,7 @@ import json
 from typing import Optional, List
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).parent.parent.parent
@@ -209,5 +209,6 @@ def list_event_types():
 
 # ── Registration helper ───────────────────────────────────────────────────────
 
-def register_evolution_routes(app):
-    app.include_router(router)
+def register_evolution_routes(app, require_auth=None):
+    deps = [Depends(require_auth)] if require_auth else []
+    app.include_router(router, dependencies=deps)

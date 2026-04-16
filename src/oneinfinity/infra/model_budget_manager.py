@@ -129,6 +129,7 @@ class ModelBudgetManager:
         # In-memory cache to avoid DB round-trips on every check
         self._today_total:    float = 0.0
         self._month_total:    float = 0.0
+        self._today_calls:    int   = 0
         self._model_today:    Dict[str, float] = {}
         self._cat_today:      Dict[str, float] = {}
         self._cache_date:     str = ""
@@ -260,6 +261,7 @@ class ModelBudgetManager:
         )
         self._today_total              += cost_usd
         self._month_total              += cost_usd
+        self._today_calls              += 1
         self._model_today[model_id]     = self._model_today.get(model_id, 0.0) + cost_usd
         self._cat_today[task_category]  = self._cat_today.get(task_category, 0.0) + cost_usd
         log.debug("Usage recorded: model=%s tokens=%d+%d cost=$%.6f",
@@ -378,6 +380,8 @@ class ModelBudgetManager:
             "daily_pct":         round(self._today_total / max(self._config.daily_limit_usd, 0.001) * 100, 1),
             "monthly_pct":       round(self._month_total / max(self._config.monthly_limit_usd, 0.001) * 100, 1),
             "projected_monthly": self.project_monthly_cost(),
+            "total_calls":       self._today_calls,
+            "avg_cost_per_call": round(self._today_total / max(self._today_calls, 1), 6),
             "model_today":       {k: round(v, 4) for k, v in self._model_today.items()},
         }
 

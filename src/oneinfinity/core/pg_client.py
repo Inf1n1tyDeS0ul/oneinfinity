@@ -41,6 +41,9 @@ async def get_async_pool() -> Optional[object]:
                 min_size=2,
                 max_size=10,
                 open=False,
+                timeout=5.0,           # fail fast when pool is exhausted (vs 30s default)
+                reconnect_timeout=0,   # retry reconnections indefinitely (0 = no limit)
+                max_idle=300,          # recycle idle connections every 5 min
             )
             await pool.open()
             _async_pool = pool

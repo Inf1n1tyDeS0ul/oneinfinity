@@ -6,7 +6,7 @@ import os
 import threading as _threading
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
 # Add parent to path for imports
@@ -195,7 +195,7 @@ async def discovery_status(session_id: str):
 async def run_osint(req: TargetRequest):
     """Run OSINT collection on target."""
     try:
-        from oneinfinity.osint_collector import OSINTCollector
+        from oneinfinity.recon.osint_collector import OSINTCollector
         collector = OSINTCollector()
         results = await collector.collect(req.target)
         return {"target": req.target, "results": [r.to_dict() for r in results]}
@@ -207,7 +207,7 @@ async def run_osint(req: TargetRequest):
 async def correlate_assets(req: TargetRequest):
     """Correlate IP/domain/cloud assets."""
     try:
-        from oneinfinity.asset_correlator import AssetCorrelator
+        from oneinfinity.intelligence.asset_correlator import AssetCorrelator
         correlator = AssetCorrelator()
         corr = await correlator.correlate(req.target)
         return corr.to_dict()
@@ -219,7 +219,7 @@ async def correlate_assets(req: TargetRequest):
 async def get_program_scope(platform: str, handle: str):
     """Fetch program scope from bug bounty platform."""
     try:
-        from oneinfinity.program_scope_analyzer import ProgramScopeAnalyzer
+        from oneinfinity.recon.program_scope_analyzer import ProgramScopeAnalyzer
         analyzer = ProgramScopeAnalyzer()
         scope = await analyzer.fetch_scope(handle, platform)
         return scope.to_dict()
@@ -233,7 +233,7 @@ async def get_program_scope(platform: str, handle: str):
 async def generate_bizlogic_attacks(req: BizLogicRequest):
     """Generate business logic attack hypotheses."""
     try:
-        from oneinfinity.business_logic_attack_engine import BusinessLogicAttackEngine
+        from oneinfinity.attack.business_logic_attack_engine import BusinessLogicAttackEngine
         engine = BusinessLogicAttackEngine()
         attacks = await engine.generate(req.target, req.app_context, req.categories)
         return {
@@ -248,7 +248,7 @@ async def generate_bizlogic_attacks(req: BizLogicRequest):
 @bizlogic_router.get("/categories")
 async def get_attack_categories():
     try:
-        from oneinfinity.business_logic_attack_engine import ATTACK_CATEGORIES, RULE_BASED_TEMPLATES
+        from oneinfinity.attack.business_logic_attack_engine import ATTACK_CATEGORIES, RULE_BASED_TEMPLATES
         return {"categories": ATTACK_CATEGORIES, "rule_count": sum(len(v) for v in RULE_BASED_TEMPLATES.values())}
     except Exception:
         return {"categories": [], "rule_count": 0}
@@ -333,7 +333,7 @@ def _serialize_edge(edge) -> dict:
 
 async def _run_discovery(session_id: str, domain: str, sources: list):
     try:
-        from oneinfinity.target_discovery_engine import TargetDiscoveryEngine
+        from oneinfinity.recon.target_discovery_engine import TargetDiscoveryEngine
         engine = TargetDiscoveryEngine()
         results = await engine.discover(domain)
         _swarm_status[session_id]["results"] = [r.to_dict() if hasattr(r, 'to_dict') else r for r in results]
@@ -346,7 +346,7 @@ async def _run_discovery(session_id: str, domain: str, sources: list):
 async def _run_swarm(session_id: str, targets: list, modules: Optional[List[str]], priority: int):
     _swarm_status[session_id]["status"] = "running"
     try:
-        from oneinfinity.swarm_scan_cluster import SwarmScanCluster
+        from oneinfinity.swarm.swarm_scan_cluster import SwarmScanCluster
         cluster = SwarmScanCluster()
         results = await cluster.scan_many(targets, modules=modules or ["recon"])
         _swarm_status[session_id]["results"] = results
@@ -391,9 +391,10 @@ def _demo_risk_report(target: str) -> dict:
 
 # ── Registration ─────────────────────────────────────────────────────────────
 
-def register_routers(app):
+def register_routers(app, require_auth=None):
     """Call this from main.py: register_routers(app)"""
-    app.include_router(graph_router)
-    app.include_router(discovery_router)
-    app.include_router(bizlogic_router)
-    app.include_router(swarm_router)
+    deps = [Depends(require_auth)] if require_auth else []
+    app.include_router(graph_router, dependencies=deps)
+    app.include_router(discovery_router, dependencies=deps)
+    app.include_router(bizlogic_router, dependencies=deps)
+    app.include_router(swarm_router, dependencies=deps)

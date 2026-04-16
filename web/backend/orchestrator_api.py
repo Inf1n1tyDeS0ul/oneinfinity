@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).parent.parent.parent
@@ -29,7 +29,7 @@ router = APIRouter(prefix="/api/orchestrator", tags=["model-orchestrator"])
 
 def _orch():
     try:
-        from oneinfinity.model_orchestrator import get_orchestrator
+        from oneinfinity.orchestration.model_orchestrator import get_orchestrator
         return get_orchestrator()
     except Exception as e:
         raise HTTPException(503, f"ModelOrchestrator unavailable: {e}")
@@ -115,7 +115,7 @@ def budget_records(limit: int = Query(50, ge=1, le=200)):
 @router.post("/execute")
 async def orchestrator_execute(req: ExecuteRequest):
     import asyncio
-    from oneinfinity.model_orchestrator import ModelTier
+    from oneinfinity.orchestration.model_orchestrator import ModelTier
     task = req.dict(exclude={"force_tier"})
     # map prompt → description key the classifier expects
     task["description"] = task.get("description") or task.pop("prompt", "")
@@ -154,5 +154,6 @@ def reload_config():
     return {"status": "reloaded", "models": len(orch._models)}
 
 
-def register_orchestrator_routes(app) -> None:
-    app.include_router(router)
+def register_orchestrator_routes(app, require_auth=None) -> None:
+    deps = [Depends(require_auth)] if require_auth else []
+    app.include_router(router, dependencies=deps)

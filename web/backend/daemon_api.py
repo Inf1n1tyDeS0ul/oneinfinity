@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -64,7 +64,7 @@ class WorkerConfigPatch(BaseModel):
 
 def _daemon():
     try:
-        from oneinfinity.intelligence_daemon import get_daemon
+        from oneinfinity.intelligence.intelligence_daemon import get_daemon
         return get_daemon()
     except Exception as e:
         raise HTTPException(503, f"IntelligenceDaemon unavailable: {e}")
@@ -72,7 +72,7 @@ def _daemon():
 
 def _bus():
     try:
-        from oneinfinity.event_bus import get_bus
+        from oneinfinity.orchestration.event_bus import get_bus
         return get_bus()
     except Exception as e:
         raise HTTPException(503, f"EventBus unavailable: {e}")
@@ -189,7 +189,7 @@ def bus_stats():
 @events_router.get("/types")
 def event_types():
     try:
-        from oneinfinity.event_bus import EventType
+        from oneinfinity.orchestration.event_bus import EventType
         return [et.value for et in EventType]
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -254,6 +254,7 @@ async def event_ws(websocket: WebSocket, event_type: Optional[str] = Query(None)
 
 # ── Registration helper ───────────────────────────────────────────────────────
 
-def register_daemon_routes(app):
-    app.include_router(daemon_router)
-    app.include_router(events_router)
+def register_daemon_routes(app, require_auth=None):
+    deps = [Depends(require_auth)] if require_auth else []
+    app.include_router(daemon_router, dependencies=deps)
+    app.include_router(events_router, dependencies=deps)

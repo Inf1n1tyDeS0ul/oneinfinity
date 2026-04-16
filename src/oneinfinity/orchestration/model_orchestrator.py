@@ -618,6 +618,14 @@ class ModelOrchestrator:
             self._policy = RoutingPolicy.from_dict(cfg["routing"])
 
         self._auto_enable_cli_models()
+
+        # New provider discovery
+        _ollama_cfg = cfg.get("ollama", {}) if isinstance(cfg, dict) else {}
+        _cli_cfg    = cfg.get("cli_fallback", {}) if isinstance(cfg, dict) else {}
+        self._auto_discover_ollama(_ollama_cfg)
+        self._register_cli_models(_cli_cfg)
+        self._assign_cli_fallbacks(_cli_cfg)
+
         self._loaded = True
         log.info("Loaded %d models from %s", len(self._models), path)
 
@@ -649,6 +657,10 @@ class ModelOrchestrator:
         ]
         for m in defaults:
             self.register_model(m)
+        self._auto_enable_cli_models()
+        self._auto_discover_ollama({})
+        self._register_cli_models({})
+        self._assign_cli_fallbacks({})
         self._loaded = True
 
     def _auto_enable_cli_models(self) -> None:
@@ -676,6 +688,99 @@ class ModelOrchestrator:
                         "[CLI auth] Auto-enabled model '%s' (provider=%s)",
                         model_id, model.provider,
                     )
+
+    def _auto_discover_ollama(self, ollama_cfg: dict) -> None:
+        """Query Ollama for running models and register any not already in registry."""
+        if not ollama_cfg.get("auto_discover", True):
+            return
+        from oneinfinity.orchestration.backends.ollama import OllamaBackend
+        host = ollama_cfg.get("host")
+        backend = OllamaBackend(host=host)
+        discovered = backend.discover_models()
+        if not discovered:
+            return
+        with self._lock:
+            for d in discovered:
+                if d.name in self._models:
+                    continue   # YAML explicit entry wins
+                self._models[d.name] = ModelConfig(
+                    model_id=d.name,
+                    provider="ollama",
+                    tier=ModelTier[d.tier],
+                    cost_per_1k_input=0.0,
+                    cost_per_1k_output=0.0,
+                    max_context_tokens=d.context_tokens,
+                    latency_class=LatencyClass.INTERACTIVE,
+                    capabilities=set(TaskCategory.ALL),
+                    enabled=True,
+                )
+                log.info("[Ollama] Auto-registered model '%s' (tier=%s)", d.name, d.tier)
+
+    def _register_cli_models(self, cli_cfg: dict) -> None:
+        """Register Codex and Claude CLI as explicit models if their binaries are found."""
+        import shutil as _shutil
+        if not cli_cfg.get("enabled", True):
+            return
+        codex_model  = cli_cfg.get("codex_model", "o4-mini")
+        claude_model = cli_cfg.get("claude_model", "claude-opus-4-6")
+        budget       = float(cli_cfg.get("max_budget_usd", 0.10))
+
+        if _shutil.which("codex"):
+            b = _new_backends.get_backend("codex")
+            if b:
+                b._model = codex_model
+            with self._lock:
+                self._models["codex-cli"] = ModelConfig(
+                    model_id=codex_model,
+                    provider="codex",
+                    tier=ModelTier.FAST,
+                    cost_per_1k_input=0.0,
+                    cost_per_1k_output=0.0,
+                    max_context_tokens=128000,
+                    latency_class=LatencyClass.INTERACTIVE,
+                    capabilities=set(TaskCategory.ALL),
+                    enabled=True,
+                )
+            log.info("[CLI] Registered codex-cli model (model=%s)", codex_model)
+
+        if _shutil.which("claude"):
+            b = _new_backends.get_backend("claude-cli")
+            if b:
+                b._model = claude_model
+                b._max_budget = budget
+            with self._lock:
+                self._models["claude-cli"] = ModelConfig(
+                    model_id=claude_model,
+                    provider="claude-cli",
+                    tier=ModelTier.STANDARD,
+                    cost_per_1k_input=0.0,
+                    cost_per_1k_output=0.0,
+                    max_context_tokens=200000,
+                    latency_class=LatencyClass.INTERACTIVE,
+                    capabilities=set(TaskCategory.ALL),
+                    enabled=True,
+                )
+            log.info("[CLI] Registered claude-cli model (model=%s)", claude_model)
+
+    def _assign_cli_fallbacks(self, cli_cfg: dict) -> None:
+        """Set fallback_provider on API models when CLI binaries are present and keys are absent."""
+        import shutil as _shutil
+        import os as _os
+        if not cli_cfg.get("enabled", True):
+            return
+        has_codex     = _shutil.which("codex") is not None
+        has_claude    = _shutil.which("claude") is not None
+        has_openai    = bool(_os.environ.get("OPENAI_API_KEY", "").strip())
+        has_anthropic = bool(_os.environ.get("ANTHROPIC_API_KEY", "").strip())
+
+        with self._lock:
+            for model in self._models.values():
+                if model.provider == "openai" and has_codex and not has_openai:
+                    model.fallback_provider = "codex"
+                    log.info("[CLI fallback] %s → codex (no OPENAI_API_KEY)", model.model_id)
+                elif model.provider == "anthropic" and has_claude and not has_anthropic:
+                    model.fallback_provider = "claude-cli"
+                    log.info("[CLI fallback] %s → claude-cli (no ANTHROPIC_API_KEY)", model.model_id)
 
     def register_model(self, config: ModelConfig) -> None:
         with self._lock:
@@ -949,6 +1054,38 @@ class ModelOrchestrator:
 
             except BudgetExhaustedError as e:
                 log.warning("Budget exhausted for %s: %s", model_cfg.model_id, e)
+                fb = model_cfg.fallback_provider
+                if fb:
+                    fb_backend = _new_backends.get_backend(fb)
+                    if fb_backend and fb_backend.is_available():
+                        log.info("Budget exhausted on %s — trying CLI fallback: %s",
+                                 model_cfg.model_id, fb)
+                        try:
+                            _fb_raw = fb_backend.call(
+                                model_id=model_cfg.model_id,
+                                system=system,
+                                prompt=prompt,
+                                temperature=temp,
+                                max_tokens=min(4096, model_cfg.max_context_tokens // 4),
+                            )
+                            if not _fb_raw.failed:
+                                return ModelOutput(
+                                    output_id=str(uuid.uuid4())[:12],
+                                    task_id=task_id,
+                                    model_id=f"{fb}:{model_cfg.model_id}",
+                                    tier=model_cfg.tier,
+                                    content=_fb_raw.content,
+                                    confidence=0.0,
+                                    input_tokens=_fb_raw.input_tokens,
+                                    output_tokens=_fb_raw.output_tokens,
+                                    cost_usd=0.0,
+                                    duration_ms=_fb_raw.duration_ms,
+                                    escalated_from=escalated_from,
+                                    escalation_reason="cli_fallback_budget",
+                                    retries=attempt,
+                                )
+                        except Exception as fb_exc:
+                            log.warning("CLI fallback %s also failed: %s", fb, fb_exc)
                 return None
 
             except Exception as e:
@@ -959,6 +1096,50 @@ class ModelOrchestrator:
                     continue  # retry
                 elif "401" in err_str or "403" in err_str or "api key" in err_str:
                     log.error("Auth error for %s: %s", model_cfg.model_id, e)
+                    # Try CLI fallback before giving up
+                    fb = model_cfg.fallback_provider
+                    if fb:
+                        fb_backend = _new_backends.get_backend(fb)
+                        if fb_backend and fb_backend.is_available():
+                            log.info("Auth failure on %s — trying CLI fallback: %s",
+                                     model_cfg.model_id, fb)
+                            try:
+                                _fb_raw = fb_backend.call(
+                                    model_id=model_cfg.model_id,
+                                    system=system,
+                                    prompt=prompt,
+                                    temperature=temp,
+                                    max_tokens=min(4096, model_cfg.max_context_tokens // 4),
+                                )
+                                if not _fb_raw.failed:
+                                    self._budget.record(
+                                        model_id=f"{fb}:{model_cfg.model_id}",
+                                        provider=fb,
+                                        task_id=task_id,
+                                        task_category=classification.category,
+                                        input_tokens=_fb_raw.input_tokens,
+                                        output_tokens=_fb_raw.output_tokens,
+                                        cost_usd=0.0,
+                                        duration_ms=_fb_raw.duration_ms,
+                                        escalation=(escalated_from is not None),
+                                    )
+                                    return ModelOutput(
+                                        output_id=str(uuid.uuid4())[:12],
+                                        task_id=task_id,
+                                        model_id=f"{fb}:{model_cfg.model_id}",
+                                        tier=model_cfg.tier,
+                                        content=_fb_raw.content,
+                                        confidence=0.0,
+                                        input_tokens=_fb_raw.input_tokens,
+                                        output_tokens=_fb_raw.output_tokens,
+                                        cost_usd=0.0,
+                                        duration_ms=_fb_raw.duration_ms,
+                                        escalated_from=escalated_from,
+                                        escalation_reason="cli_fallback",
+                                        retries=attempt,
+                                    )
+                            except Exception as fb_exc:
+                                log.warning("CLI fallback %s also failed: %s", fb, fb_exc)
                     return None  # no point retrying
                 elif "timeout" in err_str or "connection" in err_str:
                     log.warning("Network error on %s: %s (attempt %d)",

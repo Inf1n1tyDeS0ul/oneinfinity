@@ -39,7 +39,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).parent.parent.parent
@@ -49,7 +49,7 @@ sys.path.insert(0, str(ROOT))
 
 def _brain():
     try:
-        from oneinfinity.attack_graph_brain import get_brain
+        from oneinfinity.intelligence.attack_graph_brain import get_brain
         return get_brain()
     except Exception as e:
         raise HTTPException(503, f"AttackGraphBrain unavailable: {e}")
@@ -57,7 +57,7 @@ def _brain():
 
 def _ede():
     try:
-        from oneinfinity.event_driven_engine import get_engine
+        from oneinfinity.orchestration.event_driven_engine import get_engine
         return get_engine()
     except Exception as e:
         raise HTTPException(503, f"EventDrivenEngine unavailable: {e}")
@@ -65,7 +65,7 @@ def _ede():
 
 def _triggers():
     try:
-        from oneinfinity.graph_trigger_engine import get_trigger_engine
+        from oneinfinity.orchestration.graph_trigger_engine import get_trigger_engine
         return get_trigger_engine()
     except Exception as e:
         raise HTTPException(503, f"GraphTriggerEngine unavailable: {e}")
@@ -73,7 +73,7 @@ def _triggers():
 
 def _decisions():
     try:
-        from oneinfinity.autonomous_decision_engine import get_decision_engine
+        from oneinfinity.orchestration.autonomous_decision_engine import get_decision_engine
         return get_decision_engine()
     except Exception as e:
         raise HTTPException(503, f"AutonomousDecisionEngine unavailable: {e}")
@@ -81,7 +81,7 @@ def _decisions():
 
 def _fabric():
     try:
-        from oneinfinity.agent_execution_fabric import get_fabric
+        from oneinfinity.swarm.agent_execution_fabric import get_fabric
         return get_fabric()
     except Exception as e:
         raise HTTPException(503, f"AgentExecutionFabric unavailable: {e}")
@@ -233,7 +233,7 @@ def ede_start(req: StartRequest):
     if not ede._running:
         cfg = None
         if req.config:
-            from oneinfinity.event_driven_engine import LoopConfig
+            from oneinfinity.orchestration.event_driven_engine import LoopConfig
             cfg = LoopConfig(**{k: v for k, v in req.config.items()
                                 if hasattr(LoopConfig, k)})
             ede._config = cfg
@@ -334,9 +334,10 @@ def fabric_submit(req: FabricSubmitRequest):
 
 # ── Registration helper ────────────────────────────────────────────────────────
 
-def register_brain_routes(app) -> None:
-    app.include_router(brain_router)
-    app.include_router(ede_router)
-    app.include_router(trigger_router)
-    app.include_router(decision_router)
-    app.include_router(fabric_router)
+def register_brain_routes(app, require_auth=None) -> None:
+    deps = [Depends(require_auth)] if require_auth else []
+    app.include_router(brain_router, dependencies=deps)
+    app.include_router(ede_router, dependencies=deps)
+    app.include_router(trigger_router, dependencies=deps)
+    app.include_router(decision_router, dependencies=deps)
+    app.include_router(fabric_router, dependencies=deps)
