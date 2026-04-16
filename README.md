@@ -484,6 +484,14 @@ python3 oneinfinity.py hunter-start --benchmark-ref burp.json    # post-hunt acc
 │  Scoring: impact × exploitability × novelty / effort × penalty     │
 │  Agent outcome feedback loop (EMA per agent)                        │
 └───────────────────────────┬─────────────────────────────────────────┘
+                            │ AI task requests
+┌───────────────────────────▼─────────────────────────────────────────┐
+│               AI MODEL ORCHESTRATION                                │
+│  ModelOrchestrator · 3-tier routing (FAST → STANDARD → PREMIUM)    │
+│  Providers: OpenAI · Anthropic · Google Gemini · Ollama (local)    │
+│  CLI fallbacks: Codex CLI · Claude Code CLI                         │
+│  Budget guard · cost-aware routing · models.yaml config             │
+└───────────────────────────┬─────────────────────────────────────────┘
                             │ (node, agent) dispatch pairs
 ┌───────────────────────────▼─────────────────────────────────────────┐
 │                     AGENT SWARM (8 agents)                          │
@@ -496,17 +504,17 @@ python3 oneinfinity.py hunter-start --benchmark-ref burp.json    # post-hunt acc
 │               RESULT INGESTION ENGINE (singleton)                   │
 │  Normalize → SHA-256 dedup → atomic check-and-store (WAL SQLite)   │
 │  Broadcast to: attack graph · exploit chain engine · web UI (SSE)  │
-└───────────┬───────────────────────────────┬─────────────────────────┘
-            │                               │
-┌───────────▼──────────┐       ┌────────────▼──────────────────────────┐
-│  VALIDATION ENGINE   │       │     EXPLOIT CHAIN ENGINE              │
-│  Per-type active     │       │  6 patterns (SSRF→Cloud, XSS→ATO,    │
-│  re-testing          │       │  SQLi→RCE, IDOR→PrivEsc,             │
-│  CVSS gating         │       │  CORS→CredTheft, Redirect→OAuth)     │
-│  FP quarantine       │       │  Step-best-match PoC generation       │
-└───────────┬──────────┘       └────────────┬──────────────────────────┘
-            │                               │
-┌───────────▼───────────────────────────────▼─────────────────────────┐
+└───────────┬───────────────────────────┬─────────────────────────────┘
+            │                           │
+┌───────────▼──────────┐   ┌────────────▼──────────────────────────────┐
+│  VALIDATION ENGINE   │   │     EXPLOIT CHAIN ENGINE                  │
+│  Per-type active     │   │  6 patterns (SSRF→Cloud, XSS→ATO,         │
+│  re-testing          │   │  SQLi→RCE, IDOR→PrivEsc,                  │
+│  CVSS gating         │   │  CORS→CredTheft, Redirect→OAuth)          │
+│  FP quarantine       │   │  Step-best-match PoC generation           │
+└───────────┬──────────┘   └────────────┬──────────────────────────────┘
+            │                           │
+┌───────────▼───────────────────────────▼─────────────────────────────┐
 │                         OUTPUT LAYER                                │
 │  Findings DB (SQLite WAL)  ·  JSON / Markdown / HTML / CSV export  │
 │  H1 / Bugcrowd / Intigriti reports  ·  CVSS 3.1  ·  Bounty ROI    │
@@ -768,48 +776,69 @@ python3 oneinfinity.py doctor --json        # machine-readable output
 oneinfinity/
 │
 ├── oneinfinity.py                  # CLI entry point (55 commands)
+├── Makefile                        # Docker convenience targets
+├── Dockerfile / Dockerfile.worker  # Multi-stage images
+├── docker-compose*.yml             # Single-host and distributed stacks
+├── pyproject.toml                  # Single source of truth for all deps
 │
-├── ── AUTONOMOUS PIPELINE ──────────────────────────────────────────
-├── autonomous_scan_pipeline.py     # 7-phase orchestrator
-├── bounty_hunter_engine.py         # Multi-target autonomous hunter
-├── program_discovery_engine.py     # Live H1/Bugcrowd/Intigriti program fetch
-├── target_prioritization_engine.py # 6-dimension weighted target scoring
+├── config/
+│   ├── models.yaml                 # AI model registry (tiers, costs, capabilities)
+│   ├── agents.yaml                 # Agent configuration
+│   ├── graph.yaml                  # Attack graph + Neo4j settings
+│   └── neo4j.yaml                  # Neo4j connection config
 │
-├── ── CORE ENGINES ─────────────────────────────────────────────────
-├── adaptive_recon_engine.py        # Technology detection, JS endpoints, cloud assets
-├── application_intelligence.py     # AppModel: auth flows, API map, roles
-├── vulnerability_theory_engine.py  # 23-rule hypothesis generator
-├── finding_validation_engine.py    # False-positive filtering, active re-testing
-├── result_ingestion_engine.py      # Singleton: normalize → dedup → persist → broadcast
-├── exploit_generator.py            # 130+ payloads across 12 vuln types
-├── bounty_report_generator.py      # H1/Bugcrowd/Intigriti report generator
+├── src/oneinfinity/                # Main Python package
+│   │
+│   ├── cli/                        # CLI command modules (split from 5237-line run.py)
+│   │   └── commands/               # One module per command group
+│   │
+│   ├── orchestration/              # Scan pipeline & AI orchestration
+│   │   ├── model_orchestrator.py   # Cost-aware 3-tier AI routing
+│   │   ├── backends/               # Pluggable AI provider backends
+│   │   │   ├── ollama.py           # Ollama local LLM (auto-discovery)
+│   │   │   └── cli.py              # Codex CLI + Claude Code CLI fallbacks
+│   │   ├── autonomous_decision_engine.py
+│   │   ├── god_mode_engine.py
+│   │   ├── event_bus.py
+│   │   └── enforcement_controller.py
+│   │
+│   ├── recon/                      # Recon & OSINT engines
+│   ├── scan/                       # Vulnerability scanning engines
+│   ├── attack/                     # Exploit generation & replay
+│   ├── attack_graph_core/          # Attack graph (merged attack_graph/ + core)
+│   ├── swarm/                      # 8-agent swarm + coordinator
+│   ├── intelligence/               # Decision engine, graph triggers, daemon
+│   ├── findings/                   # Finding ingestion, dedup, validation
+│   ├── exploit_chains/             # 6 chain patterns + PoC generator
+│   ├── bounty/                     # Bug bounty hunter, report generator
+│   ├── ai_security/                # AI red-team, prompt injection, framework wrappers
+│   ├── mobile/                     # 12-phase mobile security pipeline
+│   ├── infra/                      # Model budget, task classifier, shared infra
+│   ├── learning/                   # AdaptivePlanner, KnowledgeBase, PatternMiner
+│   ├── pipeline/                   # 7-phase autonomous scan pipeline
+│   ├── agents/                     # Agent base classes + secret intel agent
+│   ├── modules/                    # Tool wrappers, payload lib, CVSS, scope
+│   ├── core/                       # DB manager, PG client, dedup, cache, profiles
+│   ├── framework/                  # OWASP framework orchestrator
+│   └── plugins/                    # Hot-reloadable recon + vuln plugins
 │
-├── ── INTELLIGENCE ─────────────────────────────────────────────────
-├── attack_graph_brain.py           # Graph-driven autonomous loop controller
-├── autonomous_decision_engine.py   # AI decision engine with outcome feedback
-├── graph_trigger_engine.py         # 15 rule-based graph triggers
-├── intelligence_daemon.py          # Always-on 9-worker event daemon
-├── swarm_intelligence_engine.py    # 8-agent parallel swarm + coordinator
+├── web/
+│   ├── backend/                    # FastAPI backend (54 routes)
+│   └── frontend/                   # React UI (14 pages, SSE live stream)
 │
-├── ── AI & MOBILE ──────────────────────────────────────────────────
-├── ai_security_engine.py           # AI scan orchestrator
-├── ai_redteam_engine.py            # Red team + genetic prompt evolution
-├── mobile_security_engine.py       # 12-phase mobile pipeline
+├── tests/                          # Test suite
+│   └── orchestration/              # Orchestrator + backend tests
 │
-├── ── SUBSYSTEMS ───────────────────────────────────────────────────
-├── agents/                         # Multi-agent layer (recon/scan/exploit/validate/report)
-├── modules/                        # Tool wrappers, pipeline primitives, findings DB
-├── core/                           # Infrastructure: dedup, cache, scope, profiles, doctor
-├── exploit_chains/                 # Chain patterns, PoC generator, detection engine
-├── attack_graph/                   # Graph model, builder, analyzer, path simulator
-├── ai_security/                    # AI vuln detectors, prompt generators, tool wrappers
-├── learning/                       # AdaptivePlanner, KnowledgeBase, PatternMiner
-├── framework/                      # OWASP framework orchestrator
-├── plugins/                        # Extensible plugin system (recon, vuln)
-│
-└── web/                            # React web platform
-    ├── backend/                    # FastAPI backend (54 routes)
-    └── frontend/                   # React UI (14 pages, SSE live stream)
+├── scripts/                        # Setup scripts (postgres, redis, neo4j)
+├── services/                       # Redis, nginx, Prometheus, Grafana configs
+├── db/                             # DB schema (schema.sql)
+└── docs/                           # All documentation
+    ├── ARCHITECTURE.md
+    ├── DOCUMENTATION.md
+    ├── CHANGELOG.md
+    ├── CONTRIBUTING.md
+    ├── DOCKER.md
+    └── SECURITY.md
 ```
 
 ---
@@ -997,7 +1026,7 @@ Scope enforcement is built in — but it relies on you configuring your scope co
 ## 📈 Roadmap
 
 - [ ] **Nuclei template auto-generation** — generate custom templates from zero-day findings
-- [ ] **LLM-driven triage** — local LLM (Ollama/llama.cpp) for autonomous finding severity assessment
+- [x] **LLM-driven triage** — Ollama local LLM backend with auto-discovery, parameter-count tier heuristics, and CLI fallbacks to Codex CLI and Claude Code CLI (shipped in v1.3.0)
 - [x] **Distributed agent cluster** — Redis-backed master-worker swarm with horizontally-scalable workers (shipped in v1.2.0)
 - [ ] **CI/CD integration** — native GitHub Actions / GitLab CI pipeline templates with finding gating
 - [ ] **GraphQL introspection attack engine** — automated schema extraction + BOLA/auth testing
