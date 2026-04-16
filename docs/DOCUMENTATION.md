@@ -45,6 +45,7 @@
    - [3.31 Plugin System](#331-plugin-system)
    - [3.32 Recon Cache](#332-recon-cache)
    - [3.33 Continuous Learning System](#333-continuous-learning-system)
+   - [3.34 AI Model Orchestration](#334-ai-model-orchestration)
 4. [Target Setup Guides](#4-target-setup-guides)
    - [4.1 Web — vulnbank.org](#41-web--vulnbankorg)
    - [4.2 Mobile — DIVA APK](#42-mobile--diva-apk)
@@ -101,7 +102,12 @@ Unlike point tools (Nuclei, Burp Suite, MobSF), OneInfinity is a **unified platf
 │  ReconAgent │ ScanAgent │ ExploitAgent │ ValidationAgent        │
 │  ReportAgent │ SecretIntelAgent                                  │
 ├─────────────────────────────────────────────────────────────────┤
-│            Persistence (SQLite · JSON · Markdown)                │
+│              AI Model Orchestration                              │
+│  ModelOrchestrator · 3-tier routing (FAST → STANDARD → PREMIUM) │
+│  OpenAI · Anthropic · Gemini · Ollama · Codex CLI · Claude CLI  │
+│  Budget guard · cost-aware escalation · models.yaml config      │
+├─────────────────────────────────────────────────────────────────┤
+│            Persistence (SQLite · PostgreSQL · JSON)              │
 │  findings.db · recon_cache.db · knowledge_base.db · raw/         │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -2525,6 +2531,76 @@ De-prioritized (low yield for this stack):
   - XXE (0% on Node.js targets)
   - Deserialization (2% on Node.js targets)
 ```
+
+---
+
+### 3.34 AI Model Orchestration
+
+OneInfinity routes all AI calls through a central `ModelOrchestrator` that selects the cheapest capable model, escalates on low confidence, enforces a daily spend budget, and falls back to free local providers when API keys are unavailable or quota is exhausted.
+
+#### Providers
+
+| Provider | How it's used | Cost |
+|---|---|---|
+| OpenAI (gpt-4o-mini, gpt-4o) | API via `OPENAI_API_KEY` | Paid per token |
+| Anthropic (Haiku/Sonnet/Opus) | API via `ANTHROPIC_API_KEY` | Paid per token |
+| Google Gemini | OAuth via Gemini CLI | Free tier |
+| Ollama (local) | HTTP at `OLLAMA_HOST` (default `localhost:11434`) | Free |
+| Codex CLI | `codex exec` subprocess | Billed to user's OpenAI account |
+| Claude Code CLI | `claude -p` subprocess | Billed to user's Anthropic account |
+
+#### Using Ollama (free local LLM)
+
+1. Install Ollama: https://ollama.com/download
+2. Pull a model: `ollama pull deepseek-r1:7b`
+3. Start Ollama (it runs as a background service automatically)
+4. Set env (optional, defaults to localhost): `export OLLAMA_HOST=http://localhost:11434`
+
+OneInfinity auto-discovers all running Ollama models at startup — no config file changes needed. You can override defaults in `config/models.yaml` under the `ollama:` key.
+
+#### Using CLI fallbacks
+
+If `codex` or `claude` are on your PATH, they are automatically registered as zero-cost fallback backends. They activate on API auth errors (401/403) or when the daily budget is exhausted.
+
+```bash
+# Install Codex CLI
+npm install -g @openai/codex
+
+# Install Claude Code CLI
+npm install -g @anthropic-ai/claude-code
+```
+
+#### Budget control (`config/models.yaml`)
+
+```yaml
+budget:
+  daily_limit_usd: 5.00       # hard stop at this amount per day
+  monthly_limit_usd: 50.00    # soft cap for monitoring
+  alert_threshold: 0.80       # notify at 80% of daily limit
+  per_model_daily_limit:
+    gpt-4o: 2.00              # per-model cap
+```
+
+When the daily budget is exhausted, all tasks are re-routed to Ollama or CLI backends. If no zero-cost backend is available, the call is rejected with a clear error.
+
+#### Checking model status
+
+```bash
+python3 oneinfinity.py doctor
+# Look for: [ModelOrchestrator] N models loaded (X enabled)
+
+# Or check the web UI → AI Models page
+```
+
+#### Routing tiers
+
+| Tier | Models | Used for |
+|---|---|---|
+| FAST | gpt-4o-mini, llama3.2:3b, claude-haiku-4-5 | Recon, OSINT, hypothesis generation |
+| STANDARD | gpt-4o, deepseek-r1:7b, claude-sonnet-4-6 | Vuln analysis, chain detection, payload mutation |
+| PREMIUM | claude-opus-4-6 | Exploit generation, business logic, complex reasoning |
+
+The orchestrator escalates automatically when a model returns low-confidence output (threshold configurable in `models.yaml`).
 
 ---
 
