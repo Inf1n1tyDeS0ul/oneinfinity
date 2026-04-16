@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-04-16
+
+### Added
+
+- **AI Model Orchestration layer** — `ModelOrchestrator` with 3-tier cost-aware routing (FAST → STANDARD → PREMIUM). All LLM calls now go through a single engine; no subsystem calls a provider API directly.
+- **Ollama backend** (`orchestration/backends/ollama.py`) — Local LLM support via Ollama's OpenAI-compatible API. Models are auto-discovered from the running Ollama daemon at startup; tier assigned by parameter-count heuristic (≥70B → PREMIUM, 27–34B → STANDARD, else FAST). Explicit `models.yaml` entries take precedence.
+- **CLI fallback backends** (`orchestration/backends/cli.py`) — `CodexCliBackend` (`codex exec`) and `ClaudeCliBackend` (`claude -p`) registered automatically when their binaries are on `PATH`. Activate on API auth errors or budget exhaustion.
+- **Backend registry** (`orchestration/backends/__init__.py`) — `BaseBackend` interface + `register_backend` decorator; backends self-register at import time.
+- **`ModelConfig.fallback_provider`** — Per-model fallback chain (e.g. `anthropic → claude-cli`) for auth/quota failures.
+- **`config/models.yaml` — `ollama:` section** — `host`, `auto_discover`, `prefer_over_api`, `discovery_timeout_s` controls.
+- **`config/models.yaml` — `cli_fallback:` section** — `enabled`, `codex_model`, `claude_model`, `max_budget_usd`, `on_errors` controls.
+- **Google Gemini provider** — `gemini-2.0-flash` and `gemini-2.5-pro-preview` entries in `models.yaml` (free tier via Gemini CLI OAuth).
+- **PostgreSQL storage mode** — `DBManager` and `PgClient` support `POSTGRES_URL` env var; auto-falls back to SQLite when unset.
+- **Scan-filtered findings** — Result ingestion filters false-positive and simulated findings before persistence.
+- **Codebase reorganization (phases 4–12)** — All flat root-level modules split into typed subpackages under `src/oneinfinity/`: `cli/`, `orchestration/`, `recon/`, `scan/`, `attack/`, `attack_graph_core/`, `swarm/`, `intelligence/`, `findings/`, `exploit_chains/`, `bounty/`, `ai_security/`, `mobile/`, `infra/`, `learning/`, `pipeline/`, `agents/`, `modules/`, `core/`, `framework/`, `plugins/`.
+- **Single `pyproject.toml`** — All dependency declarations consolidated; `pip install -e ".[ai,mobile,web]"` installs everything.
+
+### Changed
+
+- **Architecture diagram** (README + DOCUMENTATION.md) — New `AI MODEL ORCHESTRATION` layer shown between AI Decision Engine and Agent Swarm.
+- **ARCHITECTURE.md Section 2** — Directory listing updated to reflect actual `src/oneinfinity/` subpackage layout.
+- **ARCHITECTURE.md Section 21** (new) — Full AI Model Orchestration documentation: routing tiers, backends, Ollama auto-discovery, CLI fallbacks, budget tracking, `models.yaml` config, and web UI.
+- **DOCUMENTATION.md Section 3.34** (new) — User-facing guide: Ollama setup, CLI fallback installation, budget YAML config, routing tiers, and `doctor` verification command.
+- **Web UI — AI Models page** — Fixed model/history response shape handling (array vs. wrapped object), corrected budget field names (`today_usd`, `daily_pct`, `projected_monthly`), added split cost display (`$in/$out` per 1k tokens).
+
+### Fixed
+
+- **`model_orchestrator.py`** — `_load_from_file` now also calls `_auto_discover_ollama`, `_register_cli_models`, and `_assign_cli_fallbacks`; `_load_defaults` likewise wires all backends so defaults and file-loaded configs behave identically.
+- **`model_budget_manager.py`** — Field names aligned with web UI expectations (`today_usd`, `month_usd`, `daily_pct`, `projected_monthly`).
+- **`upload_manager.py`** — Mobile APK upload dedup path corrected.
+- **`db_manager.py` / `pg_client.py`** — Connection pool hardening and error handling improvements.
+- **Web backend API responses** — `daemon_api`, `graph_api`, `graph_brain_api`, `orchestrator_api`, `swarm_intel_api`, `system_evolution_api` response shapes corrected to match frontend expectations.
+
 ## [1.2.0] - 2026-03-20
 ### Added
 - **Distributed Docker stack** (`docker-compose.distributed.yml`) — 15 services including Redis, orchestrator, nginx, frontend, Prometheus, Grafana, and Watchtower.
