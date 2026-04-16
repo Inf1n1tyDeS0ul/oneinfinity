@@ -50,233 +50,80 @@ The system detects the application type (web/mobile/AI/API) and dynamically sele
 ```
 oneinfinity/
 │
-├── oneinfinity.py                     # CLI entry point (55 commands, argparse)
-├── oneinfinity                        # Convenience wrapper: `oneinfinity <cmd>` (bash)
+├── oneinfinity.py                        # CLI entry point (55 commands, argparse)
+├── pyproject.toml                        # Single dependency source (extras: web, ai, mobile)
 │
 ├── ── DOCKER / DISTRIBUTED ──────────────────────────────────────────────────
 │
-├── Dockerfile                         # 3-stage multi-arch image (go-tools → py-builder → final)
-├── Dockerfile.worker                  # Capability-scoped worker image
-├── docker-compose.yml                 # Single-host compose (cli, backend, frontend)
-├── docker-compose.distributed.yml     # Full distributed stack (15 services)
-├── docker-entrypoint.sh               # Container entrypoint (template sync, shell passthrough)
-├── Makefile                           # 30 convenience targets (setup, up, scale, scan, purge)
-├── .dockerignore                      # Build context exclusions
-├── .env.example                       # Template for all environment variables
-│
-├── worker/
-│   ├── main.py                        # Worker daemon (register → heartbeat → BLPOP → execute)
-│   └── executor.py                    # Task executor (per-capability handlers + CLI fallback)
-│
-├── scripts/
-│   ├── worker-entrypoint.sh           # Worker startup (Redis wait, plugin deps, exec main.py)
-│   ├── auto-update.sh                 # Nuclei/GF/plugin/container updater with --cron mode
-│   └── plugin-install.sh             # Plugin manager (install/remove/update/list/validate)
-│
-├── services/
-│   ├── redis/redis.conf               # Hardened Redis (LRU eviction, disabled FLUSH* commands)
-│   ├── nginx/nginx.conf               # Reverse proxy (rate limit, WebSocket upgrade, headers)
-│   └── prometheus/
-│       ├── prometheus.yml             # Scrape config (orchestrator, workers, redis-exporter)
-│       └── provisioning/              # Grafana datasource + dashboard provisioning
-│
-├── plugins/
-│   ├── PLUGIN_SPEC.md                 # Plugin interface specification
-│   ├── community/                     # Hot-reloadable third-party plugins (bind-mounted volume)
-│   ├── recon/                         # Built-in recon plugins
-│   └── vuln/                         # Built-in vulnerability plugins
-│
-├── ── CORE ENGINES ──────────────────────────────────────────────────────────
-│
-├── adaptive_recon_engine.py           # Technology detection, JS endpoints, cloud assets
-├── application_intelligence.py        # AppModel: auth flows, API map, roles, sensitive features
-├── vulnerability_theory_engine.py     # Rule-based theory generator (23 vuln rules)
-├── custom_test_engine.py              # Attack test designer and HTTP executor
-├── zero_day_engine.py                 # Anomaly detection (timing, status, reflection, leakage)
-├── research_mode_controller.py        # Autonomous research loop + SQLite KB
-│
-├── ── AUTONOMOUS PIPELINE ───────────────────────────────────────────────────
-│
-├── autonomous_scan_pipeline.py        # 7-phase scan pipeline orchestrator
-├── parallel_scan_engine.py            # asyncio + ThreadPoolExecutor worker pool
-├── bounty_hunter_engine.py            # Multi-target autonomous hunter
-├── program_discovery_engine.py        # HackerOne/Bugcrowd/Intigriti program discovery
-├── target_prioritization_engine.py    # 6-dimension weighted target scoring
-│
-├── ── EXPLOITATION ──────────────────────────────────────────────────────────
-│
-├── autonomous_exploit_engine.py       # Exploit session management
-├── exploit_generator.py               # Payload library (130+ payloads, 12 vuln types)
-├── finding_validation_engine.py       # Per-type active re-testing (XSS canary, SQLi timing, SSRF OOB)
-├── attack_path_planner.py             # BFS path finding, 6 chain patterns
-├── browser_attack_engine.py           # Playwright/Selenium browser automation
-├── application_crawler.py             # HTML crawler, form discovery, API call extraction
-├── source_analysis_engine.py          # Python/JS/Java/Go static analysis
-├── bounty_report_generator.py         # HackerOne/Bugcrowd/Intigriti report generation
-│
-├── ── AI SECURITY ───────────────────────────────────────────────────────────
-│
-├── ai_security_engine.py              # AI security scan orchestrator (Garak/PyRIT/etc.)
-├── ai_redteam_engine.py               # Red team campaign orchestrator
-├── ai_agent_pentest_engine.py         # Agentic system testing (tool abuse, prompt inj.)
-│
-├── ── MOBILE SECURITY ───────────────────────────────────────────────────────
-│
-├── mobile_security_engine.py          # 12-phase mobile pipeline orchestrator
-├── mobile_tool_registry.py            # Central registry: discover, version, execute all mobile tools
-│
-├── ── Tool Wrappers ─────────────────────────────────────────────────────────
-├── mobsf_wrapper.py                   # MobSF REST API + CLI integration
-├── frida_wrapper.py                   # Frida device management + script injection
-├── apktool_wrapper.py                 # APKTool decompile → smali analysis
-├── jadx_wrapper.py                    # JADX decompile → Java source analysis
-├── objection_wrapper.py               # Objection runtime exploration (SSL/root bypass)
-├── burp_proxy_wrapper.py              # Burp Suite proxy integration + traffic capture
-├── drozer_wrapper.py                  # Drozer component testing (activities/providers/IPC)
-├── rms_wrapper.py                     # RMS Runtime Mobile Security framework
-│
-├── ── Analysis Engines ──────────────────────────────────────────────────────
-├── mobile_static_analysis.py          # APKTool+JADX+MobSF comprehensive static analysis
-├── mobile_static_analyzer.py          # Legacy: AndroidManifest/aapt/androguard parser
-├── mobile_ai_reverse_engineer.py      # AI-driven code analysis: hidden endpoints, auth flaws
-├── frida_script_generator.py          # Auto-generate Frida hooks from decompiled code
-├── mobile_secret_detection.py         # Advanced secret detection: binary scan + AI triage
-├── mobile_secret_scanner.py           # Base: 32 regex patterns + TruffleHog/Gitleaks + DEX
-├── mobile_api_discovery.py            # API extraction: Retrofit/OkHttp/URLSession/GraphQL
-├── android_component_testing.py       # Component security: activities/providers/IPC/Drozer
-├── mobile_dynamic_analysis.py         # Dynamic: Frida+Objection+RMS runtime analysis
-├── mobile_dynamic_analyzer.py         # Legacy: Frida/ADB/objection dynamic analysis
-├── mobile_network_analysis.py         # Network: URL analysis, Burp integration, traffic
-├── mobile_api_attack_engine.py        # API attack: IDOR/auth bypass/mass assignment/injection
-├── mobile_upload_manager.py           # Upload, SHA-256 dedup, metadata, SQLite tracking
-├── android_studio_integration.py      # AVD launch, APK install, Burp cert, proxy setup
-│
-├── ── PROXY & TRAFFIC ───────────────────────────────────────────────────────
-│
-├── proxy_manager.py                   # Proxy config, scope-aware interception
-├── traffic_capture_engine.py          # HTTP request capture and storage
-├── traffic_replay_engine.py           # Replay with header/param mutation
-│
-├── ── CI/CD INTEGRATION ─────────────────────────────────────────────────────
-│
-├── cicd_integration_engine.py         # GitHub Actions / GitLab CI / Jenkinsfile generators
-│
-├── ── SUBSYSTEM PACKAGES ────────────────────────────────────────────────────
-│
-├── agents/                            # Multi-agent orchestration layer
-│   ├── base.py                        # BaseAgent(Thread): inbox/outbox, run_tool(), state
-│   ├── coordinator.py                 # AgentCoordinator: phase runner, tool_registry injection
-│   ├── recon_agent.py                 # subfinder/httpx/katana/waybackurls
-│   ├── scan_agent.py                  # nuclei/dalfox/sqlmap/trufflehog
-│   ├── exploit_agent.py               # chain detection → PocGenerator
-│   ├── validation_agent.py            # FP filter, CVSS, endpoint liveness
-│   └── report_agent.py               # HackerOne/Bugcrowd markdown writer
-│
-├── modules/                           # Tool wrappers and pipeline primitives
-│   ├── tool_wrappers.py               # 40+ tool wrappers + ToolRegistry class
-│   ├── capability_map.py              # Vulnerability → tool → input/output mapping
-│   ├── workflow.py                    # Step-based execution engine
-│   ├── pipeline.py                    # Phase-based pipeline with ToolSelector
-│   ├── scripter.py                    # Test script generator + RateLimiter
-│   ├── analyzer.py                    # Recon data analysis
-│   ├── payloads.py                    # PayloadKB: context-aware payload library
-│   ├── reporter.py                    # Markdown/JSON report writer
-│   ├── scope.py                       # scope.yaml parsing and domain validation
-│   ├── recon.py                       # Raw recon pipeline runner
-│   ├── findings.py                    # FindingsDB: SQLite findings persistence
-│   ├── cvss.py                        # CVSS 3.1 calculator
-│   └── planner.py                     # HuntPlanner: prioritized hunt from recon data
-│
-├── core/                              # Platform infrastructure
-│   ├── plugin_registry.py             # Auto-discover plugins, hook system
-│   ├── task_queue.py                  # Async priority queue + ThreadPoolExecutor
-│   ├── cache.py                       # SQLite recon cache with per-tool TTLs
-│   ├── scope_validator.py             # Wildcard/CIDR scope, always-OOS list, audit log
-│   ├── scan_profiles.py               # quick/deep/research/swarm/stealth profiles
-│   ├── deduplicator.py                # SHA-256 fingerprint dedup, 20+ vuln aliases
-│   ├── reporter.py                    # Multi-format reporter (Markdown/JSON/HTML/PDF) + Bounty ROI Engine
-│   ├── finding_validator.py           # FindingClassifier: confirmed/unverified/FP/simulated buckets
-│   │                                  #   + ReproducibilityMapper: CLI repro command per vuln type
-│   ├── bounty_strategy_engine.py      # ROI-driven URL scoring (auth/API/payment priority)
-│   ├── stealth_engine.py              # StealthSession: header randomization, proxy rotation, ban detection
-│   ├── benchmark_engine.py            # Precision/recall/F1 benchmarking vs. reference findings
-│   ├── ai_reasoning_engine.py         # LLM-backed attack plan generation
-│   └── exploit_chain_executor.py      # HTTP-level exploit chain execution
-│
-├── learning/                          # Continuous learning layer
-│   ├── adaptive_planner.py            # AdaptivePlanner + LearningSystem facade
-│   ├── knowledge_base.py              # SQLite KB: sessions, findings, tool runs, patterns
-│   ├── pattern_miner.py               # VulnPattern/TargetInsight extraction
-│   └── persistent_memory.py           # Cross-run JSON store: successful payloads, chains, patterns
-│
-├── exploit_chains/                    # Exploit chain detection and PoC generation
-│   ├── chain_patterns.py              # 16 ChainPattern definitions
-│   ├── poc_generator.py               # PocGenerator: produces PocScript per chain
-│   └── engine.py                      # ExploitChainEngine: chain detection
-│
-├── attack_graph/                      # Attack graph subsystem
-│   ├── graph.py                       # AttackGraph: nodes/edges, NodeType/EdgeType enums
-│   ├── builder.py                     # AttackGraphBuilder: graph from findings
-│   ├── analyzer.py                    # AttackGraphAnalyzer: paths, AnalysisReport
-│   ├── visualizer.py                  # AttackGraphVisualizer: frontend serialization
-│   └── path_simulator.py              # PathSimulator: full attacker path modeling
-│
-├── ai_security/                       # AI-specific security testing
-│   ├── vulnerability_detector.py      # 17+ AIVulnFinding detection rules
-│   ├── prompt_generator.py            # 800+ templates, 6 attack types
-│   ├── payload_mutator.py             # 18 mutation strategies
-│   ├── response_analyzer.py           # Refusal/compliance scoring
-│   ├── adversarial_prompt_evolution.py# Genetic algorithm prompt evolution
-│   ├── campaign_manager.py            # Async parallel campaign orchestrator
-│   ├── agent_prompt_generator.py      # Agentic system prompt testing
-│   ├── api_abuse_tester.py            # API abuse testing
-│   ├── data_exfiltration_tester.py    # Data exfiltration detection
-│   ├── tool_abuse_tester.py           # Tool-call injection testing
-│   └── tool_wrappers/                 # Garak, PyRIT, Giskard, PurpleLlama, Rebuff, ART
-│
-├── framework/                         # OWASP testing framework integration
-│   ├── orchestrator.py                # FrameworkOrchestrator: phase runner
-│   ├── recon_engine.py                # ReconEngine: HostInfo/ReconResult
-│   ├── surface.py                     # SurfaceMapper: ports, params, API map
-│   ├── vuln_scanner.py                # VulnScanner: VulnCandidate generation
-│   ├── validator.py                   # VulnValidator: PoC validation
-│   ├── auth.py                        # AuthEnforcer: AuthRecord management
-│   └── db_ext.py                      # ExtendedDB: additional DB operations
-│
-├── plugins/                           # Extensible plugin system
-│   ├── recon/
-│   │   ├── crtsh_monitor.py           # Certificate transparency subdomain enum
-│   │   └── asn_enum.py                # ASN/BGP IP range enumeration
-│   └── vuln/
-│       ├── api_security.py            # GraphQL, BOLA, mass assignment, rate limit
-│       └── cloud_misconfig.py         # S3, Elasticsearch, K8s, credential leakage
+├── Dockerfile                            # 3-stage multi-arch image (go-tools → py-builder → final)
+├── Dockerfile.worker                     # Capability-scoped worker image
+├── docker-compose.yml                    # Single-host compose (cli, backend, frontend)
+├── docker-compose.distributed.yml        # Full distributed stack (15 services)
+├── docker-entrypoint.sh                  # Container entrypoint
+├── Makefile                              # 30 convenience targets (setup, up, scale, scan, purge)
+├── .env.example                          # Template for all environment variables
 │
 ├── config/
-│   └── agents.yaml                    # Agent capabilities, timeouts, task types
+│   ├── models.yaml                       # AI model registry (providers, tiers, budget, routing)
+│   ├── agents.yaml                       # Agent capability and concurrency config
+│   ├── graph.yaml                        # Attack graph settings
+│   └── neo4j.yaml                        # Neo4j connection config
 │
-├── recon/                             # Runtime output directory
-│   └── <target>/                      # Per-target scan artifacts (JSON, Markdown)
+├── services/                             # Infrastructure service configs
+│   ├── redis/redis.conf                  # Hardened Redis config
+│   ├── nginx/nginx.conf                  # Reverse proxy + rate limiting
+│   └── prometheus/                       # Prometheus + Grafana provisioning
 │
-└── web/                               # Web platform
-    ├── start.sh                       # Launch script (backend + frontend)
-    ├── backend/
-    │   ├── main.py                    # FastAPI server (54 routes, WebSocket)
-    │   ├── requirements.txt
-    │   └── .venv/                     # Python virtual environment
-    └── frontend/
-        ├── index.html
-        ├── package.json
-        ├── vite.config.js             # Vite + proxy: /api → :8000, /ws → :8000
-        ├── tailwind.config.js         # Custom color tokens
-        └── src/
-            ├── main.jsx               # ReactDOM root + BrowserRouter
-            ├── App.jsx                # Route definitions (14 pages)
-            ├── index.css              # Tailwind base + component layer
-            ├── pages/                 # 14 route pages
-            ├── components/            # Layout, LogConsole, ScanLauncher, mobile/
-            ├── store/useStore.js      # Zustand global state
-            ├── hooks/useWebSocket.js  # Auto-reconnecting WebSocket
-            └── utils/api.js           # Axios + 54 typed endpoint functions
+├── ── PYTHON PACKAGE ────────────────────────────────────────────────────────
+│
+├── src/oneinfinity/
+│   │
+│   ├── cli/                              # CLI command modules (split from 5237-line run.py)
+│   │   └── commands/                     # One file per command group
+│   │
+│   ├── orchestration/                    # Scan pipeline & AI model orchestration
+│   │   ├── model_orchestrator.py         # Cost-aware 3-tier AI routing engine
+│   │   ├── backends/                     # Pluggable AI provider backends
+│   │   │   ├── __init__.py               # BaseBackend registry + BackendResult dataclass
+│   │   │   ├── ollama.py                 # Ollama local LLM (auto-discover, tier heuristics)
+│   │   │   └── cli.py                    # Codex CLI + Claude Code CLI subprocess backends
+│   │   ├── autonomous_decision_engine.py # AI-driven node → agent dispatch
+│   │   ├── god_mode_engine.py            # Full-autonomy scan controller
+│   │   ├── graph_trigger_engine.py       # 15 rule-based graph triggers
+│   │   ├── event_bus.py                  # Async publish/subscribe event bus
+│   │   ├── enforcement_controller.py     # Scope + rate-limit enforcement
+│   │   └── research_mode_controller.py   # Autonomous research loop
+│   │
+│   ├── recon/                            # Recon & OSINT engines
+│   ├── scan/                             # Vulnerability scanning engines
+│   ├── attack/                           # Exploit generation & replay
+│   ├── attack_graph_core/                # Attack graph model, builder, analyzer, path simulator
+│   ├── swarm/                            # 8-agent swarm + coordinator
+│   ├── intelligence/                     # Daemon, swarm controller, attack simulation
+│   ├── findings/                         # Result ingestion, dedup, validation, classifier
+│   ├── exploit_chains/                   # 6 chain patterns + PoC generator + engine
+│   ├── bounty/                           # Bug bounty hunter, ROI engine, report generator
+│   ├── ai_security/                      # AI red-team, prompt injection, framework wrappers
+│   ├── mobile/                           # 12-phase mobile pipeline + tool wrappers
+│   ├── infra/                            # ModelBudgetManager, TaskClassifier, shared infra
+│   ├── learning/                         # AdaptivePlanner, KnowledgeBase, PatternMiner
+│   ├── pipeline/                         # 7-phase autonomous scan pipeline orchestrator
+│   ├── agents/                           # BaseAgent, coordinator, SecretIntelAgent
+│   ├── modules/                          # Tool wrappers (40+), payload library, scope, CVSS
+│   ├── core/                             # DBManager, PG client, dedup, cache, scan profiles
+│   ├── framework/                        # OWASP framework orchestrator
+│   └── plugins/                          # Hot-reloadable recon + vuln plugins
+│
+├── web/
+│   ├── backend/                          # FastAPI backend (54 routes)
+│   └── frontend/                         # React UI (14 pages, SSE live stream)
+│
+├── tests/
+│   └── orchestration/                    # ModelOrchestrator + backend integration tests
+│
+├── scripts/                              # Native install scripts (postgres, redis, neo4j)
+├── db/                                   # DB schema
+└── docs/                                 # Documentation
 ```
 
 ---
@@ -2887,5 +2734,101 @@ Adaptive recon now persists **subdomains**, **URLs**, and **technologies** into 
 - Attack graph enrichment from reliable recon artifacts
 - Consistent asset tracking across scans
 - Faster correlation across runs
+
+---
+
+## 21. AI Model Orchestration
+
+### Overview
+
+`src/oneinfinity/orchestration/model_orchestrator.py` is the central AI routing engine. Every component that needs an LLM (decision engine, hypothesis generator, report writer, etc.) goes through `ModelOrchestrator.execute()` — never calls a provider API directly.
+
+### Three-Tier Routing
+
+| Tier | Class | Default providers | Use case |
+|------|-------|-------------------|----------|
+| FAST | 1 | gpt-4o-mini, claude-haiku-4-5, llama3.2:3b (Ollama), Codex CLI | High-volume, low-complexity tasks (RECON, OSINT) |
+| STANDARD | 2 | gpt-4o, claude-sonnet-4-6, deepseek-r1:7b (Ollama) | Most tasks (VULN_ANALYSIS, HYPOTHESIS, CHAIN_DETECTION) |
+| PREMIUM | 3 | claude-opus-4-6, GPT-o1 | Complex reasoning (EXPLOIT_GEN, BIZ_LOGIC) |
+
+Escalation is automatic: if a FAST model returns confidence below `0.65`, the same task is re-sent to a STANDARD model.
+
+### Provider Backends (`orchestration/backends/`)
+
+All backends implement `BaseBackend`:
+
+```python
+class BaseBackend:
+    provider: str            # "openai" | "anthropic" | "ollama" | "codex" | "claude-cli"
+    def is_available(self) -> bool: ...
+    def call(self, model_id, prompt, system, temperature, max_tokens) -> BackendResult: ...
+```
+
+| Backend | File | Trigger |
+|---------|------|---------|
+| `OllamaBackend` | `backends/ollama.py` | `provider: ollama` in models.yaml; auto-registered via `/api/tags` discovery |
+| `CodexCliBackend` | `backends/cli.py` | `codex` binary on PATH; registered as `codex-cli` model |
+| `ClaudeCliBackend` | `backends/cli.py` | `claude` binary on PATH; registered as `claude-cli` model |
+
+Backends are registered at import time via `@register_backend`. The orchestrator resolves a provider name to its backend at call time.
+
+### Ollama Auto-Discovery
+
+On startup, `ModelOrchestrator._auto_discover_ollama()` queries `GET {OLLAMA_HOST}/api/tags`. Each returned model that is not already in the YAML registry is auto-registered with:
+- **Tier** assigned by parameter count heuristic (≥70B → PREMIUM, 27–34B → STANDARD, else FAST)
+- **Cost** = $0.00 (local inference)
+- **Capabilities** = all TaskCategory values
+
+Explicit YAML entries take precedence over auto-discovered models.
+
+### CLI Fallbacks
+
+`CodexCliBackend` (`codex exec -m <model>`) and `ClaudeCliBackend` (`claude -p --model <model>`) are registered automatically when their binaries are detected on `PATH`. The orchestrator routes to them when:
+- The `cli_fallback.on_errors` list in `models.yaml` includes `auth` (HTTP 401/403) or `quota` (budget exhausted)
+- No other enabled backend can serve the task
+
+CLI backends record `cost = 0.0` locally (billed through the user's own accounts).
+
+### Configuration (`config/models.yaml`)
+
+```yaml
+models:
+  gpt-4o-mini:
+    provider: openai
+    tier: FAST
+    cost_per_1k_input: 0.00015
+    cost_per_1k_output: 0.00060
+    enabled: true
+    capabilities: [RECON, HYPOTHESIS, ...]
+
+ollama:
+  host: "http://localhost:11434"
+  auto_discover: true
+  prefer_over_api: false
+
+cli_fallback:
+  enabled: true
+  codex_model: "o4-mini"
+  claude_model: "claude-opus-4-6"
+  on_errors: [auth, quota]
+
+budget:
+  daily_limit_usd: 5.00
+  monthly_limit_usd: 50.00
+```
+
+### Budget Tracking
+
+`ModelBudgetManager` (`src/oneinfinity/infra/model_budget_manager.py`) records every call's token counts and cost. The orchestrator checks the daily/monthly budget before dispatching. At 80% of limit, an alert fires. At 100%, the call is redirected to a zero-cost backend (Ollama or CLI) if available, or rejected.
+
+### Web UI
+
+The **AI Models** page (`web/frontend/src/pages/AIModels.jsx`) shows:
+- All registered models (ID, tier, capabilities, cost per 1k tokens in+out, enabled status)
+- Today's spend, total calls, projected monthly cost
+- Live model execution test panel
+- Recent execution history
+
+The page reads from `/api/orchestrator/status`, `/api/orchestrator/models`, `/api/orchestrator/budget`, and `/api/orchestrator/history`.
 
 Org-domain intelligence (`org-intel`) stores GitHub-derived domains as `org_domain` recon assets, enabling cross-program asset mapping.
