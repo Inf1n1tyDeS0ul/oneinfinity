@@ -164,6 +164,11 @@ export default function GodMode() {
   const [showAuth, setShowAuth]   = useState(false)
   const [authType, setAuthType]   = useState('none')
   const [authValue, setAuthValue] = useState('')
+  const [savedSessions, setSavedSessions]         = useState([])
+  const [authSessionId, setAuthSessionId]         = useState('')
+  const [isRecording, setIsRecording]             = useState(false)
+  const [recordingId, setRecordingId]             = useState(null)
+  const [loginFormDetected, setLoginFormDetected]  = useState(null)
 
   // Auto-detection state
   const [detectedType, setDetectedType]         = useState(null)   // 'web'|'api'|'mobile'|'ai'|null
@@ -258,6 +263,24 @@ export default function GodMode() {
     logBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [logs])
 
+  // Load saved auth sessions on mount
+  useEffect(() => {
+    endpoints.authListSessions()
+      .then(r => setSavedSessions(r.data || []))
+      .catch(() => {})
+  }, [])
+
+  // Detect login form 800ms after target changes
+  useEffect(() => {
+    if (!target.trim()) { setLoginFormDetected(null); return }
+    const timer = setTimeout(() => {
+      endpoints.authDetect({ target: target.trim() })
+        .then(r => setLoginFormDetected(r.data?.has_login_form ?? false))
+        .catch(() => setLoginFormDetected(false))
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [target])
+
   // URL auto-detection — runs 400ms after target changes
   useEffect(() => {
     if (!target.trim() || userPickedPreset) {
@@ -271,6 +294,36 @@ export default function GodMode() {
     }, 400)
     return () => clearTimeout(timer)
   }, [target, userPickedPreset])
+
+  // ── Auth Session Recording ────────────────────────────────────────────────
+  const handleRecordSession = async () => {
+    if (!target.trim()) return
+    setIsRecording(true)
+    try {
+      const r = await endpoints.authRecordStart({ target: target.trim(), name: '' })
+      setRecordingId(r.data.session_id)
+      addNotification('Browser opened — log in, then click "Done"', 'info')
+    } catch (e) {
+      addNotification('Could not start recording: ' + (e.response?.data?.detail || e.message), 'error')
+      setIsRecording(false)
+    }
+  }
+
+  const handleRecordDone = async () => {
+    if (!recordingId) return
+    try {
+      const r = await endpoints.authRecordDone(recordingId, { name: target.trim() })
+      addNotification(`Session recorded — ${r.data.cookies_captured} cookies captured`, 'success')
+      setAuthSessionId(r.data.session_id)
+      const list = await endpoints.authListSessions()
+      setSavedSessions(list.data || [])
+    } catch (e) {
+      addNotification('Recording finalization failed: ' + (e.response?.data?.detail || e.message), 'error')
+    } finally {
+      setIsRecording(false)
+      setRecordingId(null)
+    }
+  }
 
   // ── Launch ────────────────────────────────────────────────────────────────
   const handleLaunch = async () => {
@@ -319,6 +372,7 @@ export default function GodMode() {
           intensities: moduleIntensities,
         }),
         ...authPayload,
+        ...(authSessionId ? { auth_session_id: authSessionId } : {}),
       })
       addNotification(`GOD MODE launched (${launchLabel}) — Foundation starting`, 'success')
       setSession(null)
@@ -651,6 +705,63 @@ export default function GodMode() {
                             <CheckCircle2 size={9} /> Authenticated scanning enabled
                           </div>
                         )}
+                      </div>
+                    )}
+
+                    {/* Saved session picker */}
+                    {savedSessions.length > 0 && (
+                      <div className="mt-3">
+                        <label className="label">Use Saved Session</label>
+                        <select
+                          className="select"
+                          value={authSessionId}
+                          onChange={e => setAuthSessionId(e.target.value)}
+                        >
+                          <option value="">— None —</option>
+                          {savedSessions.map(s => (
+                            <option key={s.session_id} value={s.session_id}>
+                              {s.name || s.session_id} ({s.target})
+                            </option>
+                          ))}
+                        </select>
+                        {authSessionId && (
+                          <p className="text-[10px] text-green-400 mt-1 flex items-center gap-1">
+                            <CheckCircle2 size={9} /> Authenticated session will be injected
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Record new session */}
+                    {loginFormDetected && !isRecording && (
+                      <div className="mt-3">
+                        <button
+                          className="btn-secondary w-full flex items-center justify-center gap-2"
+                          onClick={handleRecordSession}
+                        >
+                          <span>⏺</span> Record Login Session
+                        </button>
+                        <p className="text-[10px] text-slate-500 mt-1">
+                          Login form detected — click to open browser and record your session
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Recording in progress overlay */}
+                    {isRecording && (
+                      <div className="mt-3 p-3 rounded border border-yellow-600/40 bg-yellow-900/20">
+                        <p className="text-xs text-yellow-300 font-medium mb-2">
+                          ⏺ Recording — browser is open on the server
+                        </p>
+                        <p className="text-[10px] text-yellow-400 mb-3">
+                          Log in to your account in the browser, then click Done below.
+                        </p>
+                        <button
+                          className="btn-primary w-full"
+                          onClick={handleRecordDone}
+                        >
+                          Done — I have logged in
+                        </button>
                       </div>
                     )}
                   </div>

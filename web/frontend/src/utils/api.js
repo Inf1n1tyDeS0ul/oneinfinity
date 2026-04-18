@@ -250,6 +250,12 @@ export const endpoints = {
 
   // GOD MODE
   godModeRun:          (data) => api.post('/god-mode/run', data),
+  authDetect:          (data) => api.post('/auth/detect', data),
+  authRecordStart:     (data) => api.post('/auth/record', data),
+  authRecordDone:      (recId, data={}) => api.post(`/auth/record/${recId}/done`, data),
+  authListSessions:    () => api.get('/auth/sessions'),
+  authGetSession:      (id) => api.get(`/auth/sessions/${id}`),
+  authDeleteSession:   (id) => api.delete(`/auth/sessions/${id}`),
   godModeStatus:       (scanId) => scanId ? api.get(`/god-mode/status/${scanId}`) : api.get('/god-mode/status'),
   godModeSessions:     () => api.get('/god-mode/sessions'),
   godModeStop:         (scanId) => api.post('/god-mode/stop', { scan_id: scanId || null }),
