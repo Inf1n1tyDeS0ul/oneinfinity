@@ -80,15 +80,22 @@ _event_loop: Optional[asyncio.AbstractEventLoop] = None
 async def _lifespan(application):
     global _event_loop
     _event_loop = asyncio.get_running_loop()
-    # Fail fast if PostgreSQL is not available
+    # Check DB availability — warn but continue in local/JSON mode if Postgres unavailable
     from oneinfinity.core.db_manager import get_db_manager as _get_dbm_check
-    _startup_check = await _get_dbm_check()
-    if _startup_check.mode not in ("distributed", "postgres"):
-        raise RuntimeError(
-            f"OneInfinity requires PostgreSQL (got mode={_startup_check.mode!r}). "
-            "Set DISTRIBUTED_MODE=true and configure DB_HOST/DB_NAME/DB_USER/DB_PASSWORD."
-        )
-    # Startup
+    _startup_mgr = None
+    try:
+        _startup_check = await _get_dbm_check()
+        if _startup_check.mode not in ("distributed", "postgres"):
+            log.warning(
+                "PostgreSQL not available (mode=%r) — running in local JSON mode. "
+                "Set POSTGRES_URL to enable persistence.",
+                _startup_check.mode,
+            )
+        else:
+            _startup_mgr = _startup_check
+    except Exception as exc:
+        log.warning("DB manager init failed at startup: %s — running in local JSON mode", exc)
+    # Load persisted findings from ingestion engine (works in local mode too)
     try:
         from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
         for f in get_ingestion_engine().get_findings():
@@ -97,34 +104,34 @@ async def _lifespan(application):
         log.info("Loaded %d persisted findings into memory", len(VULNERABILITIES))
     except Exception as exc:
         log.warning("Could not load persisted findings: %s", exc)
-    # Load persisted scan history
-    try:
-        from oneinfinity.core.db_manager import get_db_manager as _get_dbm
-        _startup_mgr = await _get_dbm()
-        for s in await _startup_mgr.load_scans():
-            SCANS[s["scan_id"]] = s
-        log.info("Loaded %d persisted scans into memory", len(SCANS))
-    except Exception as exc:
-        log.warning("Could not load persisted scans: %s", exc)
-    # Import any God Mode sessions not yet in scan_history
+    # Load persisted scan history from DB (if available)
+    if _startup_mgr is not None:
+        try:
+            for s in await _startup_mgr.load_scans():
+                SCANS[s["scan_id"]] = s
+            log.info("Loaded %d persisted scans from DB", len(SCANS))
+        except Exception as exc:
+            log.warning("Could not load persisted scans from DB: %s", exc)
+    # Always import God Mode sessions from JSON state files on disk
     try:
         import json as _json
+        import datetime as _dt
         gm_dir = Path.home() / ".oneinfinity"
-        for sf in gm_dir.glob("god-mode-*.json"):
+        imported = 0
+        for sf in sorted(gm_dir.glob("god-mode-*.json")):
             try:
                 state = _json.loads(sf.read_text())
                 sid = state.get("scan_id")
                 if not sid:
                     continue
-                # Always prefer state-file data over stale SQLite records for god-mode scans
                 existing = SCANS.get(sid, {})
+                # Skip if in-memory record already has equal/better finding count
                 if existing.get("scan_type") == "god_mode" and existing.get("findings_count", 0) >= state.get("finding_count", 0):
-                    continue  # in-memory already has equal or better data
+                    continue
                 terminated_by = state.get("terminated_by") or ""
                 status = ("stopped" if terminated_by == "stop"
                           else "completed" if terminated_by
-                          else existing.get("status", "failed"))
-                import datetime as _dt
+                          else existing.get("status", "running"))
                 start_ts = state.get("start_time")
                 elapsed = state.get("elapsed_seconds") or 0
                 started_at = (_dt.datetime.utcfromtimestamp(start_ts).isoformat()
@@ -146,12 +153,49 @@ async def _lifespan(application):
                     "error": "",
                 }
                 SCANS[sid] = entry
-                await _startup_mgr.save_scan(entry)
+                imported += 1
+                # Persist to DB if available
+                if _startup_mgr is not None:
+                    try:
+                        await _startup_mgr.save_scan(entry)
+                    except Exception:
+                        pass
             except Exception:
                 pass
-        gm_count = sum(1 for s in SCANS.values() if s.get("scan_type") == "god_mode")
-        if gm_count:
-            log.info("Imported %d God Mode sessions into scan history", gm_count)
+        if imported:
+            log.info("Imported %d God Mode sessions from disk", imported)
+        # Also load per-scan unified_findings.json into VULNERABILITIES (deduplicated)
+        try:
+            from oneinfinity.findings.findings_utils import deduplicate_findings as _dedup
+        except Exception:
+            _dedup = lambda x: x
+        for sid, scan in list(SCANS.items()):
+            if scan.get("scan_type") != "god_mode":
+                continue
+            scan_dir = gm_dir / sid / "full_scan"
+            raw_for_scan: list = []
+            for fname in ["unified_findings.json", "auth_findings.json", "browser_findings.json",
+                          "graphql_findings.json"]:
+                fpath = scan_dir / fname
+                if not fpath.exists():
+                    continue
+                try:
+                    data = _json.loads(fpath.read_text())
+                    items = data if isinstance(data, list) else data.get("findings", [])
+                    for raw in items:
+                        if isinstance(raw, dict):
+                            raw.setdefault("scan_id", sid)
+                            raw.setdefault("target", scan.get("target", ""))
+                            raw.setdefault("title", raw.get("vulnerability", raw.get("vuln_type", raw.get("type", "Finding"))))
+                            raw_for_scan.append(raw)
+                except Exception:
+                    pass
+            for deduped in _dedup(raw_for_scan):
+                fid = deduped.get("finding_id") or deduped.get("id") or f"{sid}-{len(VULNERABILITIES)}"
+                if fid not in VULNERABILITIES:
+                    VULNERABILITIES[fid] = _finding_to_api(deduped)
+        if VULNERABILITIES:
+            log.info("Loaded %d findings (deduplicated) from god-mode scan dirs", len(VULNERABILITIES))
     except Exception as exc:
         log.warning("Could not import God Mode sessions: %s", exc)
     yield
@@ -239,6 +283,7 @@ AI_CAMPAIGNS: Dict[str, Dict] = {}
 LOG_MESSAGES: List[Dict] = []
 _ws_clients: List[WebSocket] = []
 _scan_processes: Dict[str, subprocess.Popen] = {}
+_AUTH_RECORDINGS: Dict[str, Dict] = {}  # session_id → {status, thread, session}
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
 
@@ -374,9 +419,18 @@ async def _broadcast_log(entry: Dict):
             _ws_clients.remove(ws)
 
 def _finding_to_api(f) -> dict:
-    """Convert NormalizedFinding dataclass or dict to API dict."""
+    """Convert NormalizedFinding dataclass or dict to API dict with full PoC."""
     if hasattr(f, '__dict__'):
         f = f.__dict__
+    try:
+        from oneinfinity.findings.findings_utils import build_poc
+        poc = build_poc(f)
+    except Exception:
+        poc = {
+            "request_poc": "", "method": "GET", "headers": {}, "parameter": "",
+            "how_exploited": "", "how_validated": "", "validation_status": "",
+            "response_excerpt": "", "reproduction_steps": "", "remediation": "", "tags": [],
+        }
     return {
         "id": f.get("finding_id", f.get("id", str(uuid.uuid4())[:8])),
         "target": f.get("target", ""),
@@ -390,19 +444,31 @@ def _finding_to_api(f) -> dict:
         "confidence": f.get("confidence", 0.8),
         "cvss": f.get("cvss", 0.0),
         "status": f.get("status", "new"),
-        # source_type distinguishes evidence quality:
-        # "tool" = confirmed by scanner, "simulated" = simulation engine,
-        # "ai_theory" = AI hypothesis, "manual" = analyst-added
         "source_type": f.get("source_type", "tool"),
         "created_at": f.get("created_at", datetime.utcnow().isoformat()),
         "scan_id": f.get("scan_id", ""),
         "bounty_score": f.get("bounty_score", 0.0),
         "estimated_payout": f.get("estimated_payout", ""),
         "priority_rank": f.get("priority_rank", 0),
-        "reproduction_steps": "",
-        "tags": [],
-        "remediation": "",
-        "response": "",
+        # Full PoC fields
+        "request_poc": poc["request_poc"],
+        "method": poc["method"],
+        "headers": poc["headers"],
+        "parameter": poc["parameter"],
+        "how_exploited": poc["how_exploited"],
+        "how_validated": poc["how_validated"],
+        "validation_status": poc["validation_status"],
+        "response_excerpt": poc["response_excerpt"],
+        "reproduction_steps": poc["reproduction_steps"],
+        "remediation": poc["remediation"],
+        "tags": poc["tags"],
+        "response": f.get("response", ""),
+        # Impact / AI fields (preserved verbatim if present)
+        "why_selected": f.get("why_selected", ""),
+        "data_exposed": f.get("data_exposed", ""),
+        "attacker_gains": f.get("attacker_gains", ""),
+        "impact_score": f.get("impact_score", ""),
+        "suggested_fix": f.get("suggested_fix", ""),
     }
 
 
@@ -609,28 +675,30 @@ async def get_scan_findings(scan_id: str):
             vulns = [v for v in VULNERABILITIES.values() if v.get("scan_id") == scan_id]
         return sorted(vulns, key=lambda v: {"critical":0,"high":1,"medium":2,"low":3,"info":4}.get(v.get("severity","info"),5))
 
-    # Read all *_findings.json files from the per-scan directory
-    seen_ids: set = set()
-    vulns: list = []
+    # Read all *_findings.json files, deduplicate, then convert to API format
+    try:
+        from oneinfinity.findings.findings_utils import deduplicate_findings as _dedup_scan
+    except Exception:
+        _dedup_scan = lambda x: x
+    raw_all: list = []
     for fpath in sorted(scan_dir.glob("*findings*.json")):
         try:
             data = json.loads(fpath.read_text())
             items = data if isinstance(data, list) else data.get("findings", [])
             for raw in items:
-                if not isinstance(raw, dict):
-                    continue
-                raw.setdefault("scan_id", scan_id)
-                raw.setdefault("target", raw.get("url", raw.get("endpoint", "")))
-                raw.setdefault("title", raw.get("vulnerability", raw.get("vuln_type", raw.get("type", "Finding"))))
-                fid = raw.get("finding_id") or raw.get("id") or f"{fpath.stem}-{len(vulns)}"
-                if fid in seen_ids:
-                    continue
-                seen_ids.add(fid)
-                v = _finding_to_api(raw)
-                v["id"] = fid
-                vulns.append(v)
+                if isinstance(raw, dict):
+                    raw.setdefault("scan_id", scan_id)
+                    raw.setdefault("target", raw.get("url", raw.get("endpoint", "")))
+                    raw.setdefault("title", raw.get("vulnerability", raw.get("vuln_type", raw.get("type", "Finding"))))
+                    raw_all.append(raw)
         except Exception:
             continue
+    vulns = []
+    for i, deduped in enumerate(_dedup_scan(raw_all)):
+        fid = deduped.get("finding_id") or deduped.get("id") or f"{scan_id}-{i}"
+        v = _finding_to_api(deduped)
+        v["id"] = fid
+        vulns.append(v)
     return sorted(vulns, key=lambda v: {"critical":0,"high":1,"medium":2,"low":3,"info":4}.get(v.get("severity","info"),5))
 
 @app.post("/api/scans", dependencies=[Depends(_require_auth)])
@@ -2401,6 +2469,17 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
         "bearer_token":   str(data.get("bearer_token", "") or ""),
         "auth_header":    str(data.get("auth_header", "") or ""),
     }
+    # If caller provided a saved session_id, load it and override auth_config
+    _auth_session_id = (data.get("auth_session_id") or "").strip()
+    if _auth_session_id:
+        try:
+            from oneinfinity.auth import SessionManager
+            _loaded = SessionManager().load(name=_auth_session_id) or \
+                      next((s for s in SessionManager().list_all() if s.session_id == _auth_session_id), None)
+            if _loaded:
+                auth_config = _loaded.to_auth_config()
+        except Exception as _se:
+            log.warning("Could not load auth session %s: %s", _auth_session_id, _se)
     has_auth = any(auth_config.values())
 
     # Pre-generate the scan_id so we can register it before the thread starts.
@@ -2645,6 +2724,194 @@ async def god_mode_logs(scan_id: str, lines: int = 150):
         text = log_path.read_text(errors="replace")
         all_lines = text.splitlines()
         return {"lines": all_lines[-lines:], "exists": True, "total_lines": len(all_lines)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ── Auth Session Recording ─────────────────────────────────────────────────────
+
+@app.post("/api/auth/detect", dependencies=[Depends(_require_auth)])
+async def auth_detect(request: Request):
+    """Detect whether the target URL has a login form."""
+    data = await request.json()
+    target = (data.get("target") or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="target is required")
+    _validate_target(target)
+    try:
+        from oneinfinity.auth import LoginFormDetector
+        result = LoginFormDetector().detect(target)
+        return {
+            "has_login_form": result.has_login_form,
+            "login_url": result.login_url,
+            "username_field": result.username_field,
+            "password_field": result.password_field,
+            "form_action": result.form_action,
+            "form_method": result.form_method,
+        }
+    except Exception as exc:
+        log.warning("auth_detect error: %s", exc)
+        return {"has_login_form": False, "error": str(exc)}
+
+
+@app.post("/api/auth/record", dependencies=[Depends(_require_auth)])
+async def auth_record_start(request: Request):
+    """
+    Start a headed Playwright browser for manual login recording.
+    Returns {session_id, status: 'recording'}.
+    """
+    import threading as _threading
+    data = await request.json()
+    target = (data.get("target") or "").strip()
+    session_name = (data.get("name") or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="target is required")
+    _validate_target(target)
+
+    rec_id = str(uuid.uuid4())[:8]
+    done_event = _threading.Event()
+
+    _AUTH_RECORDINGS[rec_id] = {
+        "status": "recording",
+        "target": target,
+        "name": session_name,
+        "done_event": done_event,
+        "session": None,
+        "error": None,
+    }
+
+    def _record():
+        try:
+            from oneinfinity.auth import LoginFormDetector, LoginSessionRecorder
+            form = LoginFormDetector().detect(target)
+            if not form.has_login_form:
+                form.has_login_form = True
+                form.login_url = target
+            recorder = LoginSessionRecorder()
+            session = recorder.record_interactive(login_form=form)
+            _AUTH_RECORDINGS[rec_id]["session"] = session
+            _AUTH_RECORDINGS[rec_id]["status"] = "done" if session else "failed"
+        except Exception as exc:
+            _AUTH_RECORDINGS[rec_id]["status"] = "failed"
+            _AUTH_RECORDINGS[rec_id]["error"] = str(exc)
+            log.warning("auth_record_start background error: %s", exc)
+
+    t = _threading.Thread(target=_record, daemon=True, name=f"auth-record-{rec_id}")
+    t.start()
+
+    return {"session_id": rec_id, "status": "recording",
+            "message": "Browser opened on server — log in, then call /done endpoint"}
+
+
+@app.post("/api/auth/record/{rec_id}/done", dependencies=[Depends(_require_auth)])
+async def auth_record_done(rec_id: str, request: Request):
+    """Signal that the user has finished logging in. Finalizes HAR and saves session."""
+    entry = _AUTH_RECORDINGS.get(rec_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"Recording {rec_id} not found")
+
+    done_event = entry.get("done_event")
+    if done_event:
+        done_event.set()
+
+    from pathlib import Path as _Path
+    sessions_dir = _Path.home() / ".oneinfinity" / "sessions"
+    done_file = sessions_dir / f"{rec_id}.done"
+    try:
+        done_file.touch()
+    except Exception:
+        pass
+
+    content_type = request.headers.get("content-type", "")
+    if content_type.startswith("application/json"):
+        data = await request.json()
+    else:
+        data = {}
+    session_name = (data.get("name") or entry.get("name") or "").strip()
+
+    import asyncio as _asyncio
+    for _ in range(20):
+        if entry.get("status") in ("done", "failed"):
+            break
+        await _asyncio.sleep(0.5)
+
+    session = entry.get("session")
+    if session:
+        from oneinfinity.auth import SessionManager
+        SessionManager().save(session, name=session_name)
+        _AUTH_RECORDINGS.pop(rec_id, None)
+        return {
+            "status": "saved",
+            "session_id": session.session_id,
+            "name": session_name or session.session_id,
+            "target": session.target,
+            "cookies_captured": len(session.cookies),
+        }
+    else:
+        error = entry.get("error") or "Recording did not complete"
+        _AUTH_RECORDINGS.pop(rec_id, None)
+        raise HTTPException(status_code=500, detail=error)
+
+
+@app.get("/api/auth/sessions", dependencies=[Depends(_require_auth)])
+async def auth_list_sessions():
+    """List all saved login sessions."""
+    try:
+        from oneinfinity.auth import SessionManager
+        sessions = SessionManager().list_all()
+        return [
+            {
+                "session_id": s.session_id,
+                "name": s.name,
+                "target": s.target,
+                "login_url": s.login_url,
+                "recorded_at": s.recorded_at,
+                "cookies_count": len(s.cookies),
+                "has_har": bool(s.har_path),
+                "recorder": s.recorder,
+            }
+            for s in sessions
+        ]
+    except Exception as exc:
+        log.warning("auth_list_sessions error: %s", exc)
+        return []
+
+
+@app.get("/api/auth/sessions/{session_id}", dependencies=[Depends(_require_auth)])
+async def auth_get_session(session_id: str):
+    """Get session details. Cookies are redacted for security."""
+    try:
+        from oneinfinity.auth import SessionManager
+        sessions = SessionManager().list_all()
+        s = next((x for x in sessions if x.session_id == session_id), None)
+        if not s:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {
+            "session_id": s.session_id,
+            "name": s.name,
+            "target": s.target,
+            "login_url": s.login_url,
+            "recorded_at": s.recorded_at,
+            "cookies": [{"name": c["name"], "domain": c.get("domain", ""), "value": "***REDACTED***"}
+                        for c in s.cookies],
+            "auth_headers": {k: "***REDACTED***" for k in s.auth_headers},
+            "has_local_storage": bool(s.local_storage),
+            "has_har": bool(s.har_path),
+            "recorder": s.recorder,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.delete("/api/auth/sessions/{session_id}", dependencies=[Depends(_require_auth)])
+async def auth_delete_session(session_id: str):
+    """Delete a saved session."""
+    try:
+        from oneinfinity.auth import SessionManager
+        SessionManager().delete(session_id)
+        return {"deleted": True, "session_id": session_id}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
