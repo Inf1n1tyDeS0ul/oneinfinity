@@ -80,10 +80,22 @@ class GodModeStateFile:
         self._write_json(session)
 
     def _persist_to_db(self, session: GodModeSession) -> bool:
-        """Write scan metadata to DBManager. Returns True on success."""
+        """Write scan metadata to DBManager. Returns True on success, times out in 8s."""
+        try:
+            import concurrent.futures as _cf
+            with _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="gm-persist") as _ex:
+                return _ex.submit(self._persist_to_db_blocking, session).result(timeout=8)
+        except Exception as exc:
+            log.debug("_persist_to_db failed: %s", exc)
+            return False
+
+    def _persist_to_db_blocking(self, session: GodModeSession) -> bool:
+        """Inner blocking DB write — runs in a dedicated thread with its own event loop."""
         try:
             from oneinfinity.core.db_manager import get_db_manager_sync
             mgr = get_db_manager_sync()
+            if mgr is None:
+                return False
             scan_dict = {
                 "scan_id":          session.scan_id,
                 "id":               session.scan_id,
@@ -99,7 +111,7 @@ class GodModeStateFile:
             mgr.sync_save_scan(scan_dict)
             return True
         except Exception as exc:
-            log.debug("_persist_to_db failed: %s", exc, exc_info=True)
+            log.debug("_persist_to_db_blocking failed: %s", exc, exc_info=True)
             return False
 
     def _write_json(self, session: GodModeSession) -> None:
@@ -439,14 +451,35 @@ class SwarmMission(Mission):
 
     def _run(self, session: GodModeSession) -> None:
         import asyncio as _asyncio
+        import json as _json
         from oneinfinity.swarm.agent_swarm_coordinator import run_swarm
 
         log.info("[GOD MODE] SwarmMission: deploying 8 agents against %s", session.target)
 
         # Build context including auth
-        ctx = {}
+        ctx: dict = {}
         if session.auth_config:
             ctx["auth_sessions"] = [session.auth_config]
+
+        # Inject discovered endpoints from recon so agents test real attack surface
+        # rather than just the root URL.
+        _endpoints: list[str] = []
+        for _candidate in [
+            GOD_MODE_DIR / session.scan_id / "full_scan" / "adaptive_recon.json",
+            GOD_MODE_DIR / session.scan_id / "recon" / "urls.json",
+        ]:
+            try:
+                if _candidate.exists():
+                    _d = _json.loads(_candidate.read_text())
+                    _urls = _d if isinstance(_d, list) else _d.get("urls", [])
+                    _endpoints.extend(u for u in _urls if u not in _endpoints)
+            except Exception:
+                pass
+        if _endpoints:
+            ctx["endpoints"] = _endpoints
+            log.info("[GOD MODE] SwarmMission: seeded %d endpoints from recon", len(_endpoints))
+        else:
+            log.warning("[GOD MODE] SwarmMission: no recon endpoints found — agents will probe root URL only")
 
         result = _asyncio.run(run_swarm(
             target=session.target,
@@ -472,6 +505,76 @@ class SwarmMission(Mission):
             log.warning("[GOD MODE] SwarmMission ingestion bus publish failed: %s", exc)
 
         log.info("[GOD MODE] SwarmMission complete — %d findings", new_count)
+        self._result = {"findings": new_count}
+
+
+# ── AuthTestMission ────────────────────────────────────────────────────────────
+
+class AuthTestMission(Mission):
+    """
+    Runs 16 post-login security test categories.
+    Silently skipped if no auth_context — does not affect unauthenticated scans.
+    """
+
+    def __init__(self, auth_context=None):
+        super().__init__("auth_test")
+        self._auth_context = auth_context
+
+    def _run(self, session: GodModeSession) -> None:
+        import json as _json
+        if self._auth_context is None:
+            log.info("[GOD MODE] AuthTestMission: no auth context — skipping")
+            return
+
+        log.info("[GOD MODE] AuthTestMission: running 16 authenticated test categories for %s", session.target)
+
+        _endpoints: list[str] = [session.target]
+        for _candidate in [
+            GOD_MODE_DIR / session.scan_id / "full_scan" / "adaptive_recon.json",
+            GOD_MODE_DIR / session.scan_id / "recon" / "urls.json",
+        ]:
+            try:
+                if _candidate.exists():
+                    _d = _json.loads(_candidate.read_text())
+                    _urls = _d if isinstance(_d, list) else _d.get("urls", [])
+                    _endpoints.extend(_urls)
+            except Exception:
+                pass
+
+        try:
+            from oneinfinity.auth.authenticated_test_suite import AuthenticatedTestSuite
+            suite = AuthenticatedTestSuite(
+                target=session.target,
+                endpoints=list(dict.fromkeys(_endpoints))[:100],
+                auth_context=self._auth_context,
+            )
+            findings = suite.run_all()
+        except Exception as exc:
+            log.warning("[GOD MODE] AuthTestMission: test suite failed — %s", exc)
+            return
+
+        new_count = len(findings)
+        session.finding_count += new_count
+        session.phases_complete.append("auth_test")
+
+        out_dir = GOD_MODE_DIR / session.scan_id / "full_scan"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / "auth_test_findings.json"
+        try:
+            out_file.write_text(_json.dumps([f.to_dict() for f in findings], indent=2, default=str))
+            log.info("[GOD MODE] AuthTestMission: wrote %d findings to %s", new_count, out_file)
+        except Exception as exc:
+            log.warning("[GOD MODE] AuthTestMission: could not write findings — %s", exc)
+
+        try:
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
+            bus = get_ingestion_engine()
+            for f in findings:
+                bus.ingest(RawResult(scan_id=session.scan_id, source="auth-test", raw=f.to_dict()))
+        except Exception as exc:
+            log.warning("[GOD MODE] AuthTestMission ingestion failed: %s", exc)
+
+        log.info("[GOD MODE] AuthTestMission complete — %d findings", new_count)
         self._result = {"findings": new_count}
 
 
@@ -779,6 +882,25 @@ class GodModeConductor:
                 log.info("[GOD MODE] Convergence detected — finalizing")
                 return "convergence"
 
+            # Fallback unlock: event bus fires from subprocesses can race with shutdown.
+            # Re-check unlock thresholds directly from session finding/endpoint counts.
+            with self._lock:
+                vuln_count    = self._vuln_count
+                endpoint_count = self._endpoint_count
+            if session.finding_count > 0 and vuln_count < EVENT_UNLOCK_VULN_THRESHOLD:
+                # findings exist but event never fired — unlock research now
+                with self._lock:
+                    self._vuln_count = EVENT_UNLOCK_VULN_THRESHOLD
+                log.info("[GOD MODE] Fallback unlock: %d findings found — triggering ResearchMission",
+                         session.finding_count)
+                self._unlock_mission("research")
+            if session.finding_count > 0 and endpoint_count < EVENT_UNLOCK_ENDPOINT_THRESHOLD:
+                # pipeline ran endpoints — unlock swarm via fallback
+                with self._lock:
+                    self._endpoint_count = EVENT_UNLOCK_ENDPOINT_THRESHOLD
+                log.info("[GOD MODE] Fallback unlock: findings found — triggering SwarmMission")
+                self._unlock_mission("swarm")
+
             # All missions done naturally
             active = [m for m in self._missions if m.status == "running"]
             if not active:
@@ -839,6 +961,43 @@ class GodModeConductor:
             self._teardown_logging()
             return session
 
+        # ── Auth detection (after Foundation, before stages 2-5) ──────────────
+        _auth_ctx = None
+        try:
+            from oneinfinity.auth import LoginFormDetector, LoginSessionRecorder, SessionManager, AuthSessionContext
+            _sm = SessionManager()
+            _existing = _sm.load(target=target)
+            if _existing:
+                _auth_ctx = AuthSessionContext(_existing)
+                session.auth_config = _existing.to_auth_config()
+                log.info("[GOD MODE] Loaded existing auth session for %s", target)
+            else:
+                _detector = LoginFormDetector()
+                _form = _detector.detect(target)
+                if _form.has_login_form:
+                    log.info("[GOD MODE] Login form detected at %s", _form.login_url)
+                    _creds = None
+                    import os as _os
+                    _u = _os.environ.get("ONEINFINITY_USERNAME")
+                    _p = _os.environ.get("ONEINFINITY_PASSWORD")
+                    if _u and _p:
+                        _creds = (_u, _p)
+                    _rec = LoginSessionRecorder()
+                    _recorded = _rec.record_auto_or_interactive(
+                        login_form=_form, credentials=_creds
+                    )
+                    if _recorded:
+                        _sm.save(_recorded)
+                        _auth_ctx = AuthSessionContext(_recorded)
+                        session.auth_config = _recorded.to_auth_config()
+                        log.info("[GOD MODE] Auth session recorded and saved for %s", target)
+                else:
+                    log.info("[GOD MODE] No login form detected — scanning unauthenticated")
+        except Exception as _auth_exc:
+            log.warning("[GOD MODE] Auth detection failed (non-fatal): %s", _auth_exc)
+        # Store auth_context as dynamic attribute (not a dataclass field — not serialized)
+        session.auth_context = _auth_ctx  # type: ignore[attr-defined]
+
         print(f"    [+] Foundation complete — recon={'ok' if foundation.recon else 'skipped'} "
               f"app_model={'ok' if foundation.app_model else 'skipped'}")
 
@@ -876,10 +1035,11 @@ class GodModeConductor:
         full_scan = FullScanMission(foundation, auth_config=session.auth_config)
         research = ResearchMission(self._convergence) if not no_research else None
         swarm = SwarmMission() if not no_swarm else None
+        auth_test = AuthTestMission(getattr(session, "auth_context", None))
         chains = ChainsMission()
         report = ReportMission(report_fmt)
 
-        self._missions = [m for m in [full_scan, research, swarm, chains, report] if m is not None]
+        self._missions = [m for m in [full_scan, research, swarm, auth_test, chains, report] if m is not None]
         self._update_session_missions()
 
         # ── Stage 2: subscribe to event bus + launch FullScanMission ──────
