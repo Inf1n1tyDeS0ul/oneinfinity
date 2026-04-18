@@ -43,22 +43,38 @@ from oneinfinity.cli._helpers import (
 )
 
 # Import domain command modules
-from oneinfinity.cli.commands import core
-from oneinfinity.cli.commands import analysis
-from oneinfinity.cli.commands import findings
-from oneinfinity.cli.commands import pipeline
-from oneinfinity.cli.commands import agents
-from oneinfinity.cli.commands import graph
-from oneinfinity.cli.commands import swarm
-from oneinfinity.cli.commands import mobile
-from oneinfinity.cli.commands import traffic
-from oneinfinity.cli.commands import ai
-from oneinfinity.cli.commands import hunter
-from oneinfinity.cli.commands import daemon
-from oneinfinity.cli.commands import chains
-from oneinfinity.cli.commands import research
-from oneinfinity.cli.commands import misc
-from oneinfinity.cli.commands import internal
+# Each import is wrapped so a broken module gives a clear error instead of a
+# cryptic NameError later when the handlers dict is built.
+_IMPORT_ERRORS: list[str] = []
+
+def _safe_wildcard_import(module_path: str) -> None:
+    """Import all public names from *module_path* into the caller's global namespace."""
+    import importlib
+    try:
+        mod = importlib.import_module(module_path)
+        names = getattr(mod, "__all__", [n for n in vars(mod) if not n.startswith("_")])
+        g = globals()
+        for name in names:
+            g[name] = getattr(mod, name)
+    except Exception as exc:
+        _IMPORT_ERRORS.append(f"{module_path}: {exc}")
+
+_safe_wildcard_import("oneinfinity.cli.commands.core")
+_safe_wildcard_import("oneinfinity.cli.commands.analysis")
+_safe_wildcard_import("oneinfinity.cli.commands.findings")
+_safe_wildcard_import("oneinfinity.cli.commands.pipeline")
+_safe_wildcard_import("oneinfinity.cli.commands.agents")
+_safe_wildcard_import("oneinfinity.cli.commands.graph")
+_safe_wildcard_import("oneinfinity.cli.commands.swarm")
+_safe_wildcard_import("oneinfinity.cli.commands.mobile")
+_safe_wildcard_import("oneinfinity.cli.commands.traffic")
+_safe_wildcard_import("oneinfinity.cli.commands.ai")
+_safe_wildcard_import("oneinfinity.cli.commands.hunter")
+_safe_wildcard_import("oneinfinity.cli.commands.daemon")
+_safe_wildcard_import("oneinfinity.cli.commands.chains")
+_safe_wildcard_import("oneinfinity.cli.commands.research")
+_safe_wildcard_import("oneinfinity.cli.commands.misc")
+_safe_wildcard_import("oneinfinity.cli.commands.internal")
 
 
 # ── Argument parser (will be refactored to register() calls in a follow-up) ──
@@ -893,11 +909,23 @@ def build_parser():
     gm.add_argument("--report-fmt", default="markdown",
                     choices=["markdown", "json", "html"],
                     help="Report format (default: markdown)")
+    gm.add_argument("--auth-session", default="",
+                    help="Name of saved login session to use")
+    gm.add_argument("--no-auth", action="store_true", default=False,
+                    help="Skip login detection entirely")
 
     return p
 
 
 def main():
+    # Warn loudly if any command modules failed to import — much clearer than a
+    # later NameError inside the handlers dict.
+    if _IMPORT_ERRORS:
+        print("  [!] WARNING: some command modules failed to load:", file=sys.stderr)
+        for err in _IMPORT_ERRORS:
+            print(f"      {err}", file=sys.stderr)
+        print("      Run `oneinfinity doctor` for a full dependency check.\n", file=sys.stderr)
+
     parser = build_parser()
     args = parser.parse_args()
 
@@ -905,114 +933,128 @@ def main():
         parser.print_help()
         sys.exit(0)
 
+    _g = globals()
+
+    def _h(name: str):
+        """Resolve a cmd_* name from the global namespace, or return a stub that
+        reports the missing handler so we don't get a NameError at startup."""
+        fn = _g.get(name)
+        if fn is None:
+            def _missing(_args, _name=name):
+                print(f"  [!] Handler '{_name}' is not available (its module failed to import).", file=sys.stderr)
+                print("      Run `oneinfinity doctor` for details.", file=sys.stderr)
+                sys.exit(1)
+            return _missing
+        return fn
+
     handlers = {
-        "doctor":        cmd_doctor,
-        "setup":         cmd_setup,
-        "run":           cmd_run,
-        "scan":          cmd_scan,
-        "full-scan":     cmd_full_scan,
-        "parity-check":  cmd_parity_check,
-        "graphql-scan":  cmd_graphql_scan,
-        "browser-scan":  cmd_browser_scan,
-        "smuggling-scan": cmd_smuggling_scan,
-        "scope":         cmd_scope,
-        "analyze":     cmd_analyze,
-        "org-intel":   cmd_org_intel,
-        "plan":        cmd_plan,
-        "script":      cmd_script,
-        "report":      cmd_report,
-        "findings":    cmd_findings,
-        "cvss":        cmd_cvss,
-        "payloads":    cmd_payloads,
-        "waf-bypass":  cmd_waf_bypass,
-        "methodology": cmd_methodology,
-        "dedup":       cmd_dedup,
+        "doctor":        _h("cmd_doctor"),
+        "setup":         _h("cmd_setup"),
+        "run":           _h("cmd_run"),
+        "scan":          _h("cmd_scan"),
+        "full-scan":     _h("cmd_full_scan"),
+        "parity-check":  _h("cmd_parity_check"),
+        "graphql-scan":  _h("cmd_graphql_scan"),
+        "browser-scan":  _h("cmd_browser_scan"),
+        "smuggling-scan": _h("cmd_smuggling_scan"),
+        "scope":         _h("cmd_scope"),
+        "analyze":       _h("cmd_analyze"),
+        "org-intel":     _h("cmd_org_intel"),
+        "plan":          _h("cmd_plan"),
+        "script":        _h("cmd_script"),
+        "report":        _h("cmd_report"),
+        "findings":      _h("cmd_findings"),
+        "cvss":          _h("cmd_cvss"),
+        "payloads":      _h("cmd_payloads"),
+        "waf-bypass":    _h("cmd_waf_bypass"),
+        "methodology":   _h("cmd_methodology"),
+        "dedup":         _h("cmd_dedup"),
         # ── New pipeline commands ──────────────────────────────────────────
-        "toolcheck":   cmd_toolcheck,
-        "debug":       cmd_debug,
-        "recon":       cmd_pipeline_recon,
-        "vuln-scan":   cmd_pipeline_vulnscan,
-        "fuzz":        cmd_pipeline_fuzz,
-        "secrets":     cmd_pipeline_secrets,
-        "secrets-scan": cmd_secrets_scan,
-        "tool":        cmd_tool_run,
-        "capmap":      cmd_capmap,
-        "workflow":    cmd_workflow,
+        "toolcheck":     _h("cmd_toolcheck"),
+        "debug":         _h("cmd_debug"),
+        "recon":         _h("cmd_pipeline_recon"),
+        "vuln-scan":     _h("cmd_pipeline_vulnscan"),
+        "fuzz":          _h("cmd_pipeline_fuzz"),
+        "secrets":       _h("cmd_pipeline_secrets"),
+        "secrets-scan":  _h("cmd_secrets_scan"),
+        "tool":          _h("cmd_tool_run"),
+        "capmap":        _h("cmd_capmap"),
+        "workflow":      _h("cmd_workflow"),
         # ── Advanced AI capabilities ───────────────────────────────────────
-        "graph":              cmd_graph,
-        "attack-graph":       cmd_attack_graph,
-        "agents":             cmd_agents,
-        "chains":             cmd_chains,
-        "learn":              cmd_learn,
-        "adaptive-recon":     cmd_adaptive_recon,
+        "graph":              _h("cmd_graph"),
+        "attack-graph":       _h("cmd_attack_graph"),
+        "agents":             _h("cmd_agents"),
+        "chains":             _h("cmd_chains"),
+        "learn":              _h("cmd_learn"),
+        "adaptive-recon":     _h("cmd_adaptive_recon"),
         # ── Autonomous Vulnerability Research ─────────────────────────────
-        "research":           cmd_research,
-        "analyze-app":        cmd_analyze_app,
-        "generate-theories":  cmd_generate_theories,
-        "run-custom-tests":   cmd_run_custom_tests,
-        "zero-day":           cmd_zero_day,
+        "research":           _h("cmd_research"),
+        "analyze-app":        _h("cmd_analyze_app"),
+        "generate-theories":  _h("cmd_generate_theories"),
+        "run-custom-tests":   _h("cmd_run_custom_tests"),
+        "zero-day":           _h("cmd_zero_day"),
         # ── AI Security & Red Team ─────────────────────────────────────────
-        "ai-test":            cmd_ai_test,
-        "ai-redteam":         cmd_ai_redteam,
-        "ai-agent-test":      cmd_ai_agent_test,
+        "ai-test":            _h("cmd_ai_test"),
+        "ai-redteam":         _h("cmd_ai_redteam"),
+        "ai-agent-test":      _h("cmd_ai_agent_test"),
         # ── Core Infrastructure ────────────────────────────────────────────
-        "profile":            cmd_profile,
-        "swarm":              cmd_swarm,
-        "exploit":            cmd_exploit_chains,
-        "plugins":            cmd_plugins,
-        "cache":              cmd_cache,
+        "profile":            _h("cmd_profile"),
+        "swarm":              _h("cmd_swarm"),
+        "exploit":            _h("cmd_exploit_chains"),
+        "plugins":            _h("cmd_plugins"),
+        "cache":              _h("cmd_cache"),
         # ── Traffic & Replay ───────────────────────────────────────────────
-        "traffic-list":       cmd_traffic_list,
-        "traffic-export":     cmd_traffic_export,
-        "replay":             cmd_replay_findings,
-        "replay-request":     cmd_replay_request,
-        "replay-attack":      cmd_replay_attack,
-        "proxy-status":       cmd_proxy_status,
-        "proxy-set":          cmd_proxy_set,
+        "traffic-list":       _h("cmd_traffic_list"),
+        "traffic-export":     _h("cmd_traffic_export"),
+        "replay":             _h("cmd_replay_findings"),
+        "replay-request":     _h("cmd_replay_request"),
+        "replay-attack":      _h("cmd_replay_attack"),
+        "proxy-status":       _h("cmd_proxy_status"),
+        "proxy-set":          _h("cmd_proxy_set"),
         # ── Mobile Security ────────────────────────────────────────────────
-        "mobile-analyze":     cmd_mobile_analyze,
-        "mobile-static":      cmd_mobile_static,
-        "mobile-dynamic":     cmd_mobile_dynamic,
-        "mobile-api-scan":    cmd_mobile_api_scan,
-        "mobile-report":      cmd_mobile_report,
+        "mobile-analyze":     _h("cmd_mobile_analyze"),
+        "mobile-static":      _h("cmd_mobile_static"),
+        "mobile-dynamic":     _h("cmd_mobile_dynamic"),
+        "mobile-api-scan":    _h("cmd_mobile_api_scan"),
+        "mobile-report":      _h("cmd_mobile_report"),
         # ── Autonomous Bounty Hunter ───────────────────────────────────────
-        "hunter":             cmd_hunter,
-        "hunter-start":       cmd_hunter_start,
-        "hunter-scan":        cmd_hunter_scan,
-        "hunter-status":      cmd_hunter_status,
-        "hunter-report":      cmd_hunter_report,
+        "hunter":             _h("cmd_hunter"),
+        "hunter-start":       _h("cmd_hunter_start"),
+        "hunter-scan":        _h("cmd_hunter_scan"),
+        "hunter-status":      _h("cmd_hunter_status"),
+        "hunter-report":      _h("cmd_hunter_report"),
         # ── Benchmarking & Distributed ────────────────────────────────────
-        "benchmark":          cmd_benchmark,
-        "distributed":        cmd_distributed,
+        "benchmark":          _h("cmd_benchmark"),
+        "distributed":        _h("cmd_distributed"),
         # ── Swarm Intelligence ─────────────────────────────────────────────
-        "swarm-scan":         cmd_swarm_scan,
-        "simulate-attacks":   cmd_simulate_attacks,
-        "simulate-workflow":  cmd_simulate_workflow,
+        "swarm-scan":         _h("cmd_swarm_scan"),
+        "simulate-attacks":   _h("cmd_simulate_attacks"),
+        "simulate-workflow":  _h("cmd_simulate_workflow"),
         # ── Self-Evolving Architecture ─────────────────────────────────────
-        "arch-status":        cmd_arch_status,
-        "arch-events":        cmd_arch_events,
-        "arch-insights":      cmd_arch_insights,
-        "arch-emit":          cmd_arch_emit,
+        "arch-status":        _h("cmd_arch_status"),
+        "arch-events":        _h("cmd_arch_events"),
+        "arch-insights":      _h("cmd_arch_insights"),
+        "arch-emit":          _h("cmd_arch_emit"),
         # ── Intelligence Daemon ────────────────────────────────────────────
-        "daemon-start":       cmd_daemon_start,
-        "daemon-stop":        cmd_daemon_stop,
-        "daemon-status":      cmd_daemon_status,
-        "daemon-add-target":  cmd_daemon_add_target,
+        "daemon-start":       _h("cmd_daemon_start"),
+        "daemon-stop":        _h("cmd_daemon_stop"),
+        "daemon-status":      _h("cmd_daemon_status"),
+        "daemon-add-target":  _h("cmd_daemon_add_target"),
         # ── Model Orchestrator ─────────────────────────────────────────────
-        "ai":                 cmd_ai_execute,
-        "ai-status":          cmd_ai_status,
-        "ai-budget":          cmd_ai_budget,
-        "ai-models":          cmd_ai_models,
+        "ai":                 _h("cmd_ai_execute"),
+        "ai-status":          _h("cmd_ai_status"),
+        "ai-budget":          _h("cmd_ai_budget"),
+        "ai-models":          _h("cmd_ai_models"),
         # ── Graph Brain ────────────────────────────────────────────────────
-        "brain-start":        cmd_brain_start,
-        "brain-stop":         cmd_brain_stop,
-        "brain-status":       cmd_brain_status,
-        "brain-decide":       cmd_brain_decide,
-        "brain-triggers":     cmd_brain_triggers,
-        "god-mode":           cmd_god_mode,
-        "_internal_register": cmd__internal_register,
-        "_internal_deep_recon": cmd__internal_deep_recon,
-        "_internal_auth_session": cmd__internal_auth_session,
+        "brain-start":        _h("cmd_brain_start"),
+        "brain-stop":         _h("cmd_brain_stop"),
+        "brain-status":       _h("cmd_brain_status"),
+        "brain-decide":       _h("cmd_brain_decide"),
+        "brain-triggers":     _h("cmd_brain_triggers"),
+        "god-mode":           _h("cmd_god_mode"),
+        "_internal_register": _h("cmd__internal_register"),
+        "_internal_deep_recon": _h("cmd__internal_deep_recon"),
+        "_internal_auth_session": _h("cmd__internal_auth_session"),
     }
 
     handler = handlers.get(args.command)

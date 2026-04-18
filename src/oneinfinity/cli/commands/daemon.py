@@ -243,7 +243,7 @@ def cmd_arch_emit(args):
 
 def cmd_god_mode(args):
     """oneinfinity god-mode <target> — GOD MODE: full adaptive cascade, zero feature skip."""
-    from oneinfinity.god_mode_engine import get_god_mode_conductor, GOD_MODE_LOG_DIR
+    from oneinfinity.orchestration.god_mode_engine import get_god_mode_conductor, GOD_MODE_LOG_DIR
 
     sub = getattr(args, "subcommand", None)
 
@@ -325,6 +325,23 @@ def cmd_god_mode(args):
         return
 
     background = getattr(args, "background", False)
+    auth_session = getattr(args, "auth_session", "") or ""
+    no_auth = getattr(args, "no_auth", False)
+
+    # Resolve auth_config from a saved named session
+    _auth_config = None
+    if not no_auth and auth_session:
+        try:
+            from oneinfinity.auth import SessionManager
+            _s = SessionManager().load(name=auth_session)
+            if _s:
+                _auth_config = _s.to_auth_config()
+                print(f"[*] Auth: loaded session '{auth_session}'")
+            else:
+                print(f"[!] Auth session '{auth_session}' not found", file=sys.stderr)
+        except Exception as exc:
+            print(f"[!] Could not load auth session: {exc}", file=sys.stderr)
+
     conductor = get_god_mode_conductor()
     conductor.run(
         target=target,
@@ -332,6 +349,7 @@ def cmd_god_mode(args):
         no_swarm=getattr(args, "no_swarm", False),
         no_research=getattr(args, "no_research", False),
         report_fmt=getattr(args, "report_fmt", "markdown") or "markdown",
+        auth_config=_auth_config,
     )
 
     # Non-daemon background threads (daemon=False in GodModeConductor) keep
