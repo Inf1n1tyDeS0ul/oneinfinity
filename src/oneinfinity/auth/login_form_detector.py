@@ -59,8 +59,8 @@ class LoginFormDetector:
         parser = _FormParser()
         try:
             parser.feed(html_body)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("LoginFormDetector: HTML parse error — %s", exc)
 
         for form in parser.forms:
             pw_field = next((f["name"] for f in form["fields"] if f["type"] == "password" and f["name"]), None)
@@ -68,7 +68,7 @@ class LoginFormDetector:
                 continue
             user_field = next(
                 (f["name"] for f in form["fields"] if f["name"] in USERNAME_NAMES),
-                None,
+                "",
             )
             if not user_field:
                 user_field = next(
@@ -93,6 +93,7 @@ class LoginFormDetector:
         import ssl
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
+        # Security scanners must accept self-signed certs on targets
         ctx.verify_mode = ssl.CERT_NONE
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             return resp.read().decode("utf-8", errors="replace"), resp.status, dict(resp.headers)
