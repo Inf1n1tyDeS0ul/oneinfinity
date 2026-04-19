@@ -453,34 +453,14 @@ class ParallelScanEngine:
                     worker_id, task.target, task.task_id[:8])
 
         try:
-            # Build PipelineConfig from task config dict
-            from oneinfinity.scan.autonomous_scan_pipeline import (
-                autonomous_scan_pipeline, PipelineConfig, PipelinePhase
-            )
-
-            cfg_dict = task.config or {}
-            phases_raw = cfg_dict.pop("phases", None)
-            if phases_raw:
-                try:
-                    phases = [PipelinePhase(p) for p in phases_raw]
-                except ValueError:
-                    phases = list(PipelinePhase)
-            else:
-                phases = list(PipelinePhase)
-
-            pipeline_config = PipelineConfig(
-                target=task.target,
-                phases=phases,
-                max_duration_s=cfg_dict.get("max_duration_s", 3600),
-                auto_exploit=cfg_dict.get("auto_exploit", False),
-                validate_findings=cfg_dict.get("validate_findings", True),
-                generate_report=cfg_dict.get("generate_report", True),
-            )
-
-            scan_result = await autonomous_scan_pipeline.run_async(
-                task.target, pipeline_config
-            )
-            result_dict = scan_result.to_dict() if hasattr(scan_result, "to_dict") else {}
+            from oneinfinity.scan.unified_scan_engine import get_engine
+            import asyncio as _asyncio
+            loop = _asyncio.get_event_loop()
+            scan_result = await loop.run_in_executor(None, get_engine().scan, task.target)
+            result_dict = {
+                "target": task.target,
+                "findings": scan_result.findings if scan_result and hasattr(scan_result, "findings") else [],
+            }
 
             with self._tasks_lock:
                 task.status = "complete"
@@ -494,15 +474,14 @@ class ParallelScanEngine:
                         worker_id, task.target, task.task_id[:8], duration,
                         len(result_dict.get("findings", [])))
 
-        except ImportError as exc:
-            # autonomous_scan_pipeline not importable — minimal fallback
-            logger.error("[worker-%d] autonomous_scan_pipeline unavailable: %s", worker_id, exc)
+        except Exception as exc:
+            logger.error("[worker-%d] UnifiedScanEngine failed for %s: %s", worker_id, task.target, exc)
             with self._tasks_lock:
                 task.status = "failed"
-                task.error = f"autonomous_scan_pipeline not available: {exc}"
+                task.error = str(exc)
                 task.completed_at = time.time()
             self._emit_progress(task.task_id, "failed",
-                                f"Pipeline unavailable: {exc}")
+                                f"Scan engine error: {exc}")
 
     # ── Queue Management ──────────────────────────────────────────────────────
 

@@ -263,34 +263,20 @@ class SwarmWorker:
     # ── Module Runners ─────────────────────────────────────────────────────────
 
     def _run_recon(self, task) -> dict:
-        """Run recon phase via autonomous_scan_pipeline or agents."""
+        """Run recon phase via UnifiedScanEngine."""
         target = task.target
         log.info("[worker:%s] Recon: %s", self.worker_id, target)
         try:
-            from oneinfinity.scan.autonomous_scan_pipeline import autonomous_scan_pipeline
-            from oneinfinity.scan.autonomous_scan_pipeline import PipelineConfig, PipelinePhase
-
-            config = PipelineConfig(
-                target=target,
-                phases=[PipelinePhase.DISCOVERY, PipelinePhase.RECON],
-                max_duration_s=task.config.get("recon_timeout", 600),
-                auto_exploit=False,
-                validate_findings=False,
-                generate_report=False,
-            )
-            result = autonomous_scan_pipeline.run(target, config=config)
+            from oneinfinity.scan.unified_scan_engine import get_engine
+            result = get_engine().scan(target)
+            findings = result.findings if result and hasattr(result, "findings") else []
             return {
                 "phase": "recon",
                 "target": target,
-                "findings": result.findings if result else [],
-                "subdomains": result.phases.get("discovery", {}).data.get("subdomains", [])
-                              if result and hasattr(result.phases.get("discovery", {}), "data") else [],
+                "findings": findings,
+                "subdomains": [],
                 "status": "complete",
             }
-        except ImportError:
-            log.warning("[worker:%s] autonomous_scan_pipeline not available, using stub recon",
-                        self.worker_id)
-            return self._stub_recon(target)
         except Exception as exc:
             log.error("[worker:%s] Recon error for %s: %s", self.worker_id, target, exc)
             return {"phase": "recon", "target": target, "findings": [],
@@ -447,41 +433,14 @@ class SwarmWorker:
         phase_results = {}
 
         try:
-            from oneinfinity.scan.autonomous_scan_pipeline import autonomous_scan_pipeline
-            from oneinfinity.scan.autonomous_scan_pipeline import PipelineConfig, PipelinePhase
-
-            phase_map = {
-                "recon":     [PipelinePhase.DISCOVERY, PipelinePhase.RECON, PipelinePhase.CRAWL],
-                "vuln_scan": [PipelinePhase.VULN_SCAN],
-                "exploit":   [PipelinePhase.EXPLOIT],
-                "validate":  [PipelinePhase.VALIDATE],
-            }
-            requested_phases = []
-            for mod in modules:
-                requested_phases.extend(phase_map.get(mod, []))
-
-            config = PipelineConfig(
-                target=target,
-                phases=requested_phases or list(PipelinePhase),
-                max_duration_s=task.config.get("timeout", 1800),
-                auto_exploit="exploit" in modules,
-                validate_findings="validate" in modules,
-                generate_report=False,
-            )
-            result = autonomous_scan_pipeline.run(target, config=config)
+            from oneinfinity.scan.unified_scan_engine import get_engine
+            result = get_engine().scan(target)
             if result:
-                all_findings = result.findings or []
-                for phase_name, phase_result in (result.phases or {}).items():
-                    pr = phase_result
-                    phase_results[phase_name] = {
-                        "status":    getattr(pr, "status", "unknown"),
-                        "duration_s": getattr(pr, "duration_s", 0),
-                        "finding_count": getattr(pr, "finding_count", 0),
-                    }
+                all_findings = result.findings if hasattr(result, "findings") else []
 
-        except ImportError:
-            log.warning("[worker:%s] autonomous_scan_pipeline unavailable, "
-                        "running module fallbacks", self.worker_id)
+        except Exception as _pipeline_exc:
+            log.warning("[worker:%s] UnifiedScanEngine unavailable, "
+                        "running module fallbacks: %s", self.worker_id, _pipeline_exc)
             # Fallback: run each module individually
             for mod in modules:
                 sub_task = type("_T", (), {
