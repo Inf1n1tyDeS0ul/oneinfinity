@@ -48,12 +48,18 @@ class GodModeSession:
     target: str
     start_time: float
     phases_complete: list = field(default_factory=list)
-    finding_count: int = 0  # Mutations from multiple threads; relies on CPython GIL atomicity for single += ops
+    finding_count: int = 0
     missions: dict = field(default_factory=dict)   # name → status str
     terminated_by: Optional[str] = None            # "convergence"|"stop"|"error"
     log_path: str = ""
     background: bool = False
     auth_config: dict = field(default_factory=dict)  # session_cookie/bearer_token/auth_header
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+
+    def add_findings(self, count: int) -> None:
+        """Thread-safe increment of finding_count."""
+        with self._lock:
+            self.finding_count += count
 
     def elapsed(self) -> float:
         return time.time() - self.start_time
@@ -233,7 +239,7 @@ class Mission(ABC):
             self.status = "failed"
             raise   # FoundationError propagates — it's the one hard abort
         except Exception as exc:
-            log.warning("Mission '%s' failed (non-fatal): %s", self.name, exc)
+            log.warning("Mission '%s' failed (non-fatal): %s", self.name, exc, exc_info=True)
             self.status = "failed"
 
     @abstractmethod
@@ -299,7 +305,7 @@ class FoundationMission(Mission):
                      len(getattr(self.recon, "subdomains", []) or []),
                      len(getattr(getattr(self.recon, "api_map", None), "endpoints", []) or []))
         except Exception as exc:
-            log.warning("[GOD MODE] Recon failed (non-fatal): %s — continuing with less intel", exc)
+            log.warning("[GOD MODE] Recon failed (non-fatal): %s — continuing with less intel", exc, exc_info=True)
             self.recon = None
 
         # ── Step 3: analyze-app ───────────────────────────────────────────
@@ -315,7 +321,7 @@ class FoundationMission(Mission):
                      len(getattr(self.app_model, "api_endpoints", []) or []),
                      len(getattr(self.app_model, "auth_flows", []) or []))
         except Exception as exc:
-            log.warning("[GOD MODE] App analysis failed (non-fatal): %s — continuing", exc)
+            log.warning("[GOD MODE] App analysis failed (non-fatal): %s — continuing", exc, exc_info=True)
             self.app_model = None
 
         self._result = {
@@ -327,10 +333,7 @@ class FoundationMission(Mission):
 # ── FullScanMission ────────────────────────────────────────────────────────────
 
 class FullScanMission(Mission):
-    """
-    Runs the canonical 10-phase pipeline via run_canonical_pipeline().
-    # TODO: pass recon intel to pipeline when run_canonical_pipeline supports seed_recon param
-    """
+    """Runs the canonical 10-phase pipeline via run_canonical_pipeline()."""
 
     def __init__(self, foundation: FoundationMission, auth_config: dict = None):
         super().__init__("full_scan")
@@ -364,7 +367,7 @@ class FullScanMission(Mission):
 
         # Update session finding count
         new_count = len(result.findings) if result and result.findings else 0
-        session.finding_count += new_count
+        session.add_findings(new_count)
         session.phases_complete.append("full_scan")
 
         # Push findings into the ingestion engine so ReportMission can read them
@@ -427,7 +430,7 @@ class ResearchMission(Mission):
         discoveries = ctrl.run_research()
 
         new_count = len(discoveries) if discoveries else 0
-        session.finding_count += new_count
+        session.add_findings(new_count)
         self._iterations_done += 1
         session.phases_complete.append("research")
 
@@ -489,7 +492,7 @@ class SwarmMission(Mission):
         ))
 
         new_count = len(result.findings) if result and hasattr(result, "findings") else 0
-        session.finding_count += new_count
+        session.add_findings(new_count)
         session.phases_complete.append("swarm")
 
         # Publish to ingestion bus
@@ -550,11 +553,11 @@ class AuthTestMission(Mission):
             )
             findings = suite.run_all()
         except Exception as exc:
-            log.warning("[GOD MODE] AuthTestMission: test suite failed — %s", exc)
+            log.warning("[GOD MODE] AuthTestMission: test suite failed — %s", exc, exc_info=True)
             return
 
         new_count = len(findings)
-        session.finding_count += new_count
+        session.add_findings(new_count)
         session.phases_complete.append("auth_test")
 
         out_dir = GOD_MODE_DIR / session.scan_id / "full_scan"
@@ -564,7 +567,7 @@ class AuthTestMission(Mission):
             out_file.write_text(_json.dumps([f.to_dict() for f in findings], indent=2, default=str))
             log.info("[GOD MODE] AuthTestMission: wrote %d findings to %s", new_count, out_file)
         except Exception as exc:
-            log.warning("[GOD MODE] AuthTestMission: could not write findings — %s", exc)
+            log.warning("[GOD MODE] AuthTestMission: could not write findings — %s", exc, exc_info=True)
 
         try:
             from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
@@ -572,7 +575,7 @@ class AuthTestMission(Mission):
             for f in findings:
                 bus.ingest(RawResult(scan_id=session.scan_id, source="auth-test", raw=f.to_dict()))
         except Exception as exc:
-            log.warning("[GOD MODE] AuthTestMission ingestion failed: %s", exc)
+            log.warning("[GOD MODE] AuthTestMission ingestion failed: %s", exc, exc_info=True)
 
         log.info("[GOD MODE] AuthTestMission complete — %d findings", new_count)
         self._result = {"findings": new_count}
@@ -599,13 +602,13 @@ class ChainsMission(Mission):
         try:
             findings = get_ingestion_engine().get_findings() or []
         except Exception as exc:
-            log.warning("[GOD MODE] ChainsMission: could not load findings: %s", exc)
+            log.warning("[GOD MODE] ChainsMission: could not load findings: %s", exc, exc_info=True)
 
         engine = ExploitChainEngine()
         try:
             chains = engine.detect_chains(findings, session.target)
         except Exception as exc:
-            log.warning("[GOD MODE] ChainsMission: chain detection failed: %s", exc)
+            log.warning("[GOD MODE] ChainsMission: chain detection failed: %s", exc, exc_info=True)
             chains = None
         finally:
             session.phases_complete.append("chains")
@@ -636,7 +639,7 @@ class ReportMission(Mission):
             self._run(session)
             self.status = "done"
         except Exception as exc:
-            log.warning("[GOD MODE] ReportMission failed: %s", exc)
+            log.warning("[GOD MODE] ReportMission failed: %s", exc, exc_info=True)
             self.status = "failed"
 
     def _run(self, session: GodModeSession) -> None:
@@ -648,7 +651,7 @@ class ReportMission(Mission):
             validated = get_enforcement_controller().validate_findings(raw_findings)
             log.info("[GOD MODE] Report: validated %d/%d findings", len(validated), len(raw_findings))
         except Exception as exc:
-            log.warning("[GOD MODE] Report: validation failed (non-fatal): %s", exc)
+            log.warning("[GOD MODE] Report: validation failed (non-fatal): %s", exc, exc_info=True)
             validated = []
 
         # Step 2: dedup
@@ -657,7 +660,7 @@ class ReportMission(Mission):
             validated = Deduplicator().filter_new(validated)
             log.info("[GOD MODE] Report: %d unique findings after dedup", len(validated))
         except Exception as exc:
-            log.warning("[GOD MODE] Report: dedup failed (non-fatal): %s", exc)
+            log.warning("[GOD MODE] Report: dedup failed (non-fatal): %s", exc, exc_info=True)
 
         # Step 3: capmap coverage
         try:
@@ -669,7 +672,7 @@ class ReportMission(Mission):
             log.info("[GOD MODE] Capmap: %d/%d vuln classes covered. Uncovered: %s",
                      len(covered), len(all_classes), sorted(uncovered)[:5] if uncovered else "none")
         except Exception as exc:
-            log.warning("[GOD MODE] Report: capmap check failed (non-fatal): %s", exc)
+            log.warning("[GOD MODE] Report: capmap check failed (non-fatal): %s", exc, exc_info=True)
 
         # Step 4: learn
         try:
@@ -687,7 +690,7 @@ class ReportMission(Mission):
             ls.close()
             log.info("[GOD MODE] Report: learning system updated")
         except Exception as exc:
-            log.warning("[GOD MODE] Report: learning update failed (non-fatal): %s", exc)
+            log.warning("[GOD MODE] Report: learning update failed (non-fatal): %s", exc, exc_info=True)
 
         session.phases_complete.append("report")
         self._result = {"validated_findings": len(validated)}
@@ -1141,7 +1144,7 @@ class GodModeConductor:
                 _still_alive = [m.name for m in self._missions if m._thread and m._thread.is_alive()]
                 if _still_alive:
                     log.info("[GOD MODE] Force-exiting; missions still running: %s", _still_alive)
-                os._exit(0)
+                sys.exit(0)
         finally:
             if _enforcement is not None:
                 _enforcement.stop_recursive_watch(session.scan_id)
