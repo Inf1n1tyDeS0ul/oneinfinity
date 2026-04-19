@@ -83,10 +83,9 @@ class OneInfinityHTTPClient:
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
         
-        # Standard headers
+        # Standard headers — no Accept override; callers set per-request headers as needed
         self.session.headers.update({
             "User-Agent": "OneInfinity/1.0.0 (Autonomous Security Research Framework)",
-            "Accept": "application/vnd.github.v3+json",
         })
         
         self._initialized = True
