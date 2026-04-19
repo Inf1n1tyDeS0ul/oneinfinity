@@ -653,7 +653,7 @@ Return ONLY a valid JSON array (no markdown, no explanation) with this exact sch
     "description": "Detailed explanation of the vulnerability",
     "evidence": "Exact code snippet or class/method reference",
     "remediation": "How to fix this",
-    "cwe": "CWE-XXX",
+    "cwe": "CWE-XXX",  # placeholder shown to AI — it fills in the real CWE ID
     "cvss": 7.5,
     "location": "FileName.java:lineNumber or ClassName.methodName()"
   }}

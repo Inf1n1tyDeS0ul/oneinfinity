@@ -53,7 +53,7 @@ models:
 
   # ── Anthropic ───────────────────────────────────────────────────────────────
 
-  claude-haiku-4-5:
+  claude-haiku-4-5-20251001:
     provider: anthropic
     tier: FAST
     cost_per_1k_input: 0.00080
@@ -91,7 +91,7 @@ models:
       - BIZ_LOGIC
       - GENERAL
 
-  claude-opus-4-6:
+  claude-opus-4-7:
     provider: anthropic
     tier: PREMIUM
     cost_per_1k_input: 0.01500
@@ -193,7 +193,7 @@ budget:
   alert_threshold: 0.80            # alert at 80% of limit
   per_model_daily_limit:
     gpt-4o: 2.00
-    claude-opus-4-6: 2.00
+    claude-opus-4-7: 2.00
   per_category_daily_limit:
     EXPLOIT_GEN: 1.00
     BIZ_LOGIC: 0.50
@@ -234,7 +234,7 @@ ollama:
 cli_fallback:
   enabled: true
   codex_model: "o4-mini"           # model passed to: codex exec -m <model>
-  claude_model: "claude-opus-4-6"  # model passed to: claude -p --model <model>
+  claude_model: "claude-opus-4-7"  # model passed to: claude -p --model <model>
   max_budget_usd: 0.10             # --max-budget-usd for claude CLI
   on_errors:
     - auth    # 401/403 from API
