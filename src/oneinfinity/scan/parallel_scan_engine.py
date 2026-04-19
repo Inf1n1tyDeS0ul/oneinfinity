@@ -437,7 +437,7 @@ class ParallelScanEngine:
     async def _run_task(self, task: ScanTask, worker_id: int):
         """
         Execute a single scan task.  Updates task status, calls
-        autonomous_scan_pipeline.run_async(), and stores result.
+        unified_scan_engine.scan(), and stores result.
         """
         with self._tasks_lock:
             task.status = "running"
