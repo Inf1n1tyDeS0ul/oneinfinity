@@ -80,3 +80,25 @@ def test_load_missing_returns_none(tmp_path):
     mgr = SessionManager(base_dir=tmp_path)
     assert mgr.load(target="https://nobody.com") is None
     assert mgr.load(name="nonexistent") is None
+
+
+import logging
+from oneinfinity.auth.session_manager import _target_hash
+
+
+def test_read_corrupt_json_logs_warning(tmp_path, caplog):
+    """A corrupt session file must emit a WARNING-level log, not just DEBUG."""
+    mgr = SessionManager(base_dir=tmp_path)
+    bad = tmp_path / "bad.json"
+    bad.write_text("NOT VALID JSON {{{")
+    with caplog.at_level(logging.WARNING, logger="oneinfinity.auth.session_manager"):
+        result = mgr._read(bad)
+    assert result is None
+    assert any(r.levelno >= logging.WARNING for r in caplog.records), \
+        f"Expected WARNING log, got: {[(r.levelname, r.message) for r in caplog.records]}"
+
+
+def test_target_hash_is_16_chars():
+    """Target hash must be 16 hex characters (not 8) to reduce collision probability."""
+    h = _target_hash("https://example.com")
+    assert len(h) == 16, f"Expected 16 chars, got {len(h)}: {h!r}"

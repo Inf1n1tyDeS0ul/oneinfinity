@@ -53,7 +53,7 @@ class LoginSession:
 
 
 def _target_hash(target: str) -> str:
-    return hashlib.sha256(target.encode()).hexdigest()[:8]
+    return hashlib.sha256(target.encode()).hexdigest()[:16]
 
 
 class SessionManager:
@@ -108,5 +108,5 @@ class SessionManager:
             data = json.loads(path.read_text())
             return LoginSession(**{k: data[k] for k in LoginSession.__dataclass_fields__ if k in data})
         except Exception as exc:
-            log.debug("SessionManager: failed to read %s — %s", path, exc)
+            log.warning("SessionManager: failed to read %s — %s", path, exc)
             return None
