@@ -2335,18 +2335,18 @@ async def hunter_scan_target(request: Request, background_tasks: BackgroundTasks
 
     def _run():
         try:
-            from oneinfinity.scan.autonomous_scan_pipeline import autonomous_scan_pipeline
-            result = autonomous_scan_pipeline.run(target)
-            if result:
-                rd = result.to_dict() if hasattr(result, "to_dict") else result
-                HUNTER_SESSIONS[session_id].update({
-                    "status": "complete",
-                    "progress": 100,
-                    "findings": rd.get("findings", []),
-                    "targets_scanned": [target],
-                    "phase_results": rd.get("phases", {}),
-                })
-                HUNTER_SESSIONS[session_id]["progress_log"].append(f"[✓] Scan of {target} complete")
+            from oneinfinity.scan.unified_scan_engine import get_engine
+            engine = get_engine()
+            session = engine.scan(target)
+            findings = session.findings if session and hasattr(session, "findings") else []
+            HUNTER_SESSIONS[session_id].update({
+                "status": "complete",
+                "progress": 100,
+                "findings": findings,
+                "targets_scanned": [target],
+                "phase_results": {},
+            })
+            HUNTER_SESSIONS[session_id]["progress_log"].append(f"[✓] Scan of {target} complete")
         except Exception as e:
             HUNTER_SESSIONS[session_id]["status"] = "failed"
             HUNTER_SESSIONS[session_id]["progress_log"].append(f"[✗] {e}")
