@@ -24,7 +24,7 @@ import psutil
 # ── Target / domain validation ────────────────────────────────────────────────
 # Allow: hostname, IP, host:port, scheme://host/path — reject shell metacharacters
 _SAFE_TARGET_RE = _re.compile(
-    r'^(https?://)?[a-zA-Z0-9._:\-/~%?=&#@\[\]]+$'
+    r'^(https?://)?[a-zA-Z0-9.\-_\:]+(/[a-zA-Z0-9.\-_\:/~%?=&#@\[\]]*)?$'
 )
 _SHELL_META_RE = _re.compile(r'[;&|`$<>()\\\n\r]')
 
@@ -32,13 +32,17 @@ def _validate_target(domain: str) -> str:
     """Raise HTTPException(400) if the target fails denylist or allowlist checks."""
     if not domain:
         raise HTTPException(status_code=400, detail="Target/domain must not be empty")
+    domain = str(domain).strip()
     if len(domain) > 512:
         raise HTTPException(status_code=400, detail="Target too long (max 512 chars)")
+    # Explicitly block common bypass attempts and shell metacharacters
     if _SHELL_META_RE.search(domain):
         raise HTTPException(status_code=400, detail=f"Invalid target — shell metacharacters not allowed: {domain!r}")
+    if ".." in domain or "\\\\" in domain:
+        raise HTTPException(status_code=400, detail=f"Invalid target — path traversal or UNC paths not allowed: {domain!r}")
     if not _SAFE_TARGET_RE.match(domain):
         raise HTTPException(status_code=400, detail=f"Invalid target — contains disallowed characters: {domain!r}")
-    return domain.strip()
+    return domain
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,6 +50,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 _API_KEY: str = os.environ.get("ONEINFINITY_API_KEY", "")
+if not _API_KEY and os.environ.get("OI_ENV", "dev") == "prod":
+    raise SystemExit(
+        "FATAL: ONEINFINITY_API_KEY environment variable must be set in production. "
+        "Set it to a strong random secret before starting the server."
+    )
+
+_DEV_AUTH_WARNED: bool = False
+
 
 async def _require_auth(request: Request):
     """Enforce X-API-Key header when ONEINFINITY_API_KEY env var is set.
@@ -53,8 +65,15 @@ async def _require_auth(request: Request):
     When ONEINFINITY_API_KEY is empty (local dev), all requests pass through.
     When set, requests must provide a matching X-API-Key header.
     """
+    global _DEV_AUTH_WARNED
     if not _API_KEY:
-        return  # Local dev mode — no key configured
+        if not _DEV_AUTH_WARNED:
+            log.warning(
+                "Security Warning: ONEINFINITY_API_KEY is not set. "
+                "API is globally accessible. Set this variable before exposing to a network."
+            )
+            _DEV_AUTH_WARNED = True
+        return
     provided = request.headers.get("X-API-Key", "")
     if not provided:
         raise HTTPException(status_code=401, detail="X-API-Key header required")
@@ -1917,10 +1936,10 @@ async def mobile_upload(file: UploadFile, background_tasks: BackgroundTasks):
     if len(content) > MAX_SIZE:
         raise HTTPException(413, f"File exceeds 200 MB limit ({len(content)} bytes)")
 
-    # Path traversal prevention — strip directory components
-    safe_name = Path(fname).name.replace("..", "").lstrip("/").lstrip("\\")
-    if not safe_name:
-        raise HTTPException(400, "Invalid filename")
+    # Path traversal prevention — extract basename and reject any directory components
+    safe_name = os.path.basename(Path(fname).name)
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(400, f"Invalid filename: {fname!r}")
 
     upload_dir = raw_dir() / "mobile" / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
