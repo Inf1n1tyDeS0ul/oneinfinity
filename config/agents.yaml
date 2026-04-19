@@ -7,6 +7,9 @@ coordinator:
   knowledge_db: "~/.oneinfinity/databases/knowledge_base.db"
   attack_graph_dir: "~/.oneinfinity/raw/graphs"
 
+swarm:
+  stall_timeout_s: 300          # seconds before a RUNNING task is considered stalled and requeued
+
 agents:
 
   recon_agent:

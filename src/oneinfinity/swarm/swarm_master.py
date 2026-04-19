@@ -16,6 +16,7 @@ import logging
 import threading
 import queue
 import heapq
+import yaml as _yaml
 from dataclasses import dataclass, field
 from typing import Optional
 from collections import defaultdict
@@ -24,6 +25,16 @@ from pathlib import Path
 from oneinfinity.infra.path_manager import raw_dir
 
 log = logging.getLogger(__name__)
+
+
+def _load_stall_timeout() -> int:
+    """Read stall timeout from config/agents.yaml with a safe fallback."""
+    try:
+        _cfg_path = Path(__file__).parents[4] / "config" / "agents.yaml"
+        _cfg = _yaml.safe_load(_cfg_path.read_text())
+        return int(_cfg.get("swarm", {}).get("stall_timeout_s", 300))
+    except Exception:
+        return 300
 
 
 # ── Task Status Constants ─────────────────────────────────────────────────────
@@ -103,7 +114,7 @@ class SwarmMaster:
     """
 
     # Stalled task threshold: if RUNNING for longer than this, requeue
-    STALL_TIMEOUT_S = 300
+    STALL_TIMEOUT_S: int = _load_stall_timeout()
 
     def __init__(self, max_workers: int = 4, result_aggregator=None):
         self.max_workers = max_workers
