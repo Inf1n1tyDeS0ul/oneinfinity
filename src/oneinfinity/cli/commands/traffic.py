@@ -283,8 +283,7 @@ def register(subparsers):
     ra.add_argument("attack_id", help="Attack ID (from vulnerability findings)")
     ra.add_argument("--payload", default=None, help="Custom payload to use")
     ra.add_argument("--spray", metavar="TYPE",
-                    choices=list(__import__("attack_replay_engine", fromlist=["PAYLOAD_LIBRARY"]).PAYLOAD_LIBRARY.keys())
-                    if False else [],  # lazy — populated at parse time
+                    choices=[],
                     default="",
                     help="Spray all payloads of this type (xss|sqli|ssrf|lfi|...)")
     ra.add_argument("--wordlist", default="", metavar="FILE",
