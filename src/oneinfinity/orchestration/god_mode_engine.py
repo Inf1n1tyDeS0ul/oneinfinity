@@ -1137,9 +1137,9 @@ class GodModeConductor:
 
             self._teardown_logging()
 
-            # If stopped manually, force-exit after finalization.
+            # If stopped manually, exit after finalization.
             # Mission threads are daemon=False and blocking calls (subprocesses, asyncio)
-            # cannot be interrupted — os._exit ensures the process terminates cleanly.
+            # may not be interruptible; sys.exit raises SystemExit allowing atexit handlers to run.
             if session.terminated_by == "stop":
                 _still_alive = [m.name for m in self._missions if m._thread and m._thread.is_alive()]
                 if _still_alive:
