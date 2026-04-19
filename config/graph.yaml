@@ -1,11 +1,12 @@
 # OneInfinity graph backends — Neo4j is optional; SQLite + in-memory remain primary.
 # Override secrets via env: NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
+# IMPORTANT: Do not store passwords here. Use NEO4J_PASSWORD env var.
 
 neo4j:
   enabled: true
   uri: bolt://localhost:7687
   username: neo4j
-  password: neo4j123
+  password: ""  # Required: set via NEO4J_PASSWORD env var
   database: neo4j
   # Batched write-through (reduces round-trips)
   batch_size: 100

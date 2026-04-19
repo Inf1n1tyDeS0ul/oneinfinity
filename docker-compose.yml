@@ -12,8 +12,6 @@
 #   docker compose --profile ai run --rm ai ai-redteam http://target --yes
 # ==============================================================
 
-version: "3.9"
-
 # ── Shared defaults ───────────────────────────────────────────
 x-oneinfinity-base: &oneinfinity-base
   image: ghcr.io/inf1n1tydes0ul/oneinfinity:latest
@@ -139,7 +137,7 @@ services:
     environment:
       POSTGRES_DB: oneinfinity
       POSTGRES_USER: ${POSTGRES_USER:-oneinfinity}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (see .env.example)}
     ports:
       - "5432:5432"
     volumes:
