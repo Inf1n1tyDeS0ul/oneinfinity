@@ -18,7 +18,7 @@
 - [ ] **Step 1: Create the script**
 
 ```bash
-mkdir -p /home/devendra-yadav/oneinfinity/scripts
+mkdir -p /path/to/oneinfinity/scripts
 ```
 
 Write `scripts/setup_postgres.sh` with this exact content:

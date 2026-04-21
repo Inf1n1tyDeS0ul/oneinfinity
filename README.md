@@ -59,7 +59,22 @@ That sequence runs autonomously. No manual pivoting. No copy-pasting between too
 
 ## 🚀 Quick Start
 
-### Docker (Recommended)
+### Gemini CLI / Claude Code (Easiest)
+
+If you have [Gemini CLI](https://github.com/google-gemini/gemini-cli) or [Claude Code](https://github.com/anthropics/claude-code) installed, setup is fully automated. Simply run:
+
+```bash
+git clone https://github.com/Inf1n1tyDeS0ul/oneinfinity.git
+cd oneinfinity
+# In Gemini CLI:
+gemini "setup the project, install all dependencies, and run doctor"
+# In Claude Code:
+claude "setup the project, install all dependencies, and run doctor"
+```
+
+The AI will automatically handle Python environment creation, dependency installation, Go tool setup, and initial database configuration.
+
+### Docker (Recommended for Manual)
 
 No Go toolchain, no Python venv, no tool installation — everything is baked into the image.
 

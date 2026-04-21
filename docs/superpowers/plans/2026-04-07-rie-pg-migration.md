@@ -56,7 +56,7 @@ CREATE INDEX IF NOT EXISTS idx_raw_findings_created_at ON raw_findings(created_a
 - [ ] **Step 2: Verify schema is valid SQL (grep check)**
 
 ```bash
-grep -n "idx_findings_dedup\|raw_findings" /home/devendra-yadav/oneinfinity/db/schema.sql
+grep -n "idx_findings_dedup\|raw_findings" /path/to/oneinfinity/db/schema.sql
 ```
 
 Expected: 3 lines — the CREATE UNIQUE INDEX, CREATE TABLE, and at least one CREATE INDEX for raw_findings.

@@ -10,8 +10,9 @@ def test_no_bare_except_pass_in_unified_engine():
     debugging impossible and lets scans 'succeed' with zero findings
     when every tool is broken.
     """
-    src = pathlib.Path(
-        "/home/devendra-yadav/oneinfinity/unified_scan_engine.py"
+    PROJECT_ROOT = pathlib.Path(__file__).parent.parent
+    src = (
+        PROJECT_ROOT / "src/oneinfinity/scan/unified_scan_engine.py"
     ).read_text()
     tree = ast.parse(src)
 

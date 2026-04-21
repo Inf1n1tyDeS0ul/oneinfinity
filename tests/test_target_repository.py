@@ -103,7 +103,7 @@ def test_get_target_repo_returns_repository_instance():
     """get_target_repo() must return a TargetRepository."""
     from oneinfinity.core.target_repository import TargetRepository, get_target_repo
     from unittest.mock import patch
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     dm._manager = None
     mock_mgr = MagicMock()
     with patch("oneinfinity.core.target_repository.get_db_manager", new_callable=AsyncMock,

@@ -19,13 +19,15 @@ def _get_top_level_sqlite_imports(src: str) -> list:
 
 def test_main_py_no_unconditional_sqlite_import():
     """web/backend/main.py must not import sqlite3 at module level."""
-    src = pathlib.Path("/home/devendra-yadav/oneinfinity/web/backend/main.py").read_text()
+    PROJECT_ROOT = pathlib.Path(__file__).parent.parent
+    src = (PROJECT_ROOT / "web/backend/main.py").read_text()
     top_level = _get_top_level_sqlite_imports(src)
     assert not top_level, f"Found module-level sqlite3 import in main.py: {top_level}"
 
 
 def test_findings_py_no_module_level_sqlite_import():
     """modules/findings.py must not import sqlite3 at module level (use lazy import)."""
-    src = pathlib.Path("/home/devendra-yadav/oneinfinity/modules/findings.py").read_text()
+    PROJECT_ROOT = pathlib.Path(__file__).parent.parent
+    src = (PROJECT_ROOT / "src/oneinfinity/modules/findings.py").read_text()
     top_level = _get_top_level_sqlite_imports(src)
     assert not top_level, f"Found module-level sqlite3 import in findings.py: {top_level}"

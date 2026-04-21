@@ -15,7 +15,7 @@ def run(coro):
 
 def test_get_findings_raises_in_sqlite_mode():
     """After hardening, get_findings must raise RuntimeError in sqlite mode."""
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     dm._manager = None
     mgr = dm.DBManager()
     mgr.mode = "sqlite"
@@ -25,7 +25,7 @@ def test_get_findings_raises_in_sqlite_mode():
 
 def test_get_findings_raises_in_memory_mode():
     """get_findings must raise in memory mode too."""
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     dm._manager = None
     mgr = dm.DBManager()
     mgr.mode = "memory"
@@ -35,7 +35,7 @@ def test_get_findings_raises_in_memory_mode():
 
 def test_sqlite_get_findings_method_removed():
     """_sqlite_get_findings must not exist on DBManager after hardening."""
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     dm._manager = None
     mgr = dm.DBManager()
     assert not hasattr(mgr, "_sqlite_get_findings"), \

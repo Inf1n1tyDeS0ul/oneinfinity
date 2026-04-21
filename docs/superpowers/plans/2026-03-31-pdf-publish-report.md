@@ -519,7 +519,7 @@ async def publish_report(req: PublishReportRequest):
 Also add `List` to the FastAPI/typing imports at the top of `main.py` if not already present. Check with:
 
 ```bash
-grep "from typing import" /home/devendra-yadav/oneinfinity/web/backend/main.py | head -3
+grep "from typing import" /path/to/oneinfinity/web/backend/main.py | head -3
 ```
 
 If `List` is missing, add it to the existing `from typing import` line.
@@ -571,7 +571,7 @@ Note: `timeout: 120000` gives 2 minutes for PDF generation. The default 15s is t
 - [ ] **Step 3: Verify syntax**
 
 ```bash
-node -e "require('/home/devendra-yadav/oneinfinity/web/frontend/src/utils/api.js')" 2>&1 | head -5
+node -e "require('/path/to/oneinfinity/web/frontend/src/utils/api.js')" 2>&1 | head -5
 ```
 
 If this errors (ESM module), that's fine — the file uses ES modules. Just visually verify there are no syntax errors by reading the file around the change.
@@ -782,7 +782,7 @@ Find the closing `</div>` of the last tab panel (the replay tab). It's the final
 - [ ] **Step 10: Verify the file renders without syntax errors by checking imports resolve**
 
 ```bash
-cd /home/devendra-yadav/oneinfinity/web/frontend
+cd /path/to/oneinfinity/web/frontend
 node -e "console.log('syntax check')" 2>&1
 ```
 
@@ -977,7 +977,7 @@ git commit -m "feat(router): add /report-preview/:scanId route for PDF preview"
 - [ ] **Step 1: Start the backend and verify the endpoint is reachable**
 
 ```bash
-cd /home/devendra-yadav/oneinfinity/web/backend
+cd /path/to/oneinfinity/web/backend
 python -c "
 import sys; sys.path.insert(0, '../..')
 from main import app
@@ -1007,7 +1007,7 @@ Expected: all tests pass.
 - [ ] **Step 3: Build the frontend and verify no import errors**
 
 ```bash
-cd /home/devendra-yadav/oneinfinity/web/frontend
+cd /path/to/oneinfinity/web/frontend
 npm run build 2>&1 | tail -20
 ```
 

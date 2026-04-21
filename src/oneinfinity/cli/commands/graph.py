@@ -12,6 +12,7 @@ from oneinfinity.cli._helpers import (
     CLI_COMMAND, WORKSPACE_DIRNAME, LEGACY_WORKSPACE_DIRNAME,
     get_workspace_root, find_program_dir, get_program_dir,
 )
+from oneinfinity.infra.path_manager import findings_db_path, raw_dir, resolve_output_dir, workspace_root
 
 log = logging.getLogger(__name__)
 
@@ -167,7 +168,7 @@ def cmd_brain_start(args):
         print("Usage: oneinfinity brain-start <target> [target2 ...]")
         return
     try:
-        from oneinfinity.attack_graph_brain import get_brain
+        from oneinfinity.intelligence.attack_graph_brain import get_brain
         from oneinfinity.event_driven_engine import get_engine
         from oneinfinity.swarm.agent_execution_fabric import get_fabric
 
@@ -190,7 +191,7 @@ def cmd_brain_start(args):
 def cmd_brain_stop(args):
     """oneinfinity brain-stop — stop the graph brain and all agents."""
     try:
-        from oneinfinity.attack_graph_brain import get_brain
+        from oneinfinity.intelligence.attack_graph_brain import get_brain
         from oneinfinity.event_driven_engine import get_engine
         get_brain().stop()
         get_engine().stop()
@@ -202,7 +203,7 @@ def cmd_brain_stop(args):
 def cmd_brain_status(args):
     """oneinfinity brain-status — show graph brain status + top priority nodes."""
     try:
-        from oneinfinity.attack_graph_brain import get_brain
+        from oneinfinity.intelligence.attack_graph_brain import get_brain
         from oneinfinity.event_driven_engine import get_engine
         from oneinfinity.swarm.agent_execution_fabric import get_fabric
 

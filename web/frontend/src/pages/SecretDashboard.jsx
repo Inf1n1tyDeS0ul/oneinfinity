@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 import { Search, ShieldAlert, Key, Filter, Clock } from 'lucide-react';
+import api from '../utils/api';
 import clsx from 'clsx';
 
 const COLORS = {
@@ -19,9 +20,8 @@ export default function SecretDashboard() {
 
   const fetchFindings = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/findings');
-      const data = await res.json();
-      setFindings(data);
+      const res = await api.get('/findings');
+      setFindings(res.data);
     } catch (err) {
       console.error(err);
     } finally {

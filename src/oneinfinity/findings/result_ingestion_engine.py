@@ -463,8 +463,40 @@ class ResultIngestionEngine:
         target: str = None,
         severity: str = None,
     ) -> List[dict]:
-        """Query findings with optional filters."""
-        return _require_pg().sync_get_findings(scan_id=scan_id, target=target, severity=severity)
+        """Query findings with optional filters. Falls back to local scan files when Postgres unavailable."""
+        try:
+            return _require_pg().sync_get_findings(scan_id=scan_id, target=target, severity=severity)
+        except Exception:
+            pass
+        # Local fallback: read unified_findings.json from the scan output directory
+        return self._get_findings_local(scan_id=scan_id, target=target, severity=severity)
+
+    def _get_findings_local(self, scan_id=None, target=None, severity=None) -> List[dict]:
+        from pathlib import Path as _Path
+        base = _Path.home() / ".oneinfinity"
+        results: List[dict] = []
+        scan_dirs = [base / scan_id] if scan_id else sorted(base.iterdir()) if base.exists() else []
+        for d in scan_dirs:
+            if not d.is_dir():
+                continue
+            for fname in ("unified_findings.json", "full_scan/unified_findings.json"):
+                fpath = d / fname
+                if not fpath.exists():
+                    continue
+                try:
+                    data = json.loads(fpath.read_text())
+                    items = data if isinstance(data, list) else data.get("findings", [])
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        if target and item.get("target", "") != target:
+                            continue
+                        if severity and item.get("severity", "").lower() != severity.lower():
+                            continue
+                        results.append(item)
+                except Exception:
+                    pass
+        return results
 
     def delete_findings_for_scan(self, scan_id: str) -> int:
         """Delete all findings for the given scan_id. Returns the count deleted."""
@@ -500,7 +532,7 @@ class ResultIngestionEngine:
     def _update_graph(self, finding: NormalizedFinding) -> None:
         """Push finding into AttackGraphBrain as a VULNERABILITY node."""
         try:
-            from oneinfinity.attack_graph_brain import get_brain
+            from oneinfinity.intelligence.attack_graph_brain import get_brain
             get_brain().integrate_vuln(finding.to_dict())
         except Exception as exc:
             log.error("_update_graph: graph update failed [finding=%s]: %s",

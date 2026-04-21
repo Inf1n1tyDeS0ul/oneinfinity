@@ -17,7 +17,7 @@ def run(coro):
 
 def pg_mgr_with_execute(execute_return=None):
     """Return a DBManager in postgres mode with a controllable mock connection."""
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     dm._manager = None
     mgr = dm.DBManager()
     mgr.mode = "postgres"
@@ -72,7 +72,7 @@ def test_check_and_save_duplicate_returns_false():
 
 def test_check_and_save_sqlite_mode_stores_and_returns_true():
     """In sqlite mode, check_and_save_finding uses SQLite dedup and returns True for new."""
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     from unittest.mock import patch, MagicMock
     dm._manager = None
     mgr = dm.DBManager()
@@ -116,7 +116,7 @@ def test_save_recon_asset_issues_pg_insert():
 
 def test_save_recon_asset_sqlite_mode():
     """save_recon_asset in sqlite mode writes to SQLite."""
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     from unittest.mock import patch, MagicMock
     dm._manager = None
     mgr = dm.DBManager()
@@ -137,7 +137,7 @@ def test_save_recon_asset_sqlite_mode():
 
 def test_get_recon_assets_pg_mode_returns_list():
     """get_recon_assets in PG mode returns parsed list."""
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     import json
     dm._manager = None
     mgr = dm.DBManager()
@@ -170,7 +170,7 @@ def test_get_recon_assets_pg_mode_returns_list():
 
 def test_get_recon_assets_sqlite_mode_returns_list():
     """get_recon_assets in sqlite mode returns parsed list from SQLite."""
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     from unittest.mock import patch, MagicMock
     import sqlite3
     dm._manager = None
@@ -205,7 +205,7 @@ def test_store_raw_findings_pg_mode_returns_count():
 
 def test_store_raw_findings_sqlite_mode_returns_count():
     """store_raw_findings in sqlite mode inserts and returns count."""
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     from unittest.mock import patch, MagicMock
     dm._manager = None
     mgr = dm.DBManager()
@@ -240,7 +240,7 @@ def test_delete_findings_for_scan_pg_mode_returns_rowcount():
 
 def test_delete_findings_for_scan_sqlite_mode():
     """delete_findings_for_scan in sqlite mode deletes and returns rowcount."""
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     from unittest.mock import patch, MagicMock
     dm._manager = None
     mgr = dm.DBManager()
@@ -274,7 +274,7 @@ def test_finding_count_pg_mode_returns_int():
 
 def test_finding_count_sqlite_mode():
     """finding_count in sqlite mode returns count."""
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     from unittest.mock import patch, MagicMock
     dm._manager = None
     mgr = dm.DBManager()

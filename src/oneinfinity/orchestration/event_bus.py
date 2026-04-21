@@ -316,7 +316,9 @@ class EventBus:
                 if sub.is_async:
                     await sub.handler(event)
                 else:
-                    await self._loop.run_in_executor(None, sub.handler, event)
+                    # Execute synchronous handlers in a separate thread to prevent
+                    # blocking the main event bus loop.
+                    await asyncio.to_thread(sub.handler, event)
             except Exception as exc:
                 self._failed += 1
                 self._dlq.append({"event": event.to_dict(), "error": str(exc), "ts": time.time()})

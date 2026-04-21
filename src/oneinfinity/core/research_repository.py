@@ -15,13 +15,19 @@ from oneinfinity.core.db_manager import DBManager, get_db_manager
 
 
 class ResearchRepository:
-    def __init__(self, db: DBManager) -> None:
+    def __init__(self, db: Optional[DBManager]) -> None:
         self._db = db
+
+    @property
+    def _db_available(self) -> bool:
+        return self._db is not None
 
     # ── Session ───────────────────────────────────────────────────────────────
 
     async def save_session(self, session) -> None:
         """Upsert all fields of a ResearchSession object."""
+        if not self._db_available:
+            return
         await self._db.save_research_session({
             "session_id":         session.session_id,
             "target":             session.target,
@@ -42,10 +48,16 @@ class ResearchRepository:
         await self.save_session(session)
 
     def save_session_sync(self, session) -> None:
-        DBManager._run_sync(self.save_session(session))
+        try:
+            DBManager._run_sync(self.save_session(session))
+        except Exception as exc:
+            log.warning("save_session_sync skipped (non-fatal): %s", exc)
 
     def finish_session_sync(self, session) -> None:
-        DBManager._run_sync(self.finish_session(session))
+        try:
+            DBManager._run_sync(self.finish_session(session))
+        except Exception as exc:
+            log.warning("finish_session_sync skipped (non-fatal): %s", exc)
 
     # ── Theories ──────────────────────────────────────────────────────────────
 
@@ -53,6 +65,8 @@ class ResearchRepository:
         self, theory_id: str, session_id: str, target: str, endpoint: str,
         vuln_type: str, severity: str, confidence: float, reasoning: str,
     ) -> None:
+        if not self._db_available:
+            return
         await self._db.save_research_theory({
             "theory_id":  theory_id,
             "session_id": session_id,
@@ -68,6 +82,8 @@ class ResearchRepository:
         })
 
     async def update_theory_status(self, theory_id: str, status: str) -> None:
+        if not self._db_available:
+            return
         await self._db.update_research_theory_status(theory_id, status, time.time())
 
     def record_theory_sync(
@@ -100,6 +116,8 @@ class ResearchRepository:
         evidence: str,
         tested_at: float,
     ) -> None:
+        if not self._db_available:
+            return
         await self._db.save_test_outcome({
             "session_id":      session_id,
             "theory_id":       theory_id,
@@ -159,6 +177,8 @@ class ResearchRepository:
         cvss_score: float,
         discovered_at: float,
     ) -> None:
+        if not self._db_available:
+            return
         await self._db.save_research_discovery({
             "report_id":    report_id,
             "session_id":   session_id,
@@ -216,14 +236,20 @@ class ResearchRepository:
     # ── Queries ───────────────────────────────────────────────────────────────
 
     async def get_known_patterns(self, min_count: int = 2) -> list:
+        if not self._db_available:
+            return []
         return await self._db.get_cross_target_patterns(min_count)
 
     async def get_session_history(self, target: Optional[str] = None) -> list:
+        if not self._db_available:
+            return []
         return await self._db.list_research_sessions(target=target)
 
     async def get_confirmed_discoveries(
         self, session_id: Optional[str] = None
     ) -> list:
+        if not self._db_available:
+            return []
         return await self._db.list_research_discoveries(session_id=session_id)
 
     def get_known_patterns_sync(self, min_count: int = 2) -> list:

@@ -122,7 +122,10 @@ class GodModeStateFile:
 
     def _write_json(self, session: GodModeSession) -> None:
         try:
-            data = asdict(session)
+            import dataclasses as _dc
+            # Exclude non-serializable fields (threading.Lock, etc.)
+            _skip = {"_lock"}
+            data = {f.name: getattr(session, f.name) for f in _dc.fields(session) if f.name not in _skip}
             data["elapsed_seconds"] = round(session.elapsed(), 1)
             tmp = self.path.with_suffix(".tmp")
             tmp.write_text(json.dumps(data, indent=2, default=str))
@@ -1117,6 +1120,9 @@ class GodModeConductor:
             print(f"\n[*] Stage 5: Finalization...")
             report.run_sync(session)
             self._update_session_missions()
+
+            # Final state write — captures elapsed + finding_count after all missions
+            self._state_file.write(session)
 
             # Final summary
             print(f"\n[+] GOD MODE complete — Session: {session.scan_id}")

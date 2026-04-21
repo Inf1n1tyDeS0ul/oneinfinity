@@ -13,7 +13,7 @@
 ## Pre-flight
 
 - [ ] Confirm backend is running: `curl -s http://localhost:8000/api/scans | python3 -c "import json,sys; print(len(json.load(sys.stdin)), 'scans')"`
-- [ ] Note current test suite location: `ls /home/devendra-yadav/oneinfinity/tests/`
+- [ ] Note current test suite location: `ls /path/to/oneinfinity/tests/`
 
 ---
 
@@ -26,7 +26,7 @@ This is the prerequisite for Tasks 3 and 5. DBManager's `save_scan()` currently 
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `/home/devendra-yadav/oneinfinity/tests/test_db_manager_scan.py`:
+Create `/path/to/oneinfinity/tests/test_db_manager_scan.py`:
 
 ```python
 """Tests for DBManager scan persistence (SQLite mode)."""
@@ -281,7 +281,7 @@ git commit -m "feat(db_manager): add SQLite scan path, delete_scan, load_scans m
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `/home/devendra-yadav/oneinfinity/tests/test_db_manager_config.py`:
+Create `/path/to/oneinfinity/tests/test_db_manager_config.py`:
 
 ```python
 """Tests for DBManager strict-mode config enforcement."""
@@ -563,7 +563,7 @@ await (await get_mgr()).save_scan(scan)
 
 ```bash
 kill $(lsof -ti:8000) 2>/dev/null; sleep 1
-cd /home/devendra-yadav/oneinfinity/web/backend && .venv/bin/python main.py > /tmp/oneinfinity-backend.log 2>&1 &
+cd /path/to/oneinfinity/web/backend && .venv/bin/python main.py > /tmp/oneinfinity-backend.log 2>&1 &
 sleep 4 && grep -E "ERROR|Traceback|Running in|Loaded" /tmp/oneinfinity-backend.log
 ```
 
@@ -599,7 +599,7 @@ git commit -m "refactor(main): remove ScanDB, route all scan persistence through
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `/home/devendra-yadav/oneinfinity/tests/test_db_manager_scan.py`:
+Add to `/path/to/oneinfinity/tests/test_db_manager_scan.py`:
 
 ```python
 def test_findings_write_goes_through_dbmanager(tmp_db, monkeypatch):
@@ -751,7 +751,7 @@ git commit -m "fix(ingestion): route SQLite findings write through DBManager._sq
 
 - [ ] **Step 1: Write the failing test**
 
-Create `/home/devendra-yadav/oneinfinity/tests/test_god_mode_db.py`:
+Create `/path/to/oneinfinity/tests/test_god_mode_db.py`:
 
 ```python
 """Test that GodModeStateFile.write() persists scan to DBManager first."""
@@ -919,7 +919,7 @@ git commit -m "feat(god_mode): write scan metadata through DBManager, JSON as fa
 
 - [ ] **Step 1: Write the failing test**
 
-Create `/home/devendra-yadav/oneinfinity/tests/test_swarm_wiring.py`:
+Create `/path/to/oneinfinity/tests/test_swarm_wiring.py`:
 
 ```python
 """Test that scan() uses _make_swarm_state() factory, not SharedSwarmState() directly."""
@@ -1057,7 +1057,7 @@ Replace with:
 - [ ] **Step 2: Verify the change**
 
 ```bash
-grep -n "FATAL\|not optional" /home/devendra-yadav/oneinfinity/worker/main.py
+grep -n "FATAL\|not optional" /path/to/oneinfinity/worker/main.py
 ```
 
 Expected: line shows the new message.
@@ -1081,7 +1081,7 @@ git commit -m "fix(worker): explicit FATAL message when Redis unavailable — cl
 
 - [ ] **Step 1: Write the failing test**
 
-Create `/home/devendra-yadav/oneinfinity/tests/test_event_bus_reconnect.py`:
+Create `/path/to/oneinfinity/tests/test_event_bus_reconnect.py`:
 
 ```python
 """Test that Redis listener thread reconnects after failure."""
@@ -1231,7 +1231,7 @@ git commit -m "fix(event_bus): Redis listener reconnects on disconnect with expo
 - [ ] **Step 1: Read the current argparse block**
 
 ```bash
-grep -n "argparse\|add_argument\|parse_args" /home/devendra-yadav/oneinfinity/scripts/migrate_sqlite_to_pg.py
+grep -n "argparse\|add_argument\|parse_args" /path/to/oneinfinity/scripts/migrate_sqlite_to_pg.py
 ```
 
 - [ ] **Step 2: Add `--check` argument and check-mode path**
@@ -1317,7 +1317,7 @@ git commit -m "feat(migration): add --check flag for dry-run row count + connect
 
 ```bash
 kill $(lsof -ti:8000) 2>/dev/null; sleep 1
-cd /home/devendra-yadav/oneinfinity/web/backend
+cd /path/to/oneinfinity/web/backend
 .venv/bin/python main.py > /tmp/oneinfinity-backend.log 2>&1 &
 sleep 4
 grep -E "DBManager|FALLBACK|Running in|Loaded" /tmp/oneinfinity-backend.log
@@ -1336,7 +1336,7 @@ echo "Created: $SCAN_ID"
 
 # Verify it persisted (restart backend)
 kill $(lsof -ti:8000) 2>/dev/null; sleep 1
-cd /home/devendra-yadav/oneinfinity/web/backend && .venv/bin/python main.py >> /tmp/oneinfinity-backend.log 2>&1 &
+cd /path/to/oneinfinity/web/backend && .venv/bin/python main.py >> /tmp/oneinfinity-backend.log 2>&1 &
 sleep 4
 curl -s http://localhost:8000/api/scans | python3 -c "import json,sys; scans=json.load(sys.stdin); print('Found after restart:', any(s['id']=='$SCAN_ID' for s in scans))"
 

@@ -2,8 +2,13 @@
 # All dependency declarations live in pyproject.toml.
 #
 # Usage:
-#   pip install -e "."              # core only
-#   pip install -e ".[web]"         # core + web dashboard
-#   pip install -e ".[ai,mobile]"   # core + AI/mobile tools
-#   pip install -e ".[ai,mobile,web]" # everything (dev default)
+#   pip install -e "."                           # core only (recommended for first install)
+#   pip install -e ".[web]"                      # core + web dashboard
+#   pip install -e ".[ai,mobile]"                # core + AI/mobile tools
+#   pip install -e ".[ai,mobile,web]"            # standard dev install
+#   pip install -e ".[ai,mobile,web,graph]"      # + Neo4j graph backend
+#   pip install -e ".[dev]"                      # everything (graph + distributed + ai + mobile + web)
+#
+# Note: [distributed] requires PostgreSQL dev headers for psycopg.
+#       [graph] requires a running Neo4j instance to use.
 -e ".[ai,mobile,web]"

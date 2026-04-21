@@ -657,7 +657,7 @@ def test_main_py_does_not_import_sqlite3_at_module_level():
     """main.py must not have a top-level sqlite3 import after TargetDB removal."""
     import ast
     import pathlib
-    src = pathlib.Path("/home/devendra-yadav/oneinfinity/web/backend/main.py").read_text()
+    src = pathlib.Path("/path/to/oneinfinity/web/backend/main.py").read_text()
     tree = ast.parse(src)
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -854,7 +854,7 @@ Expected: all tests PASS.
 - [ ] **Step 8: Verify build**
 
 ```bash
-cd /home/devendra-yadav/oneinfinity/web/frontend
+cd /path/to/oneinfinity/web/frontend
 npm run build 2>&1 | tail -10
 ```
 

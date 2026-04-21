@@ -1,8 +1,9 @@
 # tests/test_docker_compose_pg.py
 import pathlib, yaml
 
+PROJECT_ROOT = pathlib.Path(__file__).parent.parent
 COMPOSE = yaml.safe_load(
-    pathlib.Path("/home/devendra-yadav/oneinfinity/docker-compose.yml").read_text()
+    (PROJECT_ROOT / "docker-compose.yml").read_text()
 )
 SERVICES = COMPOSE.get("services", {})
 

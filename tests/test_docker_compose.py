@@ -1,7 +1,7 @@
 # tests/test_docker_compose.py
 import pathlib
 
-ROOT = pathlib.Path("/home/devendra-yadav/oneinfinity")
+ROOT = pathlib.Path(__file__).parent.parent
 
 
 def _load_compose(filename):

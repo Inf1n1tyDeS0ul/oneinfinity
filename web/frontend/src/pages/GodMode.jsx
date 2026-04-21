@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
+import { formatDateTime } from '../utils/time'
 import clsx from 'clsx'
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -168,6 +169,7 @@ export default function GodMode() {
   const [authSessionId, setAuthSessionId]         = useState('')
   const [isRecording, setIsRecording]             = useState(false)
   const [recordingId, setRecordingId]             = useState(null)
+  const [recordingWarning, setRecordingWarning]   = useState('')
   const [loginFormDetected, setLoginFormDetected]  = useState(null)
 
   // Auto-detection state
@@ -299,6 +301,7 @@ export default function GodMode() {
   const handleRecordSession = async () => {
     if (!target.trim()) return
     setIsRecording(true)
+    setRecordingWarning('')
     try {
       const r = await endpoints.authRecordStart({ target: target.trim(), name: '' })
       setRecordingId(r.data.session_id)
@@ -313,12 +316,31 @@ export default function GodMode() {
     if (!recordingId) return
     try {
       const r = await endpoints.authRecordDone(recordingId, { name: target.trim() })
-      addNotification(`Session recorded — ${r.data.cookies_captured} cookies captured`, 'success')
+      const warning = r.data.warning || ''
+      if (warning) {
+        setRecordingWarning(warning)
+        addNotification('Session saved with warning — check auth status', 'warning')
+      } else {
+        setRecordingWarning('')
+        addNotification(`Session recorded — ${r.data.cookies_captured} cookies captured`, 'success')
+      }
       setAuthSessionId(r.data.session_id)
       const list = await endpoints.authListSessions()
       setSavedSessions(list.data || [])
     } catch (e) {
       addNotification('Recording finalization failed: ' + (e.response?.data?.detail || e.message), 'error')
+    } finally {
+      setIsRecording(false)
+      setRecordingId(null)
+    }
+  }
+
+  const handleRecordCancel = async () => {
+    if (!recordingId) { setIsRecording(false); return }
+    try {
+      await endpoints.authRecordCancel(recordingId)
+    } catch (e) {
+      // ignore — browser may already be closed
     } finally {
       setIsRecording(false)
       setRecordingId(null)
@@ -485,9 +507,14 @@ export default function GodMode() {
               {session.target} · Completed in {formatDuration(elapsed)} · {session.finding_count} findings
             </div>
           </div>
-          <button className="btn-secondary flex-shrink-0" onClick={() => navigate('/results')}>
-            <ExternalLink size={12} />View Findings
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <button className="btn-secondary" onClick={() => navigate(`/chains/${session.scan_id}`)}>
+              <Zap size={12} />View Exploit Chain
+            </button>
+            <button className="btn-secondary" onClick={() => navigate('/results')}>
+              <ExternalLink size={12} />View Findings
+            </button>
+          </div>
         </div>
       )}
 
@@ -678,6 +705,7 @@ export default function GodMode() {
                       <label className="label">Auth Type</label>
                       <select className="select" value={authType} onChange={e => { setAuthType(e.target.value); setAuthValue('') }}>
                         <option value="none">None (unauthenticated)</option>
+                        <option value="record">⏺ Record Login Session</option>
                         <option value="cookie">Session Cookie</option>
                         <option value="bearer">Bearer Token (JWT)</option>
                         <option value="header">Raw Auth Header</option>
@@ -724,25 +752,44 @@ export default function GodMode() {
                             </option>
                           ))}
                         </select>
-                        {authSessionId && (
+                        {authSessionId && !recordingWarning && (
                           <p className="text-[10px] text-green-400 mt-1 flex items-center gap-1">
                             <CheckCircle2 size={9} /> Authenticated session will be injected
                           </p>
+                        )}
+                        {recordingWarning && (
+                          <div className="mt-2 p-2 rounded border border-orange-500/40 bg-orange-900/20">
+                            <p className="text-[10px] text-orange-300 font-medium flex items-center gap-1 mb-1">
+                              ⚠ Session captured on login page — not authenticated
+                            </p>
+                            <p className="text-[10px] text-orange-400 mb-2">
+                              You clicked Done before the login redirect completed. Re-record and wait until you see the app dashboard.
+                            </p>
+                            <button
+                              className="btn-secondary w-full text-[10px] py-1"
+                              onClick={() => { setRecordingWarning(''); setAuthSessionId(''); handleRecordSession(); }}
+                            >
+                              ⏺ Re-record Session
+                            </button>
+                          </div>
                         )}
                       </div>
                     )}
 
                     {/* Record new session */}
-                    {loginFormDetected && !isRecording && (
+                    {!isRecording && (
                       <div className="mt-3">
                         <button
                           className="btn-secondary w-full flex items-center justify-center gap-2"
                           onClick={handleRecordSession}
+                          disabled={!target.trim()}
                         >
                           <span>⏺</span> Record Login Session
                         </button>
                         <p className="text-[10px] text-slate-500 mt-1">
-                          Login form detected — click to open browser and record your session
+                          {loginFormDetected
+                            ? 'Login form detected — click to open browser and record your session'
+                            : 'Open a browser to manually log in and record your session'}
                         </p>
                       </div>
                     )}
@@ -761,6 +808,12 @@ export default function GodMode() {
                           onClick={handleRecordDone}
                         >
                           Done — I have logged in
+                        </button>
+                        <button
+                          className="btn-secondary w-full mt-2"
+                          onClick={handleRecordCancel}
+                        >
+                          Cancel — Close browser
                         </button>
                       </div>
                     )}
@@ -809,6 +862,14 @@ export default function GodMode() {
                     <div className="flex-1 min-w-0">
                       <div className="text-xs font-medium text-slate-200 truncate">{s.target}</div>
                       <div className="text-[10px] text-slate-500 font-mono">{s.scan_id}</div>
+                      <div className="text-[10px] text-slate-600 mt-0.5">
+                        <span className="text-slate-500">Started:</span> {formatDateTime(s.started_at)}
+                      </div>
+                      {s.completed_at && (
+                        <div className="text-[10px] text-slate-600">
+                          <span className="text-slate-500">Completed:</span> {formatDateTime(s.completed_at)}
+                        </div>
+                      )}
                     </div>
                     <div className="text-right flex-shrink-0">
                       <div className={clsx('text-[10px] font-semibold', TERM_REASONS[s.terminated_by]?.color || 'text-cyan-400')}>
@@ -850,12 +911,14 @@ export default function GodMode() {
                   {/* Session meta */}
                   <div className="grid grid-cols-3 gap-3">
                     {[
-                      { label: 'Target',       value: session.target,                         mono: true },
-                      { label: 'Session ID',   value: session.scan_id,                        mono: true },
+                      { label: 'Target',       value: session.target,                                    mono: true },
+                      { label: 'Session ID',   value: session.scan_id,                                   mono: true },
+                      { label: 'Status',       value: session.terminated_by ? TERM_REASONS[session.terminated_by]?.label : 'Running' },
+                      { label: 'Started',      value: formatDateTime(session.started_at)  },
+                      { label: 'Completed',    value: formatDateTime(session.completed_at) },
                       { label: 'Elapsed',      value: formatDuration(session.elapsed_seconds) },
                       { label: 'Findings',     value: `${session.finding_count ?? 0}` },
                       { label: 'Phases Done',  value: `${(session.phases_complete || []).length}` },
-                      { label: 'Status',       value: session.terminated_by ? TERM_REASONS[session.terminated_by]?.label : 'Running' },
                     ].map(item => (
                       <div key={item.label} className="p-3 rounded-xl bg-bg-secondary border border-bg-border">
                         <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">{item.label}</div>

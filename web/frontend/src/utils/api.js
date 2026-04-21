@@ -8,8 +8,8 @@ const _fetchKey = axios.get('/api/auth-token').then(r => {
   api.defaults.headers.common['X-API-Key'] = r.data.token
 }).catch(() => {
   // If ONEINFINITY_API_KEY is set in the environment, the user can also set it
-  // in localStorage as a fallback.
-  const stored = localStorage.getItem('oneinfinity_api_key')
+  // in sessionStorage as a fallback.
+  const stored = sessionStorage.getItem('oneinfinity_api_key')
   if (stored) {
     api.defaults.headers.common['X-API-Key'] = stored
   }
@@ -24,7 +24,20 @@ api.interceptors.request.use(async config => {
 
 api.interceptors.response.use(
   r => r,
-  err => {
+  async err => {
+    // On 401, re-fetch the API key and retry the request once.
+    if (err.response?.status === 401 && !err.config?._retried) {
+      try {
+        const r = await axios.get('/api/auth-token')
+        const key = r.data.token
+        if (key) {
+          api.defaults.headers.common['X-API-Key'] = key
+          err.config._retried = true
+          err.config.headers['X-API-Key'] = key
+          return api(err.config)
+        }
+      } catch (_) {}
+    }
     console.error('API error:', err.response?.data || err.message)
     return Promise.reject(err)
   }
@@ -109,6 +122,7 @@ export const endpoints = {
   hunterStart:         (config) => api.post('/hunter/start', config),
   hunterScan:          (target, config) => api.post('/hunter/scan', { target, ...(config || {}) }),
   hunterStatus:        (sessionId) => api.get(sessionId ? `/hunter/status/${sessionId}` : '/hunter/status'),
+  hunterSessions:      () => api.get('/hunter/sessions'),
   hunterFindings:      (sessionId) => api.get(`/hunter/findings/${sessionId}`),
   hunterReport:        (sessionId, params) => api.post(`/hunter/report/${sessionId}`, params),
   hunterPrograms:      () => api.get('/hunter/programs'),
@@ -253,6 +267,7 @@ export const endpoints = {
   authDetect:          (data) => api.post('/auth/detect', data),
   authRecordStart:     (data) => api.post('/auth/record', data),
   authRecordDone:      (recId, data={}) => api.post(`/auth/record/${recId}/done`, data),
+  authRecordCancel:    (recId) => api.post(`/auth/record/${recId}/cancel`),
   authListSessions:    () => api.get('/auth/sessions'),
   authGetSession:      (id) => api.get(`/auth/sessions/${id}`),
   authDeleteSession:   (id) => api.delete(`/auth/sessions/${id}`),

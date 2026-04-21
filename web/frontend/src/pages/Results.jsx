@@ -1,24 +1,15 @@
 import React, { useState, useEffect } from 'react'
 import {
   ShieldAlert, History, Search, ChevronDown, ChevronUp,
-  CheckCircle2, XCircle, StopCircle, RefreshCw, Trash2, X
+  CheckCircle2, XCircle, StopCircle, RefreshCw, Trash2, X, Zap
 } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { useStore } from '../store/useStore'
 import { endpoints } from '../utils/api'
+import { relativeTime } from '../utils/time'
 import clsx from 'clsx'
 
 const SEV_ORDER = ['critical', 'high', 'medium', 'low', 'info']
-
-function relativeTime(iso) {
-  if (!iso) return '—'
-  const diff = Date.now() - new Date(iso).getTime()
-  const mins = Math.floor(diff / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
-  const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return `${hrs}h ago`
-  return `${Math.floor(hrs / 24)}d ago`
-}
 
 // ─── Findings Tab ────────────────────────────────────────────────────────────
 
@@ -76,9 +67,17 @@ function FindingsTab({ scanFilter, onClearFilter }) {
   }
 
   const handleRefresh = () => {
-    endpoints.vulnerabilities()
-      .then(r => setVulnerabilities(r.data))
-      .catch(e => addNotification(`Refresh failed: ${e.message}`, 'error'))
+    if (scanFilter) {
+      setLoadingFindings(true)
+      endpoints.getScanFindings(scanFilter.id)
+        .then(r => setScanFindings(r.data))
+        .catch(() => setScanFindings([]))
+        .finally(() => setLoadingFindings(false))
+    } else {
+      endpoints.vulnerabilities()
+        .then(r => setVulnerabilities(r.data))
+        .catch(e => addNotification(`Refresh failed: ${e.message}`, 'error'))
+    }
   }
 
   return (
@@ -212,6 +211,14 @@ function FindingsTab({ scanFilter, onClearFilter }) {
                           </div>
                         )}
                         <div className="grid grid-cols-2 gap-3">
+                          {v.request_poc && (
+                            <div className="col-span-2">
+                              <div className="text-[10px] text-yellow-400 uppercase tracking-wider mb-1">Proof of Concept — Request</div>
+                              <pre className="text-xs text-yellow-200 font-mono whitespace-pre-wrap bg-bg-primary rounded p-2 overflow-x-auto border border-yellow-700/30">
+                                {v.request_poc}
+                              </pre>
+                            </div>
+                          )}
                           {v.evidence && (
                             <div>
                               <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Evidence</div>
@@ -226,11 +233,32 @@ function FindingsTab({ scanFilter, onClearFilter }) {
                               </pre>
                             </div>
                           )}
-                          {(v.why_selected || v.how_exploited) && (
+                          {(v.how_exploited || v.why_selected) && (
                             <div>
-                              <div className="text-[10px] text-blue-400 uppercase tracking-wider mb-1">Attack Intelligence</div>
-                              {v.why_selected && <p className="text-xs text-slate-300 mb-1"><strong className="text-slate-400">Why Selected:</strong> {v.why_selected}</p>}
-                              {v.how_exploited && <p className="text-xs text-slate-300"><strong className="text-slate-400">How Exploited:</strong> {v.how_exploited}</p>}
+                              <div className="text-[10px] text-blue-400 uppercase tracking-wider mb-1">How It Was Exploited</div>
+                              {v.how_exploited && <p className="text-xs text-slate-300 mb-1">{v.how_exploited}</p>}
+                              {v.why_selected && <p className="text-xs text-slate-400 italic"><strong className="not-italic text-slate-500">Why selected:</strong> {v.why_selected}</p>}
+                            </div>
+                          )}
+                          {v.how_validated && (
+                            <div>
+                              <div className="text-[10px] text-green-400 uppercase tracking-wider mb-1">
+                                How It Was Validated
+                                {v.validation_status && (
+                                  <span className={`ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold ${v.validation_status === 'confirmed' ? 'bg-green-900/40 text-green-300' : 'bg-yellow-900/40 text-yellow-300'}`}>
+                                    {v.validation_status}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-slate-300 whitespace-pre-wrap">{v.how_validated}</p>
+                            </div>
+                          )}
+                          {v.response_excerpt && (
+                            <div className="col-span-2">
+                              <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Response Excerpt</div>
+                              <pre className="text-xs text-slate-400 font-mono whitespace-pre-wrap bg-bg-primary rounded p-2 overflow-x-auto max-h-32">
+                                {v.response_excerpt}
+                              </pre>
                             </div>
                           )}
                           {(v.data_exposed || v.attacker_gains) && (
@@ -255,7 +283,7 @@ function FindingsTab({ scanFilter, onClearFilter }) {
                             </div>
                           )}
                           {v.reproduction_steps && (
-                            <div>
+                            <div className="col-span-2">
                               <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Reproduction Steps</div>
                               <pre className="text-xs text-slate-300 font-mono whitespace-pre-wrap">{v.reproduction_steps}</pre>
                             </div>
@@ -424,16 +452,28 @@ function ScanHistoryTab({ onViewFindings }) {
                   {s.completed_at ? relativeTime(s.completed_at) : '—'}
                 </td>
                 <td className="px-3 py-2.5 text-slate-400">
-                  {(s.findings_count ?? s.findings ?? 0) > 0 ? (
-                    <button
-                      className="text-accent-primary hover:underline tabular-nums"
-                      onClick={e => { e.stopPropagation(); onViewFindings(s) }}
-                    >
-                      {s.findings_count ?? s.findings}
-                    </button>
-                  ) : (
-                    <span>0</span>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {(s.findings_count ?? s.findings ?? 0) > 0 ? (
+                      <button
+                        className="text-accent-primary hover:underline tabular-nums"
+                        onClick={e => { e.stopPropagation(); onViewFindings(s) }}
+                      >
+                        {s.findings_count ?? s.findings}
+                      </button>
+                    ) : (
+                      <span>0</span>
+                    )}
+                    {(s.findings_count ?? s.findings ?? 0) > 0 && (
+                      <Link
+                        to={`/chains/${s.id}`}
+                        className="p-1 rounded hover:bg-white/10 text-slate-500 hover:text-accent-primary transition-colors"
+                        onClick={e => e.stopPropagation()}
+                        title="View Exploit Chain"
+                      >
+                        <Zap size={11} />
+                      </Link>
+                    )}
+                  </div>
                 </td>
                 <td className="px-3 py-2.5 w-28">
                   {s.status === 'running' ? (

@@ -239,7 +239,7 @@ def test_get_chain_feedback_scores_empty_when_disconnected():
 def test_graph_parser_has_verify_stats_neo4j_status():
     """The 'graph' parser must expose verify, stats, neo4j-status subcommands."""
     import sys
-    from oneinfinity import build_parser
+    from oneinfinity.cli.main import build_parser
 
     p = build_parser()
     args_verify = p.parse_args(["graph", "verify"])

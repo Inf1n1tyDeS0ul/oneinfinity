@@ -4,7 +4,7 @@ import time
 import pytest
 
 def reset_mgr():
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     dm._manager = None
 
 def test_write_calls_dbmanager_sync_save_scan(tmp_path, monkeypatch):
@@ -13,7 +13,7 @@ def test_write_calls_dbmanager_sync_save_scan(tmp_path, monkeypatch):
     monkeypatch.setattr("path_manager.db_path", lambda name: tmp_path / name)
     reset_mgr()
 
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     saved = []
 
     def capture_save(self, scan):
@@ -47,7 +47,7 @@ def test_write_falls_back_to_json_when_dbmanager_fails(tmp_path, monkeypatch, ca
     monkeypatch.setattr("path_manager.db_path", lambda name: tmp_path / name)
     reset_mgr()
 
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
 
     def raise_error(self, scan):
         raise RuntimeError("DB unavailable")

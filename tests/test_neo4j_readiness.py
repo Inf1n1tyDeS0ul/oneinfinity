@@ -654,10 +654,10 @@ class TestPhase8CliDockerParity:
         return open(os.path.join(self.BASE, rel_path)).read()
 
     def test_cli_uses_attack_graph_core(self):
-        """oneinfinity.py must reference attack_graph_core (graph init present in CLI)."""
-        src = self._read("oneinfinity.py")
+        """main.py must reference attack_graph (graph init present in CLI)."""
+        src = self._read("src/oneinfinity/cli/main.py")
         assert "attack_graph" in src, \
-            "oneinfinity.py does not reference attack_graph_core — CLI has no graph integration"
+            "main.py does not reference attack_graph — CLI has no graph integration"
 
     def test_docker_delegates_to_cli(self):
         """docker-entrypoint.sh must invoke oneinfinity (no parallel implementation)."""
@@ -667,7 +667,7 @@ class TestPhase8CliDockerParity:
 
     def test_worker_uses_same_graph_module(self):
         """worker/executor.py must delegate to graph-backed modules (no parallel graph impl)."""
-        src = self._read("worker/executor.py")
+        src = self._read("src/oneinfinity/worker/executor.py")
         # Worker delegates to exploit_chains or unified_scan_engine, both of which
         # use attack_graph_core internally. Direct import is not required.
         assert (
@@ -679,7 +679,7 @@ class TestPhase8CliDockerParity:
 
     def test_no_parallel_graph_engine_in_worker_or_docker(self):
         """Neither worker/executor.py nor docker-entrypoint.sh may define their own AttackGraphEngine."""
-        for path in ("worker/executor.py", "docker-entrypoint.sh"):
+        for path in ("src/oneinfinity/worker/executor.py", "docker-entrypoint.sh"):
             src = self._read(path)
             assert "class AttackGraphEngine" not in src, (
                 f"{path} defines its own AttackGraphEngine — parallel graph implementation found"

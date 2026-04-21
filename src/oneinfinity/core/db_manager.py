@@ -34,32 +34,80 @@ log = logging.getLogger("oneinfinity.db_manager")
 _manager: Optional["DBManager"] = None
 _manager_lock = threading.Lock()
 
+# ── Persistent DB loop ────────────────────────────────────────────────────────
+# A single background thread runs _DB_LOOP indefinitely.
+# All sync→async DB calls use run_coroutine_threadsafe() to submit work here.
+# This avoids:
+#   1. Shared event loop contention ('already running' errors)
+#   2. Pool-loop mismatch (pool created in one loop, used in another)
+#   3. threading.Lock held across await (deadlocks under concurrent callers)
+_DB_LOOP: Optional[asyncio.AbstractEventLoop] = None
+_DB_LOOP_THREAD: Optional[threading.Thread] = None
+_DB_LOOP_LOCK = threading.Lock()
+
+
+def _ensure_db_loop() -> asyncio.AbstractEventLoop:
+    """Return the singleton DB background loop, starting it if necessary."""
+    global _DB_LOOP, _DB_LOOP_THREAD
+    if _DB_LOOP is not None and not _DB_LOOP.is_closed():
+        return _DB_LOOP
+    with _DB_LOOP_LOCK:
+        if _DB_LOOP is None or _DB_LOOP.is_closed():
+            loop = asyncio.new_event_loop()
+            _DB_LOOP = loop
+            t = threading.Thread(
+                target=loop.run_forever,
+                name="oneinfinity-db-loop",
+                daemon=True,
+            )
+            _DB_LOOP_THREAD = t
+            t.start()
+    return _DB_LOOP
+
+
+def _submit_to_db_loop(coro, timeout: float = 15.0):
+    """Submit a coroutine to the persistent DB loop and wait for the result."""
+    loop = _ensure_db_loop()
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result(timeout=timeout)
+
 
 async def get_db_manager() -> "DBManager":
     """Return the singleton DBManager, initialising it on first call."""
     global _manager
     if _manager is not None:
         return _manager
-    with _manager_lock:
+    # Only one coroutine runs here at a time (single DB loop) — lock for safety
+    acquired = _manager_lock.acquire(timeout=10)
+    if not acquired:
+        for _ in range(20):
+            await asyncio.sleep(0.1)
+            if _manager is not None:
+                return _manager
+        return _manager
+    try:
         if _manager is None:
             _manager = DBManager()
             await _manager._init()
+    finally:
+        _manager_lock.release()
     return _manager
 
 
 def get_db_manager_sync() -> "DBManager":
-    """Sync wrapper for CLI — creates a new event loop if needed."""
+    """
+    Sync wrapper: returns the DBManager singleton.
+    Fast-path: already initialised → immediate return (no I/O, no locks).
+    Slow-path: submits async init to the persistent DB background loop via
+    run_coroutine_threadsafe() — safe to call from any thread at any time.
+    """
+    global _manager
+    if _manager is not None:
+        return _manager
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # Already inside an async context — create a new loop in a thread
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(asyncio.run, get_db_manager())
-                return future.result()
-        return loop.run_until_complete(get_db_manager())
-    except RuntimeError:
-        return asyncio.run(get_db_manager())
+        return _submit_to_db_loop(get_db_manager(), timeout=15.0)
+    except Exception:
+        return _manager  # may be None; callers must handle
 
 
 class DBManager:
@@ -854,6 +902,7 @@ class DBManager:
     async def save_target(self, data: dict) -> dict:
         """Upsert a target row. Returns the stored dict."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("save_target requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -886,6 +935,7 @@ class DBManager:
 
     async def get_target(self, target_id: str) -> Optional[dict]:
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("get_target requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -904,7 +954,7 @@ class DBManager:
 
     async def list_targets(self) -> list:
         if self.mode not in ("distributed", "postgres"):
-            raise RuntimeError("list_targets requires Postgres mode")
+            return []
         try:
             async with self._pg_pool.connection() as conn:
                 rows = await conn.execute(
@@ -922,6 +972,7 @@ class DBManager:
 
     async def delete_target(self, target_id: str) -> bool:
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("delete_target requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -937,6 +988,7 @@ class DBManager:
     async def update_target_status(self, target_id: str, status: str,
                                    last_scan_time: str = None) -> None:
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("update_target_status requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -951,6 +1003,7 @@ class DBManager:
 
     async def update_target_vuln_count(self, target_id: str, count: int) -> None:
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("update_target_vuln_count requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -967,6 +1020,7 @@ class DBManager:
     async def save_research_session(self, data: dict) -> None:
         """Upsert a research session row."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("save_research_session requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1013,6 +1067,7 @@ class DBManager:
     async def get_research_session(self, session_id: str) -> Optional[dict]:
         """Return one research session row as a dict, or None."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("get_research_session requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1030,6 +1085,7 @@ class DBManager:
     async def list_research_sessions(self, target: str = None) -> list:
         """List research sessions, optionally filtered by target."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("list_research_sessions requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1045,7 +1101,13 @@ class DBManager:
                     )
                 result = []
                 async for row in rows:
-                    result.append(dict(row))
+                    # psycopg3 Row is a named-tuple; dict() interprets it as an
+                    # iterable of values, not key-value pairs, causing a TypeError.
+                    # Use _mapping (Mapping view) which dict() accepts correctly.
+                    try:
+                        result.append(dict(row._mapping))
+                    except AttributeError:
+                        result.append(dict(zip([d.name for d in rows.description], row)))
                 return result
         except Exception as exc:
             log.warning("DBManager.list_research_sessions failed: %s", exc)
@@ -1054,6 +1116,7 @@ class DBManager:
     async def save_research_theory(self, data: dict) -> None:
         """Insert a vulnerability theory (idempotent — ON CONFLICT DO NOTHING)."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("save_research_theory requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1089,6 +1152,7 @@ class DBManager:
     ) -> None:
         """Update the status and updated_at timestamp of a vulnerability theory."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("update_research_theory_status requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1105,6 +1169,7 @@ class DBManager:
     async def save_test_outcome(self, data: dict) -> None:
         """Insert one test outcome row (every outcome is a new row — no upsert)."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("save_test_outcome requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1140,6 +1205,7 @@ class DBManager:
     async def save_research_discovery(self, data: dict) -> None:
         """Upsert a confirmed vulnerability discovery."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("save_research_discovery requires Postgres mode")
         try:
             steps = data.get("steps", [])
@@ -1193,6 +1259,7 @@ class DBManager:
     async def list_research_discoveries(self, session_id: str = None) -> list:
         """List confirmed discoveries, optionally filtered by session_id."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("list_research_discoveries requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1217,6 +1284,7 @@ class DBManager:
     async def upsert_cross_target_pattern(self, data: dict) -> None:
         """Insert or atomically increment success_count for a cross-target pattern."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("upsert_cross_target_pattern requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1245,6 +1313,7 @@ class DBManager:
     async def get_cross_target_patterns(self, min_count: int = 2) -> list:
         """Return patterns with success_count >= min_count, ordered by frequency."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("get_cross_target_patterns requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1271,6 +1340,7 @@ class DBManager:
         the original INSERT (start_session call).
         """
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("save_learning_session requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1305,6 +1375,7 @@ class DBManager:
     async def get_learning_session(self, session_id: str) -> Optional[dict]:
         """Return one learning session row as a dict, or None."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("get_learning_session requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1322,6 +1393,7 @@ class DBManager:
     async def list_learning_sessions(self, limit: int = 10) -> list:
         """Return the most recent learning sessions, newest first."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("list_learning_sessions requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1340,6 +1412,7 @@ class DBManager:
     async def save_learning_finding(self, data: dict) -> None:
         """Insert one learning finding row (every finding is a new row)."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("save_learning_finding requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1378,6 +1451,7 @@ class DBManager:
         DO UPDATE SET before applying the increment.
         """
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("record_tool_run requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1420,6 +1494,7 @@ class DBManager:
     ) -> list:
         """Return top tools for a vuln_type ordered by findings/run ratio."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("get_best_tool_for_vuln requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1450,6 +1525,7 @@ class DBManager:
     async def upsert_target_profile(self, data: dict) -> None:
         """Upsert a target profile, atomically incrementing scan_count."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("upsert_target_profile requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1483,6 +1559,7 @@ class DBManager:
     async def get_target_profile(self, domain: str) -> Optional[dict]:
         """Return one target profile row as a dict, or None."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("get_target_profile requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1501,6 +1578,7 @@ class DBManager:
         """Upsert a vulnerability pattern, atomically incrementing occurrence_count
         and updating the weighted average CVSS score."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("upsert_pattern requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1535,6 +1613,7 @@ class DBManager:
     async def get_patterns_for_tech_stack(self, tech_stack_key: str) -> list:
         """Return patterns for a tech_stack_key, highest frequency first."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("get_patterns_for_tech_stack requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1554,6 +1633,7 @@ class DBManager:
     async def get_learning_stats(self) -> dict:
         """Return aggregated learning statistics (sessions, findings, targets, top vulns/tools)."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("get_learning_stats requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1612,6 +1692,7 @@ class DBManager:
     async def list_tool_performance(self) -> list:
         """Return all tool_performance rows with computed EMA (success rate)."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("list_tool_performance requires Postgres mode")
         try:
             async with self._pg_pool.connection() as conn:
@@ -1640,20 +1721,12 @@ class DBManager:
     # ── Sync wrappers for CLI ─────────────────────────────────────────────────
 
     @staticmethod
-    def _run_sync(coro):
-        """Run a coroutine synchronously, creating a new event loop if needed."""
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                    return ex.submit(asyncio.run, coro).result()
-            if loop.is_closed():
-                raise RuntimeError("loop is closed")
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return loop.run_until_complete(coro)
+    def _run_sync(coro, timeout: float = 15.0):
+        """
+        Run a coroutine synchronously via the persistent DB background loop.
+        Safe to call from any thread (including asyncio thread-pool threads).
+        """
+        return _submit_to_db_loop(coro, timeout=timeout)
 
     def sync_save_finding(self, finding: dict) -> str:
         return self._run_sync(self.save_finding(finding))
@@ -1672,6 +1745,7 @@ class DBManager:
     async def pg_execute_write(self, sql: str, params: tuple = ()) -> int:
         """Execute a write statement against PG. Returns rowcount. Raises if not PG mode."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("pg_execute_write requires Postgres mode")
         async with self._pg_pool.connection() as conn:
             result = await conn.execute(sql, params)
@@ -1681,6 +1755,7 @@ class DBManager:
     async def pg_execute_read(self, sql: str, params: tuple = ()) -> list:
         """Execute a SELECT against PG. Returns list of row dicts."""
         if self.mode not in ("distributed", "postgres"):
+            # Postgres not available
             raise RuntimeError("pg_execute_read requires Postgres mode")
         async with self._pg_pool.connection() as conn:
             cursor = await conn.execute(sql, params)

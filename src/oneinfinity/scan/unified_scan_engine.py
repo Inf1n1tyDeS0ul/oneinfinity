@@ -703,7 +703,7 @@ class UnifiedScanEngine:
     def _phase_graph_update(self, session: ScanSession, ctx: dict) -> None:
         """Push recon findings into the attack graph brain with explicit edge types."""
         try:
-            from oneinfinity.attack_graph_brain import get_brain
+            from oneinfinity.intelligence.attack_graph_brain import get_brain
         except ImportError as exc:
             raise RuntimeError("AttackGraphBrain unavailable: " + str(exc)) from exc
 

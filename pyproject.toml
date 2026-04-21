@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oneinfinity"
-version = "0.1.0"
+version = "2.0.0"
 description = "AI-powered offensive security research framework for bug bounty hunting and penetration testing"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -13,41 +13,42 @@ dependencies = [
     # HTTP & networking
     "requests>=2.31.0",
     "urllib3>=2.0.0",
-
     # HTML parsing
     "beautifulsoup4>=4.12.0",
-
     # System utilities
     "psutil>=5.9.0",
     "tqdm>=4.66.0",
     "rich>=13.7.0",
-
     # Config & data
     "pyyaml>=6.0.0",
     "sqlparse>=0.4.4",
     "pandas>=2.1.0",
-
     # Crypto (JWT, hashing)
     "cryptography>=42.0.0",
-
     # Graph analysis (attack graph)
     "networkx>=3.2.1",
     "matplotlib>=3.8.0",
-
     # Report generation (PDF)
     "fpdf2>=2.7.0",
-
-    # PostgreSQL
+    # PostgreSQL — required for distributed/multi-worker mode
+    # If install fails, try: pip install "psycopg[binary]" (needs libpq-dev on Linux)
     "psycopg[binary,pool]",
-
-    # Cache / messaging
+    # Cache / messaging — required for distributed mode
     "redis>=5.0.0",
-
-    # Optional Neo4j graph backend (enabled via config/graph.yaml)
+    # Neo4j graph backend (enabled via config/graph.yaml)
     "neo4j>=5.14.0",
+    "uvicorn>=0.44.0",
+    "fastapi[standard]>=0.136.0",
+    "playwright>=1.58.0",
 ]
 
 [project.optional-dependencies]
+# Distributed scanning backend (already in core deps above, kept for compat)
+distributed = [
+    "psycopg[binary,pool]",
+    "redis>=5.0.0",
+]
+
 ai = [
     # AI Red Teaming frameworks
     "adversarial-robustness-toolbox>=1.17.0",
@@ -84,7 +85,7 @@ web = [
 ]
 
 dev = [
-    "oneinfinity[ai,mobile,web]",
+    "oneinfinity[ai,mobile,web,distributed]",
 ]
 
 [project.scripts]

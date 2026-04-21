@@ -2,18 +2,8 @@ import React, { useState, useEffect } from 'react'
 import { Cpu, RefreshCw, Play } from 'lucide-react'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
+import { relativeTime } from '../utils/time'
 import clsx from 'clsx'
-
-function relativeTime(iso) {
-  if (!iso) return '—'
-  const diff = Date.now() - new Date(iso).getTime()
-  const mins = Math.floor(diff / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
-  const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return `${hrs}h ago`
-  return `${Math.floor(hrs / 24)}d ago`
-}
 
 const TIER_COLORS = { FAST: 'text-green-400', STANDARD: 'text-yellow-400', PREMIUM: 'text-red-400', 1: 'text-green-400', 2: 'text-yellow-400', 3: 'text-red-400' }
 const CATEGORIES = ['web_recon', 'vulnerability_scan', 'exploit', 'ai_analysis', 'report', 'general']

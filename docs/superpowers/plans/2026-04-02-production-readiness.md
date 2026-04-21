@@ -1032,7 +1032,7 @@ git commit -m "fix: add Redis and Worker services to default docker-compose.yml"
 - [ ] **Step 1: Find current Python version**
 
 ```bash
-grep "FROM python" /home/devendra-yadav/oneinfinity/Dockerfile | head -5
+grep "FROM python" /path/to/oneinfinity/Dockerfile | head -5
 ```
 
 - [ ] **Step 2: Replace Python 3.11 with 3.13**
@@ -1240,7 +1240,7 @@ git commit -m "fix: replace unbounded SCANS/VULNERABILITIES dicts with bounded L
 - [ ] **Step 1: Find the findings endpoint**
 
 ```bash
-grep -n "def.*findings\|@app.get.*findings\|@app.get.*vulnerabilities" /home/devendra-yadav/oneinfinity/web/backend/main.py | head -10
+grep -n "def.*findings\|@app.get.*findings\|@app.get.*vulnerabilities" /path/to/oneinfinity/web/backend/main.py | head -10
 ```
 
 - [ ] **Step 2: Ensure the findings endpoint reads from SQLite, not only in-memory**
@@ -1575,7 +1575,7 @@ git commit -m "feat: implement 9 missing backend routes (cache, safety, waf/stat
 # tests/test_frontend_api.py
 import pathlib, re
 
-API_JS = pathlib.Path("/home/devendra-yadav/oneinfinity/web/frontend/src/utils/api.js").read_text()
+API_JS = pathlib.Path("/path/to/oneinfinity/web/frontend/src/utils/api.js").read_text()
 
 DEAD_ALIASES = ["cvssCalculate", "dedupCheck", "methodologyGet", "wafBypassPayloads"]
 
@@ -1608,8 +1608,8 @@ wafBypassPayloads: (w, t) => api.get(`/utilities/waf-bypass/${w}/${t}`),
 
 ```bash
 grep -r "cvssCalculate\|dedupCheck\|methodologyGet\|wafBypassPayloads" \
-  /home/devendra-yadav/oneinfinity/web/frontend/src/pages/ \
-  /home/devendra-yadav/oneinfinity/web/frontend/src/components/
+  /path/to/oneinfinity/web/frontend/src/pages/ \
+  /path/to/oneinfinity/web/frontend/src/components/
 ```
 Expected: No matches (confirmed by Claude Code audit — pages use `utilsCvss` etc.)
 
@@ -1865,7 +1865,7 @@ git commit -m "fix: ensure recursive watch handlers unregister on interruption, 
 - [ ] **Step 1: Find all silent except blocks**
 
 ```bash
-grep -n "except.*:\s*$\|except Exception.*:\s*$" /home/devendra-yadav/oneinfinity/unified_scan_engine.py | head -30
+grep -n "except.*:\s*$\|except Exception.*:\s*$" /path/to/oneinfinity/unified_scan_engine.py | head -30
 ```
 
 - [ ] **Step 2: Write regression test**
@@ -1877,7 +1877,7 @@ import ast, pathlib
 def test_no_bare_except_pass_in_unified_engine():
     """unified_scan_engine.py must not have bare except:pass that silently swallow errors."""
     src = pathlib.Path(
-        "/home/devendra-yadav/oneinfinity/unified_scan_engine.py"
+        "/path/to/oneinfinity/unified_scan_engine.py"
     ).read_text()
     tree = ast.parse(src)
     
@@ -2492,15 +2492,15 @@ git commit -m "fix: remove dead _HAS_URLLIB check, wire /metrics to real scan co
 - [ ] **Step 1: Identify files to move**
 
 ```bash
-ls /home/devendra-yadav/oneinfinity/*.py | grep -E "login|auth|debug|reproduce|insert|setup" 
-ls /home/devendra-yadav/oneinfinity/*.js | grep -E "debug|login"
-ls /home/devendra-yadav/oneinfinity/*.json | grep -E "api|postman|gc_|sc_"
+ls /path/to/oneinfinity/*.py | grep -E "login|auth|debug|reproduce|insert|setup" 
+ls /path/to/oneinfinity/*.js | grep -E "debug|login"
+ls /path/to/oneinfinity/*.json | grep -E "api|postman|gc_|sc_"
 ```
 
 - [ ] **Step 2: Create archive directory and move files**
 
 ```bash
-mkdir -p /home/devendra-yadav/oneinfinity/scripts/archived
+mkdir -p /path/to/oneinfinity/scripts/archived
 cd /home/devendra-yadav/oneinfinity
 
 # Move dev scripts
@@ -2519,7 +2519,7 @@ done
 - [ ] **Step 3: Add to .gitignore**
 
 ```bash
-cat >> /home/devendra-yadav/oneinfinity/.gitignore << 'EOF'
+cat >> /path/to/oneinfinity/.gitignore << 'EOF'
 # Postman collections (expose API surface)
 *_api.json
 gc_api.json

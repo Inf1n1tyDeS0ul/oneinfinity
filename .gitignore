@@ -139,3 +139,5 @@ web/frontend/build/
 
 # ── Local development workspaces ─────────────────────────────────────────────
 /core/
+# Added by code-review-graph
+.code-review-graph/

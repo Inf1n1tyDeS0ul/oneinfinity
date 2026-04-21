@@ -1,7 +1,7 @@
 # tests/test_secrets_config.py
 import pathlib
 
-ROOT = pathlib.Path("/home/devendra-yadav/oneinfinity")
+ROOT = pathlib.Path(__file__).parent.parent
 
 def test_no_changeme_in_compose():
     """Neither compose file should have changeme as a default value."""

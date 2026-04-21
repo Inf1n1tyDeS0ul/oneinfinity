@@ -73,7 +73,7 @@ Replace with:
 
 Restart the backend:
 ```bash
-cd /home/devendra-yadav/oneinfinity/web/backend && fuser -k 8000/tcp 2>/dev/null; python3 main.py &>/tmp/backend.log &
+cd /path/to/oneinfinity/web/backend && fuser -k 8000/tcp 2>/dev/null; python3 main.py &>/tmp/backend.log &
 sleep 4 && curl -s http://localhost:8000/health
 ```
 Expected: `{"status":"ok"}`
@@ -162,7 +162,7 @@ onClick={() => { setPreset(p.id); setUserPickedPreset(true) }}
 
 Run the frontend dev server if not running:
 ```bash
-cd /home/devendra-yadav/oneinfinity/web/frontend && npm run dev &>/tmp/frontend.log &
+cd /path/to/oneinfinity/web/frontend && npm run dev &>/tmp/frontend.log &
 ```
 Open `http://localhost:5173` (or wherever it runs). Go to the Scan page. Confirm a 5th "Custom" card appears in the Scope grid spanning the full width.
 

@@ -2,18 +2,8 @@ import React, { useState, useEffect, useRef } from 'react'
 import { Users, Play, RefreshCw, Trash2 } from 'lucide-react'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
+import { relativeTime } from '../utils/time'
 import clsx from 'clsx'
-
-function relativeTime(iso) {
-  if (!iso) return '—'
-  const diff = Date.now() - new Date(iso).getTime()
-  const mins = Math.floor(diff / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
-  const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return `${hrs}h ago`
-  return `${Math.floor(hrs / 24)}d ago`
-}
 
 const ALL_AGENTS = ['xss', 'sqli', 'ssrf', 'idor', 'auth', 'biz_logic', 'mobile', 'api']
 const SEV_COLORS = { critical: 'text-red-400', high: 'text-orange-400', medium: 'text-yellow-400', low: 'text-blue-400', info: 'text-slate-400' }

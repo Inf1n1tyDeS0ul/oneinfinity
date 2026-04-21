@@ -319,7 +319,7 @@ git commit -m "fix(sqli): raise time-blind threshold 4s→6s + subtract baseline
 - [ ] **Step 1: Find the SSRF wrapper**
 
 ```bash
-grep -n "ssrf\|SSRF\|oob\|OOB" /home/devendra-yadav/oneinfinity/modules/tool_wrappers.py | head -30
+grep -n "ssrf\|SSRF\|oob\|OOB" /path/to/oneinfinity/modules/tool_wrappers.py | head -30
 ```
 
 - [ ] **Step 2: Write failing test**
@@ -378,7 +378,7 @@ def tag_ssrf_confidence(finding: dict, oob_callback_received: bool) -> dict:
 - [ ] **Step 5: Find all SSRF finding emission sites in `tool_wrappers.py` and apply `tag_ssrf_confidence`**
 
 ```bash
-grep -n "ssrf\|SSRF" /home/devendra-yadav/oneinfinity/modules/tool_wrappers.py | grep -i "finding\|append\|emit\|result"
+grep -n "ssrf\|SSRF" /path/to/oneinfinity/modules/tool_wrappers.py | grep -i "finding\|append\|emit\|result"
 ```
 
 For each site that creates an SSRF finding dict and appends it to results, wrap it:

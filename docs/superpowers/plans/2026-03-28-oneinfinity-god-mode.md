@@ -26,7 +26,7 @@
 
 - [ ] **Step 1: Write the complete scaffold + supporting types**
 
-Create `/home/devendra-yadav/oneinfinity/god_mode_engine.py` with this exact content:
+Create `/path/to/oneinfinity/god_mode_engine.py` with this exact content:
 
 ```python
 """

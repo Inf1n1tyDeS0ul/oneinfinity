@@ -1,7 +1,8 @@
 # tests/test_cli_scan.py
-import subprocess, sys, os
+import subprocess, sys, os, pathlib
 
-ONEINFINITY = "/home/devendra-yadav/oneinfinity/oneinfinity.py"
+PROJECT_ROOT = pathlib.Path(__file__).parent.parent
+ONEINFINITY = str(PROJECT_ROOT / "oneinfinity")
 
 
 def test_scan_without_yes_warns_user():
@@ -10,7 +11,7 @@ def test_scan_without_yes_warns_user():
         [sys.executable, ONEINFINITY, "scan", "example.com"],
         capture_output=True,
         text=True,
-        cwd="/home/devendra-yadav/oneinfinity",
+        cwd=str(PROJECT_ROOT),
         input="n\n",
         timeout=15,
         env={**os.environ, "OI_AUTO_YES": ""},  # ensure auto-yes is off
@@ -38,7 +39,7 @@ def test_scan_without_yes_mentions_yes_flag():
         [sys.executable, ONEINFINITY, "scan", "example.com"],
         capture_output=True,
         text=True,
-        cwd="/home/devendra-yadav/oneinfinity",
+        cwd=str(PROJECT_ROOT),
         input="n\n",
         timeout=15,
         env={**os.environ, "OI_AUTO_YES": ""},

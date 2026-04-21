@@ -57,7 +57,7 @@
 - [ ] **Step 1: Install test dependencies**
 
 ```bash
-cd /home/devendra-yadav/oneinfinity/web/frontend
+cd /path/to/oneinfinity/web/frontend
 npm install --save-dev vitest @vitest/ui jsdom @testing-library/react @testing-library/jest-dom @testing-library/user-event
 ```
 
@@ -105,7 +105,7 @@ Open `package.json` and add to `"scripts"`:
 - [ ] **Step 5: Verify test runner works**
 
 ```bash
-cd /home/devendra-yadav/oneinfinity/web/frontend
+cd /path/to/oneinfinity/web/frontend
 npm test
 ```
 
@@ -114,7 +114,7 @@ Expected: "No test files found" (passes with 0 tests — confirms setup works).
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/devendra-yadav/oneinfinity/web/frontend
+cd /path/to/oneinfinity/web/frontend
 git add package.json vite.config.js src/test/setup.js
 git commit -m "chore: add Vitest + React Testing Library"
 ```
@@ -293,7 +293,7 @@ Also update the `body` rule in `@layer base` to use CSS variable text color:
 - [ ] **Step 3: Verify build still passes**
 
 ```bash
-cd /home/devendra-yadav/oneinfinity/web/frontend
+cd /path/to/oneinfinity/web/frontend
 npm run build 2>&1 | tail -5
 ```
 
@@ -347,7 +347,7 @@ test('reads existing localStorage value on mount', () => {
 - [ ] **Step 2: Run test to confirm it fails**
 
 ```bash
-cd /home/devendra-yadav/oneinfinity/web/frontend
+cd /path/to/oneinfinity/web/frontend
 npm test -- src/hooks/__tests__/useLocalStorage.test.js
 ```
 
@@ -1299,7 +1299,7 @@ export default function Layout({ children }) {
 - [ ] **Step 3: Verify the app renders**
 
 ```bash
-cd /home/devendra-yadav/oneinfinity/web/frontend
+cd /path/to/oneinfinity/web/frontend
 npm run dev &
 # Open http://localhost:3000 in browser
 # Verify: theme toggle button appears in header (sun/moon icon)
@@ -2210,7 +2210,7 @@ git commit -m "feat(intelligence): adaptive recon Why panel on Research and GodM
 - [ ] **Step 1: Run all tests**
 
 ```bash
-cd /home/devendra-yadav/oneinfinity/web/frontend
+cd /path/to/oneinfinity/web/frontend
 npm test
 ```
 

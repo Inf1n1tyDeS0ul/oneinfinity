@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from web.backend.main import app
 
 client = TestClient(app, raise_server_exceptions=False)
-ROOT = pathlib.Path("/home/devendra-yadav/oneinfinity")
+ROOT = pathlib.Path(__file__).parent.parent
 
 
 class TestSecurity:

@@ -1,7 +1,8 @@
 import pathlib
 
-API_JS = pathlib.Path(
-    "/home/devendra-yadav/oneinfinity/web/frontend/src/utils/api.js"
+PROJECT_ROOT = pathlib.Path(__file__).parent.parent
+API_JS = (
+    PROJECT_ROOT / "web/frontend/src/utils/api.js"
 ).read_text()
 
 DEAD_ALIASES = ["cvssCalculate", "dedupCheck", "methodologyGet", "wafBypassPayloads"]

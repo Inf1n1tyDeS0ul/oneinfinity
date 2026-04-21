@@ -16,7 +16,7 @@ def run(coro):
 
 
 def sqlite_mgr():
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     dm._manager = None
     mgr = dm.DBManager()
     mgr.mode = "sqlite"
@@ -24,7 +24,7 @@ def sqlite_mgr():
 
 
 def pg_mgr_with_mock_pool(rows_for_select=None):
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     dm._manager = None
     mgr = dm.DBManager()
     mgr.mode = "postgres"
@@ -98,7 +98,7 @@ def test_update_target_vuln_count_raises_in_sqlite_mode():
 # Shape and behavior tests
 
 def test_target_row_to_dict_returns_aliases():
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     dm._manager = None
     mgr = dm.DBManager()
     mgr.mode = "postgres"
@@ -162,7 +162,7 @@ def test_save_target_in_pg_mode_returns_dict():
             cursor.__aiter__ = lambda self=cursor: _empty()
         return cursor
 
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     dm._manager = None
     mgr = dm.DBManager()
     mgr.mode = "postgres"

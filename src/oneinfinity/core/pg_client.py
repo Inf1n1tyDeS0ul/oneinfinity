@@ -31,7 +31,12 @@ async def get_async_pool() -> Optional[object]:
     url = os.environ.get("POSTGRES_URL", "").strip()
     if not url:
         return None
-    with _pool_lock:
+    # Acquire with timeout to avoid deadlock: threading.Lock held across await
+    # causes concurrent callers to block forever without it.
+    acquired = _pool_lock.acquire(timeout=10)
+    if not acquired:
+        return _async_pool  # may be None if init is still in progress
+    try:
         if _async_pool is not None:
             return _async_pool
         try:
@@ -41,11 +46,11 @@ async def get_async_pool() -> Optional[object]:
                 min_size=2,
                 max_size=10,
                 open=False,
-                timeout=5.0,           # fail fast when pool is exhausted (vs 30s default)
-                reconnect_timeout=0,   # retry reconnections indefinitely (0 = no limit)
-                max_idle=300,          # recycle idle connections every 5 min
+                timeout=5.0,
+                reconnect_timeout=0,
+                max_idle=300,
             )
-            await pool.open()
+            await pool.open(wait=True, timeout=8)
             _async_pool = pool
             log.info("PostgreSQL async pool connected: %s", _safe_url(url))
             return _async_pool
@@ -54,6 +59,8 @@ async def get_async_pool() -> Optional[object]:
                 "FALLBACK TRIGGERED: PostgreSQL connection failed (%s) — Postgres unavailable", exc
             )
             return None
+    finally:
+        _pool_lock.release()
 
 
 def get_sync_conn() -> Optional[object]:

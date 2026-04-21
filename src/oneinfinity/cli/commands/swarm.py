@@ -134,11 +134,13 @@ def cmd_swarm_scan(args):
             return
 
     print(f"\n[*] Starting swarm scan against {target}...")
+    _out_file = getattr(args, "output", None) or None
     result = asyncio.run(run_swarm(
         target=target,
         context=context,
         concurrency=args.concurrency,
         agent_types=agent_types,
+        output_file=_out_file,
     ))
 
     # ── Enforcement: register module + publish findings to ingestion bus ───────

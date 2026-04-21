@@ -53,9 +53,24 @@
    - [4.4 API — DVAPI](#44-api--dvapi)
 5. [Advanced Features](#5-advanced-features)
 6. [CLI Reference (All Commands)](#6-cli-reference)
-7. [Web UI Guide](#7-web-ui-guide)
-8. [Troubleshooting](#8-troubleshooting)
-9. [Future Roadmap](#9-future-roadmap)
+### 7. Web UI Guide
+
+The One&Infinity Web UI is a high-performance React dashboard designed for real-time monitoring and control.
+
+#### Key Modules:
+- **Dashboard**: Real-time summary of scan activity (7-day trends), severity distribution, and target surface. Trends are calculated dynamically from the persistent `ResultIngestionEngine`.
+- **Exploit Chain Viewer**: Visualizes multi-step autonomous attacks. Features a selection screen for choosing specific scans and reconstructing their corresponding exploit paths from evidence JSONs.
+- **Traffic Explorer**: Live interception and inspection of all HTTP traffic. Supports advanced filtering by status code ranges (`status_min`/`status_max`) and source module.
+- **Secret Intelligence Dashboard**: AI-validated secret leak visualization. Integrates real-time liveness verification and severity scoring.
+- **Bounty Hunter**: Autonomous multi-program monitoring. Now includes a full history of all past sessions via the `/api/hunter/sessions` endpoint.
+
+#### Data Consistency:
+The UI utilizes a centralized time utility (`src/utils/time.js`) that robustly handles Unix timestamps, ISO strings, and edge-case date formats from various backend engines, ensuring consistent "5m ago" style displays across the platform.
+
+#### Backend API (New Endpoints):
+- `GET /api/hunter/sessions` - Returns a sorted history of all bounty hunting sessions.
+- `GET /api/stats` - Returns dynamic statistics aggregated from both in-memory cache and persistent DB.
+- `GET /api/chains/{scan_id}` - Reconstructs autonomous exploit chains for a specific session.
 
 ---
 

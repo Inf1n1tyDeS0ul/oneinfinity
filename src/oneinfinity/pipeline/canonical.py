@@ -129,7 +129,7 @@ CANONICAL_PHASES: List[PhaseConfig] = [
                         "prototype_pollution", "clickjacking", "--yes"],
         output_file="swarm_findings.json",
         mandatory=True,
-        timeout_s=1200,
+        timeout_s=3600,
         pct_complete=58,
         waf_adapt=True,
         source_type="tool",

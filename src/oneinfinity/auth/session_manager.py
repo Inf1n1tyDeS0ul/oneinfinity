@@ -30,6 +30,7 @@ class LoginSession:
     mitmproxy_flow_path: str = ""
     expiry_detected_at: Optional[float] = None
     replayed_at: Optional[float] = None
+    warning: str = ""  # non-empty if session captured in a suspicious state
 
     def to_auth_config(self) -> dict:
         """Convert to the {session_cookie, bearer_token, auth_header} dict
@@ -67,9 +68,11 @@ class SessionManager:
         # Always save auto-path keyed by target
         auto_path = self._dir / f"auto-{_target_hash(session.target)}.json"
         auto_path.write_text(json.dumps(data, indent=2, default=str))
-        # If named, also save under the name
+        # If named, sanitize to a safe filename (strip URL schemes, replace path separators)
         if name:
-            named_path = self._dir / f"{name}.json"
+            import re as _re
+            safe_name = _re.sub(r"[^\w\-.]", "_", name)[:128]
+            named_path = self._dir / f"{safe_name}.json"
             named_path.write_text(json.dumps(data, indent=2, default=str))
         log.info("Session %s saved (target=%s, name=%s)", session.session_id, session.target, name)
 

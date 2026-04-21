@@ -199,6 +199,7 @@ class AgentSwarmCoordinator:
         self.concurrency    = concurrency
         self.agent_types    = agent_types or list(AgentType)
         self._sim_engine: Optional[Any] = None
+        self._partial_output_file: Optional[str] = None  # set by run_swarm() for incremental writes
         if _SIM_AVAILABLE:
             try:
                 self._sim_engine = AttackSimulationEngine(knowledge_base=self.knowledge_base)
@@ -297,7 +298,20 @@ class AgentSwarmCoordinator:
             async with semaphore:
                 try:
                     merged_ctx = {**context, **task.context}
-                    return await agent.run(task.target, merged_ctx)
+                    findings = await agent.run(task.target, merged_ctx)
+                    # Flush partial output after each agent so timeout doesn't lose everything
+                    if findings and self._partial_output_file:
+                        try:
+                            import json as _json, os as _os
+                            _all = list(_local_findings) + findings
+                            _tmp = self._partial_output_file + ".tmp"
+                            with open(_tmp, "w") as _fh:
+                                _json.dump({"findings": [vars(f) if hasattr(f, "__dict__") else f
+                                                         for f in _all], "partial": True}, _fh, default=str)
+                            _os.replace(_tmp, self._partial_output_file)
+                        except Exception as _fe:
+                            logger.debug("[Coordinator] Partial flush failed: %s", _fe)
+                    return findings
                 except Exception as exc:
                     logger.error("[Coordinator] Agent %s error: %s", agent.name, exc)
                     return []
@@ -598,6 +612,12 @@ class AgentSwarmCoordinator:
         if not _GRAPH_AVAILABLE:
             return None
         try:
+            asyncio.get_running_loop()
+            # Inside a running event loop — skip synchronous graph init to avoid deadlock
+            return None
+        except RuntimeError:
+            pass
+        try:
             return get_engine()
         except Exception:
             return None
@@ -606,6 +626,13 @@ class AgentSwarmCoordinator:
     def _try_load_kb():
         if not _KB_AVAILABLE:
             return None
+        try:
+            # Skip sync DB init when inside a running event loop — avoids deadlock
+            # (get_db_manager_sync() blocks the loop thread via future.result())
+            asyncio.get_running_loop()
+            return None
+        except RuntimeError:
+            pass
         try:
             return _get_learning_repo_sync()
         except Exception:
@@ -622,6 +649,7 @@ async def run_swarm(
     knowledge_base: Optional[Any] = None,
     concurrency:   int = AgentSwarmCoordinator.DEFAULT_CONCURRENCY,
     agent_types:   Optional[List[AgentType]] = None,
+    output_file:   Optional[str] = None,
 ) -> SwarmScanResult:
     """Top-level helper: create coordinator and run a full swarm scan."""
     coord = AgentSwarmCoordinator(
@@ -631,4 +659,6 @@ async def run_swarm(
         concurrency    = concurrency,
         agent_types    = agent_types,
     )
+    if output_file:
+        coord._partial_output_file = output_file
     return await coord.scan(target, context)

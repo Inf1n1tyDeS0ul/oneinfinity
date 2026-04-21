@@ -7,7 +7,7 @@ def test_get_redis_returns_none_when_no_url():
     with patch.dict(os.environ, {}, clear=True):
         # Reset module-level cache
         import importlib
-        import core.redis_client as rc
+        import oneinfinity.core.redis_client as rc
         rc._client = None
         rc._pool = None
         result = rc.get_redis()
@@ -16,7 +16,7 @@ def test_get_redis_returns_none_when_no_url():
 def test_get_redis_returns_none_when_unreachable():
     """get_redis() must return None (not raise) when Redis is unreachable."""
     with patch.dict(os.environ, {"REDIS_URL": "redis://localhost:19999/0"}):
-        import core.redis_client as rc
+        import oneinfinity.core.redis_client as rc
         rc._client = None
         rc._pool = None
         result = rc.get_redis()

@@ -15,7 +15,7 @@ def run(coro):
 
 
 def sqlite_mgr():
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     dm._manager = None
     mgr = dm.DBManager()
     mgr.mode = "sqlite"
@@ -23,7 +23,7 @@ def sqlite_mgr():
 
 
 def pg_mgr(rows=None):
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     dm._manager = None
     mgr = dm.DBManager()
     mgr.mode = "postgres"

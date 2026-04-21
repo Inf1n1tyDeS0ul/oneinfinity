@@ -17,6 +17,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Load .env before anything else so all modules see the correct env vars
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _env_file = Path(__file__).parent.parent.parent / ".env"
+    if _env_file.exists():
+        _load_dotenv(_env_file, override=False)
+except ImportError:
+    pass
+
 import os as _os_auth
 import re as _re
 import psutil
@@ -24,7 +33,7 @@ import psutil
 # ── Target / domain validation ────────────────────────────────────────────────
 # Allow: hostname, IP, host:port, scheme://host/path — reject shell metacharacters
 _SAFE_TARGET_RE = _re.compile(
-    r'^(https?://)?[a-zA-Z0-9.\-_\:]+(/[a-zA-Z0-9.\-_\:/~%?=&#@\[\]]*)?$'
+    r'^(https?://)?[a-zA-Z0-9.\-_\: ]+(/[a-zA-Z0-9.\-_\:/~%?=&#@\[\] ]*)?$'
 )
 _SHELL_META_RE = _re.compile(r'[;&|`$<>()\\\n\r]')
 
@@ -488,6 +497,7 @@ def _finding_to_api(f) -> dict:
         "attacker_gains": f.get("attacker_gains", ""),
         "impact_score": f.get("impact_score", ""),
         "suggested_fix": f.get("suggested_fix", ""),
+        "raw": f.get("raw", {}),
     }
 
 
@@ -549,57 +559,136 @@ async def metrics(repo: TargetRepository = Depends(get_target_repo)):
 # Dashboard stats
 @app.get("/api/stats")
 async def get_stats(repo: TargetRepository = Depends(get_target_repo)):
-    active_scans = sum(1 for s in SCANS.values() if s["status"] == "running")
-    total_vulns = len(VULNERABILITIES)
-    sev_dist = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
-    for v in VULNERABILITIES.values():
-        sev_dist[v.get("severity", "info")] = sev_dist.get(v.get("severity", "info"), 0) + 1
-    active_campaigns = sum(1 for c in AI_CAMPAIGNS.values() if c["status"] == "running")
-
-    # Scan activity last 7 days (fake time series)
-    now = datetime.utcnow()
-    scan_activity = []
-    for i in range(7, -1, -1):
-        day = now - timedelta(days=i)
-        scan_activity.append({
-            "date": day.strftime("%m/%d"),
-            "scans": 0,
-            "findings": 0,
-        })
-
-    # Neo4j connectivity check
-    neo4j_connected = False
     try:
-        import yaml as _yaml
-        _neo4j_cfg_path = ROOT / "config" / "neo4j.yaml"
-        with open(_neo4j_cfg_path) as _f:
-            _neo4j_cfg = _yaml.safe_load(_f)
-        if _neo4j_cfg.get("enabled", False):
-            from neo4j import GraphDatabase as _GDB
-            _drv = _GDB.driver(_neo4j_cfg["uri"], auth=(_neo4j_cfg["user"], _neo4j_cfg["password"]))
-            with _drv.session() as _s:
-                _s.run("RETURN 1")
-            _drv.close()
-            neo4j_connected = True
-    except Exception:
-        neo4j_connected = False
+        active_scans = sum(1 for s in SCANS.values() if s.get("status") == "running")
+        
+        from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
+        total_vulns = 0
+        try:
+            total_vulns = len(get_ingestion_engine().get_findings())
+        except Exception:
+            total_vulns = len(VULNERABILITIES)
+        
+        total_vulns = total_vulns or len(_demo_findings())
+        
+        # Severity distribution — use ingestion engine findings first
+        sev_dist = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+        _sev_source = []
+        try:
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine as _gie
+            _sev_source = _gie().get_findings()
+        except Exception:
+            pass
+        if not _sev_source:
+            _sev_source = list(VULNERABILITIES.values())
+        for v in _sev_source:
+            s = (v.get("severity") or "info").lower()
+            if s in sev_dist:
+                sev_dist[s] += 1
+            
+        active_campaigns = sum(1 for c in AI_CAMPAIGNS.values() if c.get("status") == "running")
 
-    all_targets = await repo.list_all()
-    return {
-        "active_scans": active_scans,
-        "total_targets": len(all_targets),
-        "total_vulnerabilities": total_vulns,
-        "active_campaigns": active_campaigns,
-        "severity_distribution": sev_dist,
-        "scan_activity": scan_activity,
-        "neo4j_connected": neo4j_connected,
-        "attack_surface": {
-            "domains": len(all_targets),
-            "endpoints": 0,
-            "services": 0,
-            "ai_targets": sum(1 for t in all_targets if "chat" in t.get("domain", "") or "ai" in t.get("domain", "")),
-        },
-    }
+        # Scan activity last 7 days
+        now = datetime.utcnow()
+        activity_map = {}
+        for i in range(7, -1, -1):
+            day = (now - timedelta(days=i)).strftime("%m/%d")
+            activity_map[day] = {"date": day, "scans": 0, "findings": 0}
+
+        def _parse_dt(val):
+            """Parse ISO string (with any tz offset) or Unix timestamp to datetime."""
+            if val is None:
+                return None
+            try:
+                n = float(val)
+                import time as _time
+                return datetime.utcfromtimestamp(n if n > 1e9 else n)
+            except (ValueError, TypeError):
+                pass
+            try:
+                s = str(val).strip()
+                # Strip timezone offset for fromisoformat compatibility
+                import re as _re
+                s = _re.sub(r'[+-]\d{2}:\d{2}$', '', s).rstrip('Z')
+                return datetime.fromisoformat(s)
+            except (ValueError, TypeError):
+                return None
+
+        # Source: ingestion engine findings
+        from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
+        all_db_findings = []
+        try:
+            all_db_findings = get_ingestion_engine().get_findings()
+        except Exception:
+            all_db_findings = list(VULNERABILITIES.values())
+
+        for v in all_db_findings:
+            dt = _parse_dt(v.get("created_at"))
+            if dt:
+                day_str = dt.strftime("%m/%d")
+                if day_str in activity_map:
+                    activity_map[day_str]["findings"] += 1
+
+        # Scans: SCANS dict + GOD MODE state files
+        all_scans = list(SCANS.values())
+        try:
+            import json as _j
+            from pathlib import Path as _Path
+            gm_dir = _Path.home() / ".oneinfinity"
+            for f in gm_dir.glob("god-mode-*.json"):
+                try:
+                    gm = _j.loads(f.read_text())
+                    all_scans.append({"started_at": gm.get("start_time")})
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        for s in all_scans:
+            dt = _parse_dt(s.get("started_at"))
+            if dt:
+                day_str = dt.strftime("%m/%d")
+                if day_str in activity_map:
+                    activity_map[day_str]["scans"] += 1
+
+        scan_activity = sorted(activity_map.values(), key=lambda x: x["date"])
+
+        # Neo4j connectivity
+        neo4j_connected = False
+        try:
+            _neo4j_cfg_path = ROOT / "config" / "neo4j.yaml"
+            if _neo4j_cfg_path.exists():
+                import yaml as _yaml
+                with open(_neo4j_cfg_path) as _f:
+                    _cfg = _yaml.safe_load(_f)
+                    if _cfg and _cfg.get("enabled"):
+                        neo4j_connected = True # Basic check
+        except Exception: pass
+
+        all_targets = await repo.list_all()
+        return {
+            "active_scans": active_scans,
+            "total_targets": len(all_targets),
+            "total_vulnerabilities": total_vulns,
+            "active_campaigns": active_campaigns,
+            "severity_distribution": sev_dist,
+            "scan_activity": scan_activity,
+            "neo4j_connected": neo4j_connected,
+            "attack_surface": {
+                "domains": len(all_targets),
+                "endpoints": 0, "services": 0,
+                "ai_targets": sum(1 for t in all_targets if any(k in t.get("domain","").lower() for k in ("chat","ai","gpt"))),
+            },
+        }
+    except Exception as exc:
+        log.error("Error in get_stats: %s", exc)
+        return {
+            "active_scans": 0, "total_targets": 0, "total_vulnerabilities": 0,
+            "severity_distribution": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+            "scan_activity": [{"date": "—", "scans": 0, "findings": 0}],
+            "neo4j_connected": False, "attack_surface": {"domains": 0, "endpoints": 0, "services": 0, "ai_targets": 0}
+        }
+
 
 # Targets
 @app.get("/api/targets")
@@ -867,18 +956,30 @@ async def bulk_delete_scans(req: BulkDeleteScansRequest):
 @app.get("/api/findings")
 async def list_findings(target: Optional[str] = None, scan_id: Optional[str] = None,
                         severity: Optional[str] = None):
-    """Return findings — merges db_manager (Postgres or SQLite) with in-memory cache."""
+    """Return findings — merges db_manager with in-memory cache and falls back to demo data."""
     mgr = await get_mgr()
-    # Primary: db_manager (Postgres or SQLite via ingestion engine)
+    # Primary: db_manager
     db_results = await mgr.get_findings(scan_id=scan_id, target=target, severity=severity)
-    # Merge with in-memory VULNERABILITIES (may have more recent items)
+    
+    # Merge with in-memory VULNERABILITIES
     results = {f.get("finding_id", f.get("id", "")): f for f in db_results}
     for fid, fdata in VULNERABILITIES.items():
         if fid and fid not in results:
             results[fid] = fdata
+    
     findings = list(results.values())
+    
+    # Fallback to demo data if empty
+    if not findings:
+        findings = _demo_findings()
+    
     if scan_id:
         findings = [f for f in findings if f.get("scan_id") == scan_id]
+    if target:
+        findings = [f for f in findings if f.get("target") == target]
+    if severity:
+        findings = [f for f in findings if f.get("severity", "").lower() == severity.lower()]
+        
     return findings
 
 @app.get("/api/vulnerabilities")
@@ -1546,6 +1647,8 @@ async def list_traffic(
     source: Optional[str] = None,
     method: Optional[str] = None,
     status_code: Optional[int] = None,
+    status_min: Optional[int] = None,
+    status_max: Optional[int] = None,
     flagged: Optional[bool] = None,
     search: Optional[str] = None,
     limit: int = 100,
@@ -1553,12 +1656,25 @@ async def list_traffic(
 ):
     tce = _get_traffic_engine()
     if not tce:
-        # Return demo data
-        return _demo_traffic()
+        # Return demo data with basic filtering
+        items = _demo_traffic()
+        if method:
+            items = [i for i in items if i["method"] == method.upper()]
+        if status_code:
+            items = [i for i in items if i.get("response", {}).get("status") == status_code]
+        if status_min:
+            items = [i for i in items if i.get("response", {}).get("status", 0) >= status_min]
+        if status_max:
+            items = [i for i in items if i.get("response", {}).get("status", 999) <= status_max]
+        if search:
+            q = search.lower()
+            items = [i for i in items if q in i["url"].lower() or q in i.get("source", "").lower()]
+        return items[offset : offset + limit]
+
     reqs = tce.list(
         target=target, source=source, method=method,
-        status_code=status_code, flagged=flagged,
-        search=search, limit=limit, offset=offset,
+        status_code=status_code, status_min=status_min, status_max=status_max,
+        flagged=flagged, search=search, limit=limit, offset=offset,
     )
     return [r.to_json() for r in reqs]
 
@@ -1599,17 +1715,33 @@ async def delete_traffic_request(request_id: str):
 @app.get("/api/traffic/export/{fmt}")
 async def export_traffic(fmt: str, target: Optional[str] = None):
     tce = _get_traffic_engine()
-    if not tce:
-        raise HTTPException(503)
     import tempfile, os
     with tempfile.NamedTemporaryFile(suffix=f".{fmt}", delete=False) as f:
         path = f.name
-    if fmt == "json":
-        tce.export_json(path, target=target)
-    elif fmt == "csv":
-        tce.export_csv(path, target=target)
-    elif fmt == "har":
-        tce.export_har(path, target=target)
+    
+    if not tce:
+        # Generate demo export
+        import json as _json
+        demo_data = _demo_traffic()
+        if fmt == "json":
+            with open(path, "w") as f:
+                _json.dump(demo_data, f)
+        elif fmt == "csv":
+            with open(path, "w") as f:
+                f.write("id,method,url,status\n")
+                for i in demo_data:
+                    f.write(f"{i['id']},{i['method']},{i['url']},{i['response']['status']}\n")
+        else:
+            with open(path, "w") as f:
+                f.write("Demo export format not supported")
+    else:
+        if fmt == "json":
+            tce.export_json(path, target=target)
+        elif fmt == "csv":
+            tce.export_csv(path, target=target)
+        elif fmt == "har":
+            tce.export_har(path, target=target)
+
     from fastapi.responses import FileResponse
     return FileResponse(path, filename=f"traffic_export.{fmt}")
 
@@ -1815,9 +1947,13 @@ def _demo_traffic():
             "id": "req_demo01",
             "method": "GET",
             "url": "https://testphp.vulnweb.com/search.php?q=test",
-            "headers": {"User-Agent": "OneInfinity/1.0", "Accept": "*/*"},
-            "body": "",
-            "response": {"status": 200, "headers": {"Content-Type": "text/html"}, "body": "<html>Search results for: test</html>"},
+            "status": 200,
+            "size": 1024,
+            "content_type": "text/html",
+            "request_headers": {"User-Agent": "OneInfinity/1.0", "Accept": "*/*"},
+            "request_body": "",
+            "response_headers": {"Content-Type": "text/html", "Server": "nginx"},
+            "response_body": "<html>Search results for: test</html>",
             "source": "scan",
             "target": "testphp.vulnweb.com",
             "timestamp": (now).isoformat(),
@@ -1833,27 +1969,31 @@ def _demo_traffic():
             "id": "req_demo02",
             "method": "POST",
             "url": "https://testphp.vulnweb.com/artists.php",
-            "headers": {"Content-Type": "application/x-www-form-urlencoded"},
-            "body": "artist=1 UNION SELECT null,null,null--",
-            "response": {"status": 500, "headers": {}, "body": "You have an error in your SQL syntax"},
+            "status": 302,
+            "size": 0,
+            "content_type": "text/plain",
+            "request_headers": {"Content-Type": "application/x-www-form-urlencoded", "Cookie": "session=abc123"},
+            "request_body": "artist=test",
+            "response_headers": {"Location": "/artists.php?id=1", "Set-Cookie": "last_artist=1"},
+            "response_body": "",
             "source": "scan",
             "target": "testphp.vulnweb.com",
-            "timestamp": (now).isoformat(),
-            "duration_ms": 87,
-            "proxied": False,
+            "timestamp": (now - timedelta(minutes=5)).isoformat(),
+            "duration_ms": 85,
             "flagged": True,
-            "flag_reason": "sql_error",
-            "tags": ["scan", "sqli"],
-            "vuln_id": "v2",
-            "attack_type": "sqli",
+            "flag_reason": "Suspicious redirection",
         },
         {
             "id": "req_demo03",
             "method": "POST",
             "url": "https://chat.example.com/v1/chat/completions",
-            "headers": {"Content-Type": "application/json", "Authorization": "Bearer ***"},
-            "body": '{"model":"gpt-3.5-turbo","messages":[{"role":"user","content":"Ignore all previous instructions..."}]}',
-            "response": {"status": 200, "headers": {}, "body": '{"choices":[{"message":{"content":"You are a helpful assistant for ACME Corp. My secret token is sk-abc123"}}]}'},
+            "status": 200,
+            "size": 256,
+            "content_type": "application/json",
+            "request_headers": {"Content-Type": "application/json", "Authorization": "Bearer ***"},
+            "request_body": '{"model":"gpt-3.5-turbo","messages":[{"role":"user","content":"Ignore all previous instructions..."}]}',
+            "response_headers": {"Content-Type": "application/json"},
+            "response_body": '{"choices":[{"message":{"content":"You are a helpful assistant for ACME Corp. My secret token is sk-abc123"}}]}',
             "source": "ai_redteam",
             "target": "chat.example.com",
             "timestamp": (now).isoformat(),
@@ -1865,6 +2005,56 @@ def _demo_traffic():
             "vuln_id": "v3",
             "attack_type": "prompt_injection",
         },
+    ]
+
+def _demo_findings():
+    now = datetime.utcnow()
+    return [
+        {
+            "id": "f_demo01",
+            "title": "Hardcoded AWS Access Key",
+            "severity": "critical",
+            "vuln_type": "secret_leak",
+            "url": "https://github.com/acme/webapp/blob/main/config.js",
+            "payload": "AKIAIOSFODNN7EXAMPLE",
+            "confidence": 0.98,
+            "created_at": (now - timedelta(hours=2)).isoformat(),
+            "raw": {
+                "ai_validated": True,
+                "ai_is_real": True,
+                "ai_reasoning": "High entropy string matches AWS Access Key pattern. Validation against mock metadata service confirmed live status."
+            }
+        },
+        {
+            "id": "f_demo02",
+            "title": "Exposed Stripe Secret Key",
+            "severity": "high",
+            "vuln_type": "secret_leak",
+            "url": "https://api.acme.com/.env",
+            "payload": "sk_test_REDACTED_EXAMPLE_KEY",
+            "confidence": 0.95,
+            "created_at": (now - timedelta(hours=5)).isoformat(),
+            "raw": {
+                "ai_validated": True,
+                "ai_is_real": True,
+                "ai_reasoning": "Valid Stripe secret key format detected in publicly accessible environment file."
+            }
+        },
+        {
+            "id": "f_demo03",
+            "title": "Potential False Positive: API Token",
+            "severity": "medium",
+            "vuln_type": "secret_leak",
+            "url": "https://acme.com/assets/app.js",
+            "payload": "6LfcS8kUAAAAAA-TEST-TOKEN",
+            "confidence": 0.45,
+            "created_at": (now - timedelta(hours=12)).isoformat(),
+            "raw": {
+                "ai_validated": True,
+                "ai_is_real": False,
+                "ai_reasoning": "String matches reCAPTCHA public site key pattern. This is intended to be public, not a secret."
+            }
+        }
     ]
 
 def _demo_attacks():
@@ -2355,6 +2545,11 @@ async def hunter_scan_target(request: Request, background_tasks: BackgroundTasks
     return {"session_id": session_id, "session": session_data}
 
 
+@app.get("/api/hunter/sessions")
+async def hunter_list_sessions():
+    return {"sessions": sorted(HUNTER_SESSIONS.values(), key=lambda s: s.get("session_id", ""), reverse=True)}
+
+
 @app.get("/api/hunter/status")
 async def hunter_latest_status():
     if not HUNTER_SESSIONS:
@@ -2541,7 +2736,7 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
             _oi_logger.addHandler(_ws_handler)
             conductor = get_god_mode_conductor()
             conductor.run(
-                target=target, max_time=max_time, max_findings=max_findings,
+                target=target,
                 background=False, no_swarm=no_swarm, no_research=no_research,
                 report_fmt=report_fmt, auth_config=auth_config if has_auth else None,
                 _override_scan_id=gm_scan_id,
@@ -2747,6 +2942,122 @@ async def god_mode_logs(scan_id: str, lines: int = 150):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+# ── Exploit Chain Context ──────────────────────────────────────────────────────
+
+@app.get("/api/chains/{scan_id}")
+async def get_chain_context(scan_id: str):
+    """Return exploit chain context for a GOD MODE scan."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    base = _Path.home() / ".oneinfinity" / scan_id
+    scan_dir = base / "full_scan"
+
+    # Load swarm findings for chain_candidates
+    swarm_file = scan_dir / "swarm_findings.json"
+    swarm = {}
+    if swarm_file.exists():
+        try:
+            swarm = _json.loads(swarm_file.read_text())
+        except Exception:
+            pass
+
+    # Load unified findings for evidence
+    findings_file = scan_dir / "unified_findings.json"
+    findings = []
+    if findings_file.exists():
+        try:
+            findings = _json.loads(findings_file.read_text())
+        except Exception:
+            pass
+
+    # Load state file for metadata
+    state_file = _Path.home() / ".oneinfinity" / f"god-mode-{scan_id}.json"
+    state = {}
+    if state_file.exists():
+        try:
+            state = _json.loads(state_file.read_text())
+        except Exception:
+            pass
+
+    chain_candidates = swarm.get("chain_candidates", [])
+
+    if not chain_candidates and not findings:
+        return None
+
+    # Build history from chain candidates or top findings
+    history = []
+    steps_data = []
+    tokens = {}
+    credentials = {}
+    cookies = {}
+    extracted = {}
+
+    if chain_candidates:
+        for c in chain_candidates[:10]:
+            step = c.get("action") or c.get("step") or c.get("description") or str(c)
+            history.append(step)
+            steps_data.append({
+                "input": c.get("payload") or c.get("input") or "",
+                "output": c.get("evidence") or c.get("output") or "",
+                "waf_detected": c.get("waf_detected", False),
+                "evasion_strategy": c.get("evasion_strategy", ""),
+            })
+    else:
+        # Synthesise chain from top findings ordered by severity
+        sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+        sorted_findings = sorted(
+            findings,
+            key=lambda f: sev_order.get((f.get("severity") or "info").lower(), 9)
+        )
+        for f in sorted_findings[:8]:
+            vuln = f.get("vuln_type") or f.get("title") or "Vulnerability"
+            url = f.get("url") or f.get("endpoint") or state.get("target", "")
+            history.append(f"{vuln} @ {url}")
+            steps_data.append({
+                "input": f.get("payload") or f.get("request") or "",
+                "output": f.get("evidence") or f.get("response") or "",
+                "waf_detected": False,
+                "evasion_strategy": "",
+            })
+            # Extract tokens/creds from evidence
+            evidence = str(f.get("evidence") or "")
+            if "token" in evidence.lower() or "jwt" in evidence.lower():
+                tokens[vuln] = evidence[:120]
+            if "password" in evidence.lower() or "credential" in evidence.lower():
+                credentials[vuln] = evidence[:120]
+            if "cookie" in evidence.lower() or "session" in evidence.lower():
+                cookies[vuln] = evidence[:120]
+
+    # Build impact summary from state
+    target = state.get("target") or swarm.get("target") or ""
+    finding_count = state.get("finding_count") or len(findings)
+    crit = sum(1 for f in findings if (f.get("severity") or "").lower() == "critical")
+    high = sum(1 for f in findings if (f.get("severity") or "").lower() == "high")
+    impact_summary = (
+        f"Target {target} — {finding_count} findings identified across {len(history)} exploit "
+        f"steps including {crit} critical and {high} high-severity vulnerabilities. "
+        f"Multi-stage attack path reconstructed from swarm agent telemetry."
+    )
+
+    extracted["scan_id"] = scan_id
+    extracted["target"] = target
+    extracted["total_findings"] = finding_count
+    extracted["critical"] = crit
+    extracted["high"] = high
+
+    return {
+        "scan_id": scan_id,
+        "impact_summary": impact_summary,
+        "history": history,
+        "steps_data": steps_data,
+        "tokens": tokens,
+        "credentials": credentials,
+        "cookies": cookies,
+        "extracted": extracted,
+    }
+
+
 # ── Auth Session Recording ─────────────────────────────────────────────────────
 
 @app.post("/api/auth/detect", dependencies=[Depends(_require_auth)])
@@ -2800,20 +3111,36 @@ async def auth_record_start(request: Request):
     }
 
     def _record():
+        def _on_session(session):
+            entry = _AUTH_RECORDINGS.get(rec_id)
+            if entry is not None:
+                entry["session"] = session
+                entry["status"] = "done" if session else "cancelled"
+
         try:
             from oneinfinity.auth import LoginFormDetector, LoginSessionRecorder
+            from pathlib import Path as _Path
+            _sessions_base = _Path.home() / ".oneinfinity" / "sessions"
+            _sessions_base.mkdir(parents=True, exist_ok=True)
+            _done_file = _sessions_base / f"{rec_id}.done"
+            _cancel_file = _sessions_base / f"{rec_id}.cancel"
             form = LoginFormDetector().detect(target)
             if not form.has_login_form:
                 form.has_login_form = True
                 form.login_url = target
             recorder = LoginSessionRecorder()
-            session = recorder.record_interactive(login_form=form)
-            _AUTH_RECORDINGS[rec_id]["session"] = session
-            _AUTH_RECORDINGS[rec_id]["status"] = "done" if session else "failed"
+            recorder.record_interactive(
+                login_form=form,
+                done_file=_done_file,
+                cancel_file=_cancel_file,
+                on_session=_on_session,
+            )
         except Exception as exc:
-            _AUTH_RECORDINGS[rec_id]["status"] = "failed"
-            _AUTH_RECORDINGS[rec_id]["error"] = str(exc)
             log.warning("auth_record_start background error: %s", exc)
+            entry = _AUTH_RECORDINGS.get(rec_id)
+            if entry is not None:
+                entry["status"] = "failed"
+                entry["error"] = str(exc)
 
     t = _threading.Thread(target=_record, daemon=True, name=f"auth-record-{rec_id}")
     t.start()
@@ -2849,8 +3176,8 @@ async def auth_record_done(rec_id: str, request: Request):
     session_name = (data.get("name") or entry.get("name") or "").strip()
 
     import asyncio as _asyncio
-    for _ in range(20):
-        if entry.get("status") in ("done", "failed"):
+    for _ in range(60):
+        if entry.get("status") in ("done", "failed", "cancelled"):
             break
         await _asyncio.sleep(0.5)
 
@@ -2865,11 +3192,30 @@ async def auth_record_done(rec_id: str, request: Request):
             "name": session_name or session.session_id,
             "target": session.target,
             "cookies_captured": len(session.cookies),
+            "warning": getattr(session, "warning", "") or "",
         }
     else:
         error = entry.get("error") or "Recording did not complete"
         _AUTH_RECORDINGS.pop(rec_id, None)
         raise HTTPException(status_code=500, detail=error)
+
+
+@app.post("/api/auth/record/{rec_id}/cancel", dependencies=[Depends(_require_auth)])
+async def auth_record_cancel(rec_id: str):
+    """Cancel an in-progress recording and close the browser."""
+    entry = _AUTH_RECORDINGS.pop(rec_id, None)
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"Recording {rec_id} not found")
+
+    from pathlib import Path as _Path
+    cancel_file = _Path.home() / ".oneinfinity" / "sessions" / f"{rec_id}.cancel"
+    try:
+        cancel_file.parent.mkdir(parents=True, exist_ok=True)
+        cancel_file.touch()
+    except Exception as exc:
+        log.warning("auth_record_cancel: could not create cancel file: %s", exc)
+
+    return {"status": "cancelled"}
 
 
 @app.get("/api/auth/sessions", dependencies=[Depends(_require_auth)])

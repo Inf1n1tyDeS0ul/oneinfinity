@@ -36,8 +36,8 @@ from .canonical import (
 
 log = logging.getLogger("oi.pipeline.executor")
 
-ROOT = Path(__file__).parent.parent  # project root
-CLI_SCRIPT = str(ROOT / "oneinfinity.py")
+ROOT = Path(__file__).parent.parent.parent.parent  # project root (src/oneinfinity/pipeline/ → up 4)
+CLI_SCRIPT = str(ROOT / "run.py")
 
 
 @dataclass
@@ -258,73 +258,76 @@ class CanonicalExecutor:
 
         all_findings: List[dict] = []
 
-        for phase_cfg in CANONICAL_PHASES:
-            pname = phase_cfg.name
-            pr = result.phases[pname]
+        try:
+            for phase_cfg in CANONICAL_PHASES:
+                pname = phase_cfg.name
+                pr = result.phases[pname]
 
-            # Skip check
-            if pname in self.skip_phases:
-                if phase_cfg.mandatory:
-                    pr.status = "failed"
-                    pr.error = "mandatory phase explicitly skipped"
-                    pr.meta["reason"] = "explicitly skipped (mandatory)"
-                    result.phases_failed.append(pname)
-                    self._emit(pname, phase_cfg.pct_complete, f"FAILED: {pname} — mandatory phase skipped")
-                else:
+                # Skip check
+                if pname in self.skip_phases:
+                    if phase_cfg.mandatory:
+                        pr.status = "failed"
+                        pr.error = "mandatory phase explicitly skipped"
+                        pr.meta["reason"] = "explicitly skipped (mandatory)"
+                        result.phases_failed.append(pname)
+                        self._emit(pname, phase_cfg.pct_complete, f"FAILED: {pname} — mandatory phase skipped")
+                    else:
+                        pr.status = "skipped"
+                        pr.meta["reason"] = "explicitly skipped"
+                        result.phases_skipped.append(pname)
+                        self._emit(pname, phase_cfg.pct_complete, f"Skipped (explicit): {pname}")
+                    continue
+
+                if waf_passive and phase_cfg.skip_on_waf_passive:
                     pr.status = "skipped"
-                    pr.meta["reason"] = "explicitly skipped"
+                    pr.meta["reason"] = "WAF passive mode — active testing disabled"
                     result.phases_skipped.append(pname)
-                    self._emit(pname, phase_cfg.pct_complete, f"Skipped (explicit): {pname}")
-                continue
+                    self._emit(pname, phase_cfg.pct_complete, f"Skipped (WAF passive): {pname}")
+                    log.info("[pipeline] Phase %s skipped: WAF passive mode", pname)
+                    continue
 
-            if waf_passive and phase_cfg.skip_on_waf_passive:
-                pr.status = "skipped"
-                pr.meta["reason"] = "WAF passive mode — active testing disabled"
-                result.phases_skipped.append(pname)
-                self._emit(pname, phase_cfg.pct_complete, f"Skipped (WAF passive): {pname}")
-                log.info("[pipeline] Phase %s skipped: WAF passive mode", pname)
-                continue
+                pr.status = "running"
+                pr.started_at = time.time()
+                self._emit(pname, max(phase_cfg.pct_complete - 5, 0), f"Starting: {phase_cfg.display_name}")
 
-            pr.status = "running"
-            pr.started_at = time.time()
-            self._emit(pname, max(phase_cfg.pct_complete - 5, 0), f"Starting: {phase_cfg.display_name}")
+                try:
+                    # OPTIMIZATION: If output file already exists (seeded or prior run), read it and skip execution
+                    fpath = out_path / phase_cfg.output_file
+                    if fpath.exists() and fpath.stat().st_size > 0:
+                        log.info("[pipeline] Phase %s output file exists — skipping execution and reading findings", pname)
+                        self._emit(pname, phase_cfg.pct_complete, f"Skipped: {phase_cfg.display_name} (using existing output)")
+                        findings = self._read_output_file(phase_cfg, out_path)
+                    else:
+                        findings = self._run_phase(phase_cfg, target, output_dir, result)
 
-            try:
-                # OPTIMIZATION: If output file already exists (seeded or prior run), read it and skip execution
-                fpath = out_path / phase_cfg.output_file
-                if fpath.exists() and fpath.stat().st_size > 0:
-                    log.info("[pipeline] Phase %s output file exists — skipping execution and reading findings", pname)
-                    self._emit(pname, phase_cfg.pct_complete, f"Skipped: {phase_cfg.display_name} (using existing output)")
-                    findings = self._read_output_file(phase_cfg, out_path)
-                else:
-                    findings = self._run_phase(phase_cfg, target, output_dir, result)
+                    # Normalize findings from this phase
+                    normalized = [
+                        normalize_finding(f, source_type=phase_cfg.source_type)
+                        for f in findings
+                    ]
+                    all_findings.extend(normalized)
+                    pr.findings = normalized
+                    pr.finding_count = len(normalized)
+                    pr.status = "completed"
+                    pr.ended_at = time.time()
+                    self._emit(pname, phase_cfg.pct_complete,
+                               f"Completed: {phase_cfg.display_name} ({pr.finding_count} findings, {pr.elapsed_s}s)")
+                    log.info("[pipeline][%s] Phase %s done: %d findings in %.1fs",
+                             run_id, pname, pr.finding_count, pr.elapsed_s)
 
-                # Normalize findings from this phase
-                normalized = [
-                    normalize_finding(f, source_type=phase_cfg.source_type)
-                    for f in findings
-                ]
-                all_findings.extend(normalized)
-                pr.findings = normalized
-                pr.finding_count = len(normalized)
-                pr.status = "completed"
-                pr.ended_at = time.time()
-                self._emit(pname, phase_cfg.pct_complete,
-                           f"Completed: {phase_cfg.display_name} ({pr.finding_count} findings, {pr.elapsed_s}s)")
-                log.info("[pipeline][%s] Phase %s done: %d findings in %.1fs",
-                         run_id, pname, pr.finding_count, pr.elapsed_s)
+                except Exception as exc:
+                    pr.status = "failed"
+                    pr.ended_at = time.time()
+                    pr.error = str(exc)
+                    result.phases_failed.append(pname)
+                    log.error("[pipeline][%s] Phase %s FAILED: %s", run_id, pname, exc)
+                    self._emit(pname, phase_cfg.pct_complete, f"FAILED: {pname} — {exc}")
 
-            except Exception as exc:
-                pr.status = "failed"
-                pr.ended_at = time.time()
-                pr.error = str(exc)
-                result.phases_failed.append(pname)
-                log.error("[pipeline][%s] Phase %s FAILED: %s", run_id, pname, exc)
-                self._emit(pname, phase_cfg.pct_complete, f"FAILED: {pname} — {exc}")
-
-                if phase_cfg.mandatory:
-                    log.warning("[pipeline] Mandatory phase %s failed — continuing anyway to maximize output", pname)
-                    # Continue rather than abort — collect whatever we can
+                    if phase_cfg.mandatory:
+                        log.warning("[pipeline] Mandatory phase %s failed — continuing anyway to maximize output", pname)
+                        # Continue rather than abort — collect whatever we can
+        finally:
+            self._cleanup_temp_files(out_path)
 
         # Deduplicate and finalize
         result.findings = deduplicate(all_findings)
@@ -339,6 +342,26 @@ class CanonicalExecutor:
         log.info("[pipeline][%s] Finished: %d unique findings, status=%s, elapsed=%.1fs",
                  run_id, len(result.findings), result.status, result.elapsed_s)
         return result
+
+    def _cleanup_temp_files(self, out_path: Path) -> None:
+        """Remove intermediate garbage and .tmp files from output directory."""
+        log.debug("[pipeline] Cleaning up temporary files in %s", out_path)
+        try:
+            # Remove nuclei temporary artifacts
+            for tmp in out_path.glob("*.tmp"):
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+            # Remove zero-byte files that sometimes appear during crash
+            for f in out_path.glob("*"):
+                if f.is_file() and f.stat().st_size == 0:
+                    try:
+                        f.unlink()
+                    except Exception:
+                        pass
+        except Exception as exc:
+            log.warning("[pipeline] Cleanup failed: %s", exc)
 
     # ------------------------------------------------------------------ #
     #  Phase dispatch
@@ -483,7 +506,21 @@ class CanonicalExecutor:
             if proc.returncode != 0:
                 log.warning("[subprocess] Exit %d for phase %s: %s",
                             proc.returncode, phase.name, proc.stderr[-300:])
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as _te:
+            try:
+                proc.kill()
+                proc.communicate(timeout=5)
+            except Exception:
+                pass
+            # Salvage any partial output written before the timeout
+            fpath = Path(output_dir) / phase.output_file
+            if fpath.exists() and fpath.stat().st_size > 0:
+                log.warning("[subprocess] Phase %s timed out after %ds — reading partial output",
+                            phase.name, timeout)
+                try:
+                    return self._read_output_file(phase, Path(output_dir))
+                except Exception:
+                    pass
             raise RuntimeError(f"Phase {phase.name} timed out after {timeout}s")
 
         # Read canonical output file to extract findings
@@ -1443,16 +1480,23 @@ class CanonicalExecutor:
         return all_findings
 
     def _write_outputs(self, result: PipelineResult, out: Path) -> None:
-        """Write unified findings and pipeline report."""
-        # Unified findings
-        (out / "unified_findings.json").write_text(
-            json.dumps(result.findings, indent=2, default=str)
+        """Write unified findings (deduplicated) and pipeline report."""
+        try:
+            from oneinfinity.findings.findings_utils import deduplicate_findings
+            deduped = deduplicate_findings(result.findings)
+        except Exception:
+            deduped = result.findings
+        log.info(
+            "Pipeline dedup: %d raw → %d unique findings",
+            len(result.findings), len(deduped),
         )
-        # Pipeline execution report
+        (out / "unified_findings.json").write_text(
+            json.dumps(deduped, indent=2, default=str)
+        )
         (out / "pipeline_report.json").write_text(
             json.dumps(result.to_dict(), indent=2, default=str)
         )
-        log.info("Pipeline outputs written to %s (unified=%d findings)", out, len(result.findings))
+        log.info("Pipeline outputs written to %s (unified=%d findings)", out, len(deduped))
 
     def _emit(self, phase: str, pct: int, msg: str) -> None:
         if self.on_progress:

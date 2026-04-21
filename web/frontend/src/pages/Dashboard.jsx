@@ -6,6 +6,7 @@ import {
 import { ShieldAlert, Target, Scan, Bot, TrendingUp, Activity, Plus, Play, Trash2, X, Smartphone, Upload, Globe, Cpu, Lock, CheckCircle2, ChevronDown, ChevronUp } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { endpoints } from '../utils/api'
+import { relativeTime } from '../utils/time'
 import clsx from 'clsx'
 
 const TARGET_TYPES = [
@@ -30,17 +31,6 @@ const CustomTooltip = ({ active, payload, label }) => {
       ))}
     </div>
   )
-}
-
-function relativeTime(iso) {
-  if (!iso) return 'Never'
-  const diff = Date.now() - new Date(iso).getTime()
-  const mins = Math.floor(diff / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
-  const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return `${hrs}h ago`
-  return `${Math.floor(hrs / 24)}d ago`
 }
 
 export default function Dashboard() {
@@ -136,13 +126,14 @@ export default function Dashboard() {
   }
 
   const handleScanTarget = async (target, authType, authValue) => {
-    const payload = { target: target.domain, scan_type: 'full' }
+    const targetVal = target.domain || target.target_value
+    const payload = { target: targetVal, scan_type: 'full' }
     if (authType === 'cookie' && authValue) payload.session_cookie = authValue
     if (authType === 'bearer' && authValue) payload.bearer_token = authValue
     if (authType === 'header' && authValue) payload.auth_header = authValue
     try {
       await endpoints.launchScan(payload)
-      addNotification(`Scan launched for ${target.domain}${authType !== 'none' ? ' (authenticated)' : ''}`, 'success')
+      addNotification(`Scan launched for ${targetVal}${authType !== 'none' ? ' (authenticated)' : ''}`, 'success')
     } catch (err) {
       addNotification(`Error: ${err.message}`, 'error')
     } finally {
@@ -156,6 +147,9 @@ export default function Dashboard() {
   const pieData = Object.entries(sevDist)
     .filter(([, v]) => v > 0)
     .map(([name, value]) => ({ name, value }))
+
+  // Fallback for Pie chart if empty
+  const displayPieData = pieData.length > 0 ? pieData : [{ name: 'none', value: 1 }]
 
   const recentScans = scans.slice(0, 5)
   const recentVulns = vulnerabilities.slice(0, 5)
@@ -219,8 +213,13 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="p-3 h-44">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={stats?.scan_activity || []}>
+            <ResponsiveContainer width="100%" height="100%" minWidth={100} minHeight={100}>
+              <AreaChart 
+                data={stats?.scan_activity && stats.scan_activity.length > 0 ? stats.scan_activity : [
+                  { date: '—', scans: 0, findings: 0 }
+                ]}
+                margin={{ top: 5, right: 5, left: -20, bottom: 0 }}
+              >
                 <defs>
                   <linearGradient id="colorScans" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#00d4ff" stopOpacity={0.3} />
@@ -250,11 +249,11 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="p-3 h-44 flex items-center justify-center">
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height="100%" minWidth={100} minHeight={100}>
               <PieChart>
-                <Pie data={pieData} cx="50%" cy="50%" innerRadius={45} outerRadius={65}
+                <Pie data={displayPieData} cx="50%" cy="50%" innerRadius={45} outerRadius={65}
                      dataKey="value" paddingAngle={3}>
-                  {pieData.map(entry => (
+                  {displayPieData.map(entry => (
                     <Cell key={entry.name} fill={SEV_COLORS[entry.name] || '#6b7280'} />
                   ))}
                 </Pie>

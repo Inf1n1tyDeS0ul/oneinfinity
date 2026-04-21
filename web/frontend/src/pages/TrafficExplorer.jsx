@@ -2,18 +2,8 @@ import React, { useState, useEffect } from 'react'
 import { Terminal, RefreshCw, Flag, Play, Download, ChevronDown, ChevronUp } from 'lucide-react'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
+import { relativeTime } from '../utils/time'
 import clsx from 'clsx'
-
-function relativeTime(iso) {
-  if (!iso) return '—'
-  const diff = Date.now() - new Date(iso).getTime()
-  const mins = Math.floor(diff / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
-  const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return `${hrs}h ago`
-  return `${Math.floor(hrs / 24)}d ago`
-}
 
 const METHOD_COLORS = {
   GET: 'text-cyan-400', POST: 'text-green-400', PUT: 'text-yellow-400',
@@ -78,10 +68,11 @@ export default function TrafficExplorer() {
   const handleExport = async (fmt) => {
     try {
       const r = await endpoints.exportTraffic(fmt, {})
-      const blob = new Blob([typeof r.data === 'string' ? r.data : JSON.stringify(r.data, null, 2)])
-      const url = URL.createObjectURL(blob)
+      const url = URL.createObjectURL(r.data)
       const a = document.createElement('a')
-      a.href = url; a.download = `traffic.${fmt}`; a.click()
+      a.href = url
+      a.download = `traffic_export.${fmt}`
+      a.click()
       URL.revokeObjectURL(url)
     } catch (e) {
       addNotification(`Export failed: ${e.message}`, 'error')

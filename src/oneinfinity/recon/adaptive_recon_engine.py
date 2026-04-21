@@ -1041,6 +1041,57 @@ def _gau_fetch(domain: str, timeout: int = 45) -> list[str]:
     return [l.strip() for l in out.splitlines() if l.strip()]
 
 
+def _python_crawl(base_url: str, depth: int = 2, timeout: int = 15) -> list[str]:
+    """Pure-Python BFS crawler — fallback when gau/katana are not installed."""
+    import re as _re
+    import ssl as _ssl
+    import urllib.request as _ur
+    import urllib.parse as _up
+
+    _ctx = _ssl.create_default_context()
+    _ctx.check_hostname = False
+    _ctx.verify_mode = _ssl.CERT_NONE
+
+    _link_re = _re.compile(
+        r"""(?:href|src|action|url)\s*[=:]\s*["'`]([^"'`\s>]{3,300})["'`]""",
+        _re.IGNORECASE,
+    )
+    _js_ep_re = _re.compile(
+        r"""["'`](/(?:api|v\d|graphql|auth|user|admin)[^\s"'`<>]{0,200})["'`]""",
+        _re.IGNORECASE,
+    )
+
+    parsed_base = _up.urlparse(base_url)
+    origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
+    visited: set[str] = set()
+    found: set[str] = set()
+    queue = [base_url]
+
+    for _ in range(depth):
+        next_queue: list[str] = []
+        for url in queue[:30]:
+            if url in visited:
+                continue
+            visited.add(url)
+            try:
+                req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with _ur.urlopen(req, timeout=timeout, context=_ctx) as resp:
+                    body = resp.read(512_000).decode("utf-8", errors="replace")
+            except Exception:
+                continue
+
+            for raw in _link_re.findall(body) + _js_ep_re.findall(body):
+                abs_url = _up.urljoin(origin, raw)
+                p = _up.urlparse(abs_url)
+                if p.netloc == parsed_base.netloc and abs_url not in visited:
+                    found.add(abs_url)
+                    if not abs_url.endswith((".js", ".css", ".png", ".jpg", ".gif", ".ico", ".woff", ".svg")):
+                        next_queue.append(abs_url)
+        queue = next_queue
+
+    return sorted(found)
+
+
 def _subfinder_enum(domain: str, timeout: int = 60) -> list[str]:
     if not _tool_available("subfinder"):
         return []
@@ -1334,6 +1385,17 @@ class AdaptiveReconEngine:
             all_urls.update(katana_urls)
             if katana_urls:
                 _ok(f"katana: {len(katana_urls)} URLs")
+
+        # Pure-Python fallback: crawl when gau/katana are unavailable
+        if not all_urls:
+            _info("Phase 3: gau/katana unavailable — falling back to Python crawler")
+            base = self._alive_hosts[0].get("url", f"https://{self.target}") if self._alive_hosts else (
+                self.target if self.target.startswith("http") else f"https://{self.target}"
+            )
+            fallback_urls = _python_crawl(base, depth=2, timeout=15)
+            all_urls.update(fallback_urls)
+            if fallback_urls:
+                _ok(f"python-crawl: {len(fallback_urls)} URLs")
 
         self._all_urls = self._filter_urls(sorted(all_urls))
         (self.output_dir / "urls.json").write_text(

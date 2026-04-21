@@ -1681,7 +1681,7 @@ git commit -m "feat(orchestration): add CLI fallback on auth/quota errors in _ca
 
 - [ ] **Step 1: Add new sections to `config/models.yaml`**
 
-Append to the end of `/home/devendra-yadav/oneinfinity/config/models.yaml`:
+Append to the end of `/path/to/oneinfinity/config/models.yaml`:
 
 ```yaml
 

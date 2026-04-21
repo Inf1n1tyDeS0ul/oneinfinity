@@ -1,10 +1,12 @@
 # tests/test_neo4j_sole_graph.py
 import pathlib
 
+PROJECT_ROOT = pathlib.Path(__file__).parent.parent
+
 def test_no_attack_graph_db_direct_writes_outside_fallback():
     """Graph code must not write to attack_graph.db when Neo4j is available.
     The SQLite path must be gated behind a fallback condition."""
-    src = pathlib.Path("/home/devendra-yadav/oneinfinity/attack_graph_brain.py").read_text()
+    src = (PROJECT_ROOT / "src/oneinfinity/intelligence/attack_graph_brain.py").read_text()
     # If attack_graph.db writes exist, they must be inside a fallback branch
     # This is a soft check — passes if SQLite is only used as fallback
     assert "sqlite3" not in src or "fallback" in src.lower() or "except" in src, \

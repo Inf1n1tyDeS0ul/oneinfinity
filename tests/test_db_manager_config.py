@@ -11,7 +11,7 @@ def run(coro):
         loop.close()
 
 def reset_mgr():
-    import core.db_manager as dm
+    import oneinfinity.core.db_manager as dm
     dm._manager = None
 
 def test_explicit_postgres_without_url_raises(monkeypatch):

@@ -101,6 +101,8 @@ class LoginSessionRecorder:
         login_form,
         har_dir: Path = _HAR_DIR,
         done_file: Optional[Path] = None,
+        cancel_file: Optional[Path] = None,
+        on_session=None,
     ):
         """Open headed browser — user logs in manually, then signals done."""
         try:
@@ -114,8 +116,18 @@ class LoginSessionRecorder:
         har_path = har_dir / f"{session_id}.har"
         done_file = done_file or (har_dir / f"{session_id}.done")
 
+        print(f"\n[DEBUG] record_interactive: session_id={session_id}")
+        print(f"[DEBUG] done_file={done_file}")
+        print(f"[DEBUG] cancel_file={cancel_file}")
         print(f"\n[*] Opening browser for manual login at: {login_form.login_url}")
         print(f"    Log in, then press ENTER here (or create file: {done_file})")
+
+        # Clean up any stale cancel file before launching so it doesn't fire immediately.
+        if cancel_file and cancel_file.exists():
+            try:
+                cancel_file.unlink(missing_ok=True)
+            except Exception:
+                pass
 
         try:
             with sync_playwright() as p:
@@ -126,32 +138,86 @@ class LoginSessionRecorder:
                     ignore_https_errors=True,
                 )
                 page = context.new_page()
-                page.goto(login_form.login_url, timeout=15000)
-
-                import threading
-                _done = threading.Event()
-
-                def _wait_key():
+                try:
+                    page.goto(login_form.login_url, timeout=60000, wait_until="domcontentloaded")
+                except Exception as exc:
+                    log.warning("LoginSessionRecorder: goto timeout/error (browser still open, navigate manually): %s", exc)
                     try:
-                        input()
+                        page.goto("about:blank")
                     except Exception:
                         pass
-                    _done.set()
 
-                t = threading.Thread(target=_wait_key, daemon=True)
-                t.start()
-                while not _done.is_set() and not done_file.exists():
+                # Wait for done_file (created by /api/auth/record/{id}/done endpoint).
+                # Max 10 minutes; stdin is not used — server context has no terminal.
+                print(f"[DEBUG] browser launched, waiting for done_file: {done_file}")
+                deadline = time.time() + 600
+                while not done_file.exists() and time.time() < deadline:
+                    if cancel_file and cancel_file.exists():
+                        log.info("LoginSessionRecorder: cancel signal received — closing browser")
+                        cancel_file.unlink(missing_ok=True)
+                        try:
+                            context.close()
+                        except Exception:
+                            pass
+                        try:
+                            browser.close()
+                        except Exception:
+                            pass
+                        return None
                     time.sleep(0.5)
 
+                log.info("LoginSessionRecorder: done signal received — waiting for page to settle")
+                try:
+                    page.wait_for_load_state("networkidle", timeout=5000)
+                except Exception:
+                    pass
+
+                # Detect if still on login page — wait up to 30s for post-login redirect.
+                _login_indicators = ("/login", "/signin", "/sign-in", "/auth/login",
+                                     "/account/login", "/user/login", "returnTo", "redirect")
+                _extra_deadline = time.time() + 30
+                while time.time() < _extra_deadline:
+                    current_url = page.url
+                    if not any(ind in current_url for ind in _login_indicators):
+                        break
+                    log.info("LoginSessionRecorder: still on login page (%s) — waiting for redirect...", current_url)
+                    try:
+                        page.wait_for_url(
+                            lambda u: not any(ind in u for ind in _login_indicators),
+                            timeout=3000,
+                        )
+                        break
+                    except Exception:
+                        pass
+
+                current_url = page.url
+                on_login_page = any(ind in current_url for ind in _login_indicators)
+                log.info("LoginSessionRecorder: final page url: %s (on_login_page=%s)", current_url, on_login_page)
+
                 session = self._extract_session(context, page, session_id, login_form.login_url, str(har_path))
-                context.close()
-                browser.close()
+                log.info("LoginSessionRecorder: session extracted: cookies=%d on_login_page=%s",
+                         len(session.cookies) if session else 0, on_login_page)
+
+                # Tag session with warning if captured on login page
+                if session and on_login_page:
+                    session.warning = "Captured on login page — authentication may not be complete. Re-record after fully logging in."
+                elif session:
+                    session.warning = ""
+
+                # Signal session immediately — before slow browser teardown.
+                if on_session:
+                    try:
+                        on_session(session)
+                    except Exception:
+                        pass
                 if done_file.exists():
                     done_file.unlink(missing_ok=True)
+                context.close()
+                browser.close()
                 return session
         except Exception as exc:
             log.warning("LoginSessionRecorder.record_interactive failed: %s", exc)
-            return None
+            raise
 
     def record_auto_or_interactive(
         self,
@@ -182,6 +248,15 @@ class LoginSessionRecorder:
         cookies = []
         try:
             cookies = context.cookies()
+            log.info("_extract_session: captured %d cookies from context", len(cookies))
+        except Exception as e:
+            log.warning("_extract_session: cookies() failed: %s", e)
+
+        # Use the active page (last page in context, most likely post-login)
+        try:
+            pages = context.pages
+            if pages:
+                page = pages[-1]
         except Exception:
             pass
 
@@ -190,8 +265,9 @@ class LoginSessionRecorder:
         indexeddb: dict = {}
         try:
             local_storage = page.evaluate("() => { const o = {}; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); o[k] = localStorage.getItem(k); } return o; }")
-        except Exception:
-            pass
+            log.info("_extract_session: local_storage keys=%d", len(local_storage))
+        except Exception as e:
+            log.warning("_extract_session: localStorage eval failed: %s", e)
         try:
             session_storage = page.evaluate("() => { const o = {}; for (let i = 0; i < sessionStorage.length; i++) { const k = sessionStorage.key(i); o[k] = sessionStorage.getItem(k); } return o; }")
         except Exception:

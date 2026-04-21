@@ -874,7 +874,7 @@ git commit -m "feat(config): add REDIS_URL, POSTGRES_URL, ONEINFINITY_STORAGE_MO
 # tests/test_schema.py
 import pathlib
 
-SCHEMA = pathlib.Path("/home/devendra-yadav/oneinfinity/db/schema.sql").read_text()
+SCHEMA = pathlib.Path("/path/to/oneinfinity/db/schema.sql").read_text()
 
 def test_scans_table_exists():
     assert "CREATE TABLE" in SCHEMA and "scans" in SCHEMA
@@ -904,7 +904,7 @@ Expected: `FileNotFoundError` or FAIL.
 - [ ] **Step 3: Create `db/schema.sql`**
 
 ```bash
-mkdir -p /home/devendra-yadav/oneinfinity/db
+mkdir -p /path/to/oneinfinity/db
 ```
 
 ```sql
@@ -1032,7 +1032,7 @@ git commit -m "feat(postgres): add PostgreSQL schema — scans, findings, agents
 
 ```bash
 pip3 install "psycopg[binary,pool]"
-echo "psycopg[binary,pool]" >> /home/devendra-yadav/oneinfinity/requirements.txt
+echo "psycopg[binary,pool]" >> /path/to/oneinfinity/requirements.txt
 ```
 
 - [ ] **Step 2: Write the failing test**
@@ -2440,14 +2440,14 @@ import pathlib
 def test_migration_script_is_executable():
     """Migration script must exist and be syntactically valid Python."""
     import ast
-    path = pathlib.Path("/home/devendra-yadav/oneinfinity/scripts/migrate_sqlite_to_pg.py")
+    path = pathlib.Path("/path/to/oneinfinity/scripts/migrate_sqlite_to_pg.py")
     assert path.exists()
     ast.parse(path.read_text())  # syntax check
 
 def test_init_postgres_script_is_executable():
     """Init script must exist and be syntactically valid."""
     import ast
-    path = pathlib.Path("/home/devendra-yadav/oneinfinity/scripts/init_postgres.py")
+    path = pathlib.Path("/path/to/oneinfinity/scripts/init_postgres.py")
     assert path.exists()
     ast.parse(path.read_text())
 
@@ -2492,9 +2492,9 @@ git commit -m "feat(migration): add init_postgres.py and migration smoke tests"
 
 ```bash
 grep -rn "attack_graph.db\|graph.db\|sqlite.*graph\|graph.*sqlite" \
-  /home/devendra-yadav/oneinfinity/attack_graph_brain.py \
-  /home/devendra-yadav/oneinfinity/attack_path_planner.py \
-  /home/devendra-yadav/oneinfinity/web/backend/graph_api.py \
+  /path/to/oneinfinity/attack_graph_brain.py \
+  /path/to/oneinfinity/attack_path_planner.py \
+  /path/to/oneinfinity/web/backend/graph_api.py \
   2>/dev/null | head -20
 ```
 
@@ -2509,7 +2509,7 @@ import pathlib
 def test_no_attack_graph_db_direct_writes_outside_fallback():
     """Graph code must not write to attack_graph.db when Neo4j is available.
     The SQLite path must be gated behind a fallback condition."""
-    src = pathlib.Path("/home/devendra-yadav/oneinfinity/attack_graph_brain.py").read_text()
+    src = pathlib.Path("/path/to/oneinfinity/attack_graph_brain.py").read_text()
     # If attack_graph.db writes exist, they must be inside a fallback branch
     # This is a pattern check: sqlite3.connect calls must be inside try/except or if not neo4j
     import ast, textwrap
@@ -2739,7 +2739,7 @@ import ast, pathlib
 
 def test_main_py_no_unconditional_sqlite_import():
     """web/backend/main.py must not import sqlite3 at module level."""
-    src = pathlib.Path("/home/devendra-yadav/oneinfinity/web/backend/main.py").read_text()
+    src = pathlib.Path("/path/to/oneinfinity/web/backend/main.py").read_text()
     # sqlite3 may be imported lazily inside fallback blocks, but not at module level
     lines = src.split("\n")
     top_level_sqlite = [
@@ -2750,7 +2750,7 @@ def test_main_py_no_unconditional_sqlite_import():
 
 def test_findings_py_sqlite_is_in_fallback_only():
     """modules/findings.py SQLite usage must be gated by fallback condition."""
-    src = pathlib.Path("/home/devendra-yadav/oneinfinity/modules/findings.py").read_text()
+    src = pathlib.Path("/path/to/oneinfinity/modules/findings.py").read_text()
     if "sqlite3" in src:
         # sqlite3 usage must be inside a method, not at class definition level
         assert "def " in src, "SQLite usage in findings.py must be inside a method"
@@ -2789,7 +2789,7 @@ git commit -m "cleanup: remove module-level sqlite3 from distributed-mode paths,
 import pathlib, yaml
 
 COMPOSE = yaml.safe_load(
-    pathlib.Path("/home/devendra-yadav/oneinfinity/docker-compose.yml").read_text()
+    pathlib.Path("/path/to/oneinfinity/docker-compose.yml").read_text()
 )
 SERVICES = COMPOSE.get("services", {})
 

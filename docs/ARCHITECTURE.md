@@ -134,6 +134,7 @@ oneinfinity/
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                          PRESENTATION LAYER                              │
 │  React 18 + Vite + Zustand + Recharts + ForceGraph2D                    │
+│  Centralized logic: src/utils/time.js (ISO/Unix robust formatting)      │
 │  20+ pages: Dashboard / Targets / Results / AttackGraph / Chains /      │
 │             BrainDashboard / LiveIntelligence / SystemEvolution /       │
 │             OrchestratorPanel / Traffic / MobileSecurity / Hunter /     │
@@ -143,8 +144,8 @@ oneinfinity/
 ┌─────────────────────────▼───────────────────────────────────────────────┐
 │                           API GATEWAY LAYER                              │
 │  FastAPI (main.py) — 54 routes + WS /ws/logs                           │
-│  In-memory state: TARGETS, SCANS, VULNERABILITIES, MOBILE_APPS,        │
-│                   HUNTER_SESSIONS, TRAFFIC, ATTACKS                     │
+│  Persistence: ResultIngestionEngine (Persistent DB + In-memory)        │
+│  Stats: Dynamic aggregation from DB with real-time trend calculation   │
 │  Spawns oneinfinity.py subprocesses for long-running scans                  │
 └──────────┬──────────────────────────────────────┬───────────────────────┘
            │ subprocess / import                  │ import

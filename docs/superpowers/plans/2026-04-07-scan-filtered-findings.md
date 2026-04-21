@@ -190,7 +190,7 @@ export default function Results() {
 - [ ] **Step 2: Verify the app still renders**
 
 ```bash
-cd /home/devendra-yadav/oneinfinity/web/frontend
+cd /path/to/oneinfinity/web/frontend
 npm run build 2>&1 | tail -20
 ```
 
@@ -240,7 +240,7 @@ Find the findings count cell (currently renders `{s.findings_count ?? s.findings
 - [ ] **Step 2: Build and verify no errors**
 
 ```bash
-cd /home/devendra-yadav/oneinfinity/web/frontend
+cd /path/to/oneinfinity/web/frontend
 npm run build 2>&1 | tail -20
 ```
 
@@ -379,7 +379,7 @@ return (
 - [ ] **Step 4: Build to verify no errors**
 
 ```bash
-cd /home/devendra-yadav/oneinfinity/web/frontend
+cd /path/to/oneinfinity/web/frontend
 npm run build 2>&1 | tail -20
 ```
 
