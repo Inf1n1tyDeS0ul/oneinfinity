@@ -6,6 +6,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 
 import clsx from 'clsx'
 import IntelligenceLayout from '../components/Intelligence/IntelligenceLayout'
 import StatCard from '../components/Intelligence/StatCard'
+import CorrelationMatrix from '../components/Intelligence/CorrelationMatrix'
 
 export default function Learning() {
   const { addNotification } = useStore()
@@ -105,14 +106,14 @@ export default function Learning() {
           {stats ? (
             <>
               {/* EMA bar chart */}
-              <div className="card md:col-span-4 lg:col-span-4">
+              <div className="card col-span-1 md:col-span-2">
                 <div className="card-header">
                   <span className="card-title"><TrendingUp size={14} className="text-cyan-400" />EMA Score by Vulnerability Type</span>
                 </div>
                 {chartData.length > 0 ? (
                   <div className="p-4 h-64">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={chartData.slice(0, 15)}>
+                      <BarChart data={chartData.slice(0, 10)}>
                         <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#6b7280' }} angle={-30} textAnchor="end" height={60} />
                         <YAxis tick={{ fontSize: 9, fill: '#6b7280' }} domain={[0, 100]} unit="%" />
                         <Tooltip
@@ -122,7 +123,7 @@ export default function Learning() {
                           formatter={(v, n, p) => [`${v}% (${p.payload.count} findings)`, 'EMA Score']}
                         />
                         <Bar dataKey="score" radius={[4, 4, 0, 0]}>
-                          {chartData.slice(0, 15).map((entry, i) => (
+                          {chartData.slice(0, 10).map((entry, i) => (
                             <Cell
                               key={i}
                               fill={i % 3 === 0 ? '#00d9ff' : i % 3 === 1 ? '#6366f1' : '#10b981'}
@@ -141,6 +142,9 @@ export default function Learning() {
                   </div>
                 )}
               </div>
+
+              {/* Correlation Matrix */}
+              <CorrelationMatrix stats={stats} />
 
               {/* Top vuln types */}
               <div className="card md:col-span-2">
