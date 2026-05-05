@@ -7,6 +7,7 @@ import clsx from 'clsx'
 import IntelligenceLayout from '../components/Intelligence/IntelligenceLayout'
 import StatCard from '../components/Intelligence/StatCard'
 import CorrelationMatrix from '../components/Intelligence/CorrelationMatrix'
+import VisualPipeline from '../components/Intelligence/VisualPipeline'
 
 export default function Learning() {
   const { addNotification } = useStore()
@@ -221,46 +222,64 @@ export default function Learning() {
 
             {plan && (
               <div className="flex flex-col gap-3 mt-1">
-                <div className="text-xs text-slate-500 leading-relaxed whitespace-pre-wrap border border-bg-border rounded-xl p-3 bg-bg-secondary font-mono">
+                <div className="text-xs text-slate-400 leading-relaxed italic px-1">
                   {plan.description}
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                
+                <VisualPipeline plan={plan} />
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4 p-4 rounded-2xl bg-slate-900/20 border border-slate-800/50">
                   {plan.priority_phases?.length > 0 && (
-                    <div>
-                      <div className="label mb-2">Priority Phases</div>
-                      <div className="flex flex-wrap gap-1">
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center gap-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                        <TrendingUp size={12} className="text-cyan-400" />
+                        Priority Phases
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
                         {plan.priority_phases.map(p => (
-                          <span key={p} className="badge badge-info">{p}</span>
+                          <span key={p} className="px-2 py-0.5 rounded-md bg-cyan-500/10 text-cyan-400 text-[10px] font-mono border border-cyan-500/20">{p}</span>
                         ))}
                       </div>
                     </div>
                   )}
                   {plan.focus_vulns?.length > 0 && (
-                    <div>
-                      <div className="label mb-2">Focus Vulnerabilities</div>
-                      <div className="flex flex-wrap gap-1">
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center gap-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                        <Target size={12} className="text-orange-400" />
+                        Focus Vulnerabilities
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
                         {plan.focus_vulns.map(v => (
-                          <span key={v} className="badge badge-warn">{v}</span>
+                          <span key={v} className="px-2 py-0.5 rounded-md bg-orange-500/10 text-orange-400 text-[10px] font-mono border border-orange-500/20">{v}</span>
                         ))}
                       </div>
                     </div>
                   )}
                   {plan.skip_phases?.length > 0 && (
-                    <div>
-                      <div className="label mb-2">Skipped Phases</div>
-                      <div className="flex flex-wrap gap-1">
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center gap-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                        <Zap size={12} className="text-slate-500" />
+                        Skipped Phases
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
                         {plan.skip_phases.map(p => (
-                          <span key={p} className="badge badge-error">{p}</span>
+                          <span key={p} className="px-2 py-0.5 rounded-md bg-slate-800 text-slate-500 text-[10px] font-mono border border-slate-700">{p}</span>
                         ))}
                       </div>
                     </div>
                   )}
                   {Object.keys(plan.tool_overrides || {}).length > 0 && (
-                    <div>
-                      <div className="label mb-2">Tool Overrides</div>
-                      <div className="flex flex-col gap-1">
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center gap-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                        <Wrench size={12} className="text-indigo-400" />
+                        Tool Overrides
+                      </div>
+                      <div className="flex flex-col gap-1.5">
                         {Object.entries(plan.tool_overrides).map(([k, v]) => (
-                          <div key={k} className="text-xs text-slate-400"><span className="text-slate-500">{k}:</span> {v}</div>
+                          <div key={k} className="flex justify-between items-center text-[10px] font-mono p-1.5 rounded bg-indigo-500/5 border border-indigo-500/10">
+                            <span className="text-slate-500">{k}</span>
+                            <span className="text-indigo-400 font-bold">{v}</span>
+                          </div>
                         ))}
                       </div>
                     </div>
