@@ -4,6 +4,7 @@ import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 import clsx from 'clsx'
+import IntelligenceLayout from '../components/Intelligence/IntelligenceLayout'
 
 export default function Learning() {
   const { addNotification } = useStore()
@@ -73,112 +74,114 @@ export default function Learning() {
       </div>
 
       {tab === 'stats' && (
-        <>
-          {/* Summary stats */}
-          <div className="grid grid-cols-4 gap-3">
-            <div className="stat-card">
-              <span className="stat-label">Confirmed Findings</span>
-              <span className="stat-value">{stats?.total_findings ?? 0}</span>
+        <IntelligenceLayout>
+          <div className="md:col-span-4 flex flex-col gap-4">
+            {/* Summary stats */}
+            <div className="grid grid-cols-4 gap-3">
+              <div className="stat-card">
+                <span className="stat-label">Confirmed Findings</span>
+                <span className="stat-value">{stats?.total_findings ?? 0}</span>
+              </div>
+              <div className="stat-card">
+                <span className="stat-label">Scans Completed</span>
+                <span className="stat-value text-cyan-400">{stats?.sessions ?? 0}</span>
+              </div>
+              <div className="stat-card">
+                <span className="stat-label">Unique Targets</span>
+                <span className="stat-value text-indigo-400">{stats?.unique_targets ?? 0}</span>
+              </div>
+              <div className="stat-card">
+                <span className="stat-label">Avg EMA Score</span>
+                <span className="stat-value text-yellow-400">{avgEma}%</span>
+              </div>
             </div>
-            <div className="stat-card">
-              <span className="stat-label">Scans Completed</span>
-              <span className="stat-value text-cyan-400">{stats?.sessions ?? 0}</span>
-            </div>
-            <div className="stat-card">
-              <span className="stat-label">Unique Targets</span>
-              <span className="stat-value text-indigo-400">{stats?.unique_targets ?? 0}</span>
-            </div>
-            <div className="stat-card">
-              <span className="stat-label">Avg EMA Score</span>
-              <span className="stat-value text-yellow-400">{avgEma}%</span>
-            </div>
+
+            {stats ? (
+              <div className="grid grid-cols-2 gap-4">
+                {/* EMA bar chart */}
+                <div className="card col-span-2">
+                  <div className="card-header">
+                    <span className="card-title"><TrendingUp size={14} className="text-cyan-400" />EMA Score by Vulnerability Type</span>
+                  </div>
+                  {chartData.length > 0 ? (
+                    <div className="p-4 h-56">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={chartData.slice(0, 15)}>
+                          <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#6b7280' }} angle={-30} textAnchor="end" height={50} />
+                          <YAxis tick={{ fontSize: 9, fill: '#6b7280' }} domain={[0, 100]} unit="%" />
+                          <Tooltip
+                            contentStyle={{ background: '#0f1523', border: '1px solid #1c2a42', borderRadius: 8, fontSize: 11 }}
+                            itemStyle={{ color: '#e2e8f0' }}
+                            formatter={(v, n, p) => [`${v}% (${p.payload.count} findings)`, 'EMA Score']}
+                          />
+                          <Bar dataKey="score" name="EMA Score">
+                            {chartData.slice(0, 15).map((_, i) => (
+                              <Cell key={i} fill={i % 3 === 0 ? '#00d9ff' : i % 3 === 1 ? '#6366f1' : '#10b981'} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  ) : (
+                    <div className="empty-state">
+                      <div className="empty-icon"><TrendingUp size={20} /></div>
+                      <div className="empty-title">No EMA data yet</div>
+                      <div className="empty-sub">EMA scores build up as scans complete and findings are recorded</div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Top vuln types */}
+                <div className="card">
+                  <div className="card-header">
+                    <span className="card-title"><ShieldAlert size={14} className="text-red-400" />Top Vulnerability Types</span>
+                  </div>
+                  <div className="card-body flex flex-col gap-1">
+                    {(stats.top_vuln_types || []).length > 0 ? (
+                      stats.top_vuln_types.map((v, i) => (
+                        <div key={i} className="flex items-center gap-3 py-1.5 border-b border-bg-border last:border-0">
+                          <span className="w-5 h-5 rounded-full bg-accent-primary/15 flex items-center justify-center text-[10px] text-accent-primary font-bold flex-shrink-0">{i + 1}</span>
+                          <span className="flex-1 text-sm text-slate-300 font-mono">{v.vuln_type}</span>
+                          <span className="badge badge-info">{v.count} findings</span>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-xs text-slate-600 py-4 text-center">No data yet</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Top tools */}
+                <div className="card">
+                  <div className="card-header">
+                    <span className="card-title"><Wrench size={14} className="text-orange-400" />Top Performing Tools</span>
+                  </div>
+                  <div className="card-body flex flex-col gap-1">
+                    {(stats.top_tools || []).length > 0 ? (
+                      stats.top_tools.map((t, i) => (
+                        <div key={i} className="flex items-center gap-3 py-1.5 border-b border-bg-border last:border-0">
+                          <span className="w-5 h-5 rounded-full bg-orange-500/15 flex items-center justify-center text-[10px] text-orange-400 font-bold flex-shrink-0">{i + 1}</span>
+                          <span className="flex-1 text-sm text-slate-300 font-mono">{t.tool}</span>
+                          <span className="badge badge-warn">{t.findings} findings</span>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-xs text-slate-600 py-4 text-center">No data yet</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : !loading && (
+              <div className="card md:col-span-4">
+                <div className="empty-state">
+                  <div className="empty-icon"><Database size={20} /></div>
+                  <div className="empty-title">No learning data yet</div>
+                  <div className="empty-sub">Run scans to build the learning database</div>
+                </div>
+              </div>
+            )}
           </div>
-
-          {stats ? (
-            <div className="grid grid-cols-2 gap-4">
-              {/* EMA bar chart */}
-              <div className="card col-span-2">
-                <div className="card-header">
-                  <span className="card-title"><TrendingUp size={14} className="text-cyan-400" />EMA Score by Vulnerability Type</span>
-                </div>
-                {chartData.length > 0 ? (
-                  <div className="p-4 h-56">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={chartData.slice(0, 15)}>
-                        <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#6b7280' }} angle={-30} textAnchor="end" height={50} />
-                        <YAxis tick={{ fontSize: 9, fill: '#6b7280' }} domain={[0, 100]} unit="%" />
-                        <Tooltip
-                          contentStyle={{ background: '#0f1523', border: '1px solid #1c2a42', borderRadius: 8, fontSize: 11 }}
-                          itemStyle={{ color: '#e2e8f0' }}
-                          formatter={(v, n, p) => [`${v}% (${p.payload.count} findings)`, 'EMA Score']}
-                        />
-                        <Bar dataKey="score" name="EMA Score">
-                          {chartData.slice(0, 15).map((_, i) => (
-                            <Cell key={i} fill={i % 3 === 0 ? '#00d9ff' : i % 3 === 1 ? '#6366f1' : '#10b981'} />
-                          ))}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                ) : (
-                  <div className="empty-state">
-                    <div className="empty-icon"><TrendingUp size={20} /></div>
-                    <div className="empty-title">No EMA data yet</div>
-                    <div className="empty-sub">EMA scores build up as scans complete and findings are recorded</div>
-                  </div>
-                )}
-              </div>
-
-              {/* Top vuln types */}
-              <div className="card">
-                <div className="card-header">
-                  <span className="card-title"><ShieldAlert size={14} className="text-red-400" />Top Vulnerability Types</span>
-                </div>
-                <div className="card-body flex flex-col gap-1">
-                  {(stats.top_vuln_types || []).length > 0 ? (
-                    stats.top_vuln_types.map((v, i) => (
-                      <div key={i} className="flex items-center gap-3 py-1.5 border-b border-bg-border last:border-0">
-                        <span className="w-5 h-5 rounded-full bg-accent-primary/15 flex items-center justify-center text-[10px] text-accent-primary font-bold flex-shrink-0">{i + 1}</span>
-                        <span className="flex-1 text-sm text-slate-300 font-mono">{v.vuln_type}</span>
-                        <span className="badge badge-info">{v.count} findings</span>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="text-xs text-slate-600 py-4 text-center">No data yet</div>
-                  )}
-                </div>
-              </div>
-
-              {/* Top tools */}
-              <div className="card">
-                <div className="card-header">
-                  <span className="card-title"><Wrench size={14} className="text-orange-400" />Top Performing Tools</span>
-                </div>
-                <div className="card-body flex flex-col gap-1">
-                  {(stats.top_tools || []).length > 0 ? (
-                    stats.top_tools.map((t, i) => (
-                      <div key={i} className="flex items-center gap-3 py-1.5 border-b border-bg-border last:border-0">
-                        <span className="w-5 h-5 rounded-full bg-orange-500/15 flex items-center justify-center text-[10px] text-orange-400 font-bold flex-shrink-0">{i + 1}</span>
-                        <span className="flex-1 text-sm text-slate-300 font-mono">{t.tool}</span>
-                        <span className="badge badge-warn">{t.findings} findings</span>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="text-xs text-slate-600 py-4 text-center">No data yet</div>
-                  )}
-                </div>
-              </div>
-            </div>
-          ) : !loading && (
-            <div className="card">
-              <div className="empty-state">
-                <div className="empty-icon"><Database size={20} /></div>
-                <div className="empty-title">No learning data yet</div>
-                <div className="empty-sub">Run scans to build the learning database</div>
-              </div>
-            </div>
-          )}
-        </>
+        </IntelligenceLayout>
       )}
 
       {tab === 'plan' && (
