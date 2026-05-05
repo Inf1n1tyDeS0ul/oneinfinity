@@ -6,6 +6,8 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 
 import clsx from 'clsx'
 import IntelligenceLayout from '../components/Intelligence/IntelligenceLayout'
 import StatCard from '../components/Intelligence/StatCard'
+import StatCardSkeleton from '../components/Intelligence/StatCardSkeleton'
+import ChartSkeleton from '../components/Intelligence/ChartSkeleton'
 import CorrelationMatrix from '../components/Intelligence/CorrelationMatrix'
 import VisualPipeline from '../components/Intelligence/VisualPipeline'
 
@@ -51,7 +53,7 @@ export default function Learning() {
     : []
 
   const avgEma = chartData.length > 0
-    ? Math.round(chartData.reduce((a, b) => a + b.score, 0) / chartData.length)
+    ? Math.round(chartData.reduce((acc, curr) => acc + (curr.score || 0), 0) / chartData.length)
     : 0
 
   return (
@@ -78,36 +80,54 @@ export default function Learning() {
 
       {tab === 'stats' && (
         <IntelligenceLayout>
-          {/* Summary stats */}
-          <StatCard
-            label="Confirmed Findings"
-            value={stats?.total_findings ?? 0}
-            icon={ShieldAlert}
-            colorClass="text-emerald-400"
-          />
-          <StatCard
-            label="Scans Completed"
-            value={stats?.sessions ?? 0}
-            icon={Zap}
-            colorClass="text-cyan-400"
-          />
-          <StatCard
-            label="Unique Targets"
-            value={stats?.unique_targets ?? 0}
-            icon={Target}
-            colorClass="text-indigo-400"
-          />
-          <StatCard
-            label="Avg EMA Score"
-            value={`${avgEma}%`}
-            icon={TrendingUp}
-            colorClass="text-yellow-400"
-          />
-
-          {stats ? (
+          {loading ? (
             <>
+              <StatCardSkeleton />
+              <StatCardSkeleton />
+              <StatCardSkeleton />
+              <StatCardSkeleton />
+              <ChartSkeleton />
+              <div className="glass-card p-6 col-span-1 sm:col-span-2 lg:col-span-2 animate-pulse h-[350px]">
+                <div className="h-4 w-32 bg-slate-800 rounded mb-4"></div>
+                <div className="flex flex-wrap gap-2 mb-6">
+                  {[...Array(5)].map((_, i) => <div key={i} className="h-8 w-16 bg-slate-800 rounded-lg"></div>)}
+                </div>
+                <div className="flex-1 flex flex-col gap-3">
+                  {[...Array(3)].map((_, i) => <div key={i} className="h-16 w-full bg-slate-800/50 rounded-xl"></div>)}
+                </div>
+              </div>
+            </>
+          ) : stats ? (
+            <>
+              {/* Summary stats */}
+              <StatCard
+                label="Confirmed Findings"
+                value={stats?.total_findings ?? 0}
+                icon={ShieldAlert}
+                colorClass="text-emerald-400"
+              />
+              <StatCard
+                label="Scans Completed"
+                value={stats?.sessions ?? 0}
+                icon={Zap}
+                colorClass="text-cyan-400"
+              />
+              <StatCard
+                label="Unique Targets"
+                value={stats?.unique_targets ?? 0}
+                icon={Target}
+                colorClass="text-indigo-400"
+              />
+              <StatCard
+                label="Avg EMA Score"
+                value={`${avgEma}%`}
+                icon={TrendingUp}
+                colorClass="text-yellow-400"
+                className={avgEma > 70 ? 'neon-glow-yellow' : ''}
+              />
+
               {/* EMA bar chart */}
-              <div className="card col-span-1 md:col-span-2">
+              <div className="card col-span-1 sm:col-span-2 lg:col-span-2">
                 <div className="card-header">
                   <span className="card-title"><TrendingUp size={14} className="text-cyan-400" />EMA Score by Vulnerability Type</span>
                 </div>
@@ -148,7 +168,7 @@ export default function Learning() {
               <CorrelationMatrix stats={stats} />
 
               {/* Top vuln types */}
-              <div className="card md:col-span-2">
+              <div className="card col-span-1 sm:col-span-2 lg:col-span-2">
                 <div className="card-header">
                   <span className="card-title"><ShieldAlert size={14} className="text-red-400" />Top Vulnerability Types</span>
                 </div>
@@ -168,7 +188,7 @@ export default function Learning() {
               </div>
 
               {/* Top tools */}
-              <div className="card md:col-span-2">
+              <div className="card col-span-1 sm:col-span-2 lg:col-span-2">
                 <div className="card-header">
                   <span className="card-title"><Wrench size={14} className="text-orange-400" />Top Performing Tools</span>
                 </div>
@@ -187,8 +207,8 @@ export default function Learning() {
                 </div>
               </div>
             </>
-          ) : !loading && (
-            <div className="card md:col-span-4">
+          ) : (
+            <div className="card col-span-1 sm:col-span-2 lg:col-span-4">
               <div className="empty-state">
                 <div className="empty-icon"><Database size={20} /></div>
                 <div className="empty-title">No learning data yet</div>

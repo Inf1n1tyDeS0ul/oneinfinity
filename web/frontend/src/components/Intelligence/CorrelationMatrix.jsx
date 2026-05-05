@@ -46,7 +46,7 @@ export default function CorrelationMatrix({ stats }) {
   const activeVulns = activeTech ? correlations[activeTech] : [];
 
   return (
-    <div className="glass-card p-6 col-span-1 md:col-span-2 flex flex-col h-full min-h-[350px]">
+    <div className="glass-card p-6 col-span-1 sm:col-span-2 lg:col-span-2 flex flex-col h-full min-h-[350px]">
       <div className="flex items-center justify-between mb-5">
         <h3 className="text-sm font-bold flex items-center gap-2 text-slate-200">
           <Activity size={16} className="text-indigo-400" />
