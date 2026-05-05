@@ -113,15 +113,48 @@
   /* Gradient text */
   .gradient-text { @apply bg-gradient-to-r from-accent-primary to-accent-secondary bg-clip-text text-transparent; }
 
+  /* Scrollbars */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
+
   /* Toast */
   .toast { @apply flex items-start gap-2.5 px-4 py-3 rounded-xl border text-sm backdrop-blur-sm; animation: slide-in 0.2s ease-out; }
   .toast-error   { @apply toast bg-red-950/90 border-red-600/40 text-red-200; }
   .toast-success { @apply toast bg-emerald-950/90 border-emerald-600/40 text-emerald-200; }
   .toast-info    { @apply toast bg-bg-elevated/90 border-bg-border text-slate-200; }
-  .toast-warn    { @apply toast bg-yellow-950/90 border-yellow-600/40 text-yellow-200; }
-}
+  .toast-warn    { @apply bg-yellow-950/90 border-yellow-600/40 text-yellow-200; }
+  }
 
-@keyframes slide-in {
+  @keyframes slide-in {
   from { opacity: 0; transform: translateX(16px); }
   to   { opacity: 1; transform: translateX(0); }
-}
+  }
+
+  @layer utilities {
+  .glass-card {
+    @apply bg-slate-900/50 backdrop-blur-md border border-slate-800 rounded-2xl;
+  }
+  .neon-glow-cyan {
+    box-shadow: 0 0 15px rgba(0, 217, 255, 0.2);
+  }
+  .neon-glow-emerald {
+    box-shadow: 0 0 15px rgba(16, 185, 129, 0.2);
+  }
+  }
+
