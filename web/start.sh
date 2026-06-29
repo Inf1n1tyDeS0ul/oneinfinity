@@ -4,12 +4,14 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$SCRIPT_DIR"
+BACKEND_PORT="${BACKEND_PORT:-8000}"
+FRONTEND_PORT="${FRONTEND_PORT:-3000}"
 
 echo ""
 echo "╔══════════════════════════════════════════════╗"
 echo "║   One&Infinity Web UI                       ║"
-echo "║   Backend : http://localhost:8000            ║"
-echo "║   Frontend: http://localhost:3000            ║"
+echo "║   Backend : http://localhost:${BACKEND_PORT}            ║"
+echo "║   Frontend: http://localhost:${FRONTEND_PORT}            ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 
@@ -26,7 +28,7 @@ trap cleanup INT TERM
 echo "[*] Starting FastAPI backend..."
 cd "$ROOT/backend"
 pip install -r requirements.txt -q
-python3 main.py &
+API_PORT="$BACKEND_PORT" python3 main.py &
 BACKEND_PID=$!
 echo "[+] Backend PID: $BACKEND_PID"
 
@@ -42,13 +44,13 @@ if [ ! -d "node_modules" ]; then
     npm install
 fi
 
-npm run dev &
+npm run dev -- --port "$FRONTEND_PORT" &
 FRONTEND_PID=$!
 echo "[+] Frontend PID: $FRONTEND_PID"
 
 echo ""
 echo "[+] Both servers running."
-echo "    Open http://localhost:3000 in your browser"
+echo "    Open http://localhost:${FRONTEND_PORT} in your browser"
 echo "    Press Ctrl+C to stop"
 echo ""
 

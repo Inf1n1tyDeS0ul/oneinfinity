@@ -141,3 +141,6 @@ web/frontend/build/
 /core/
 # Added by code-review-graph
 .code-review-graph/
+
+# Claude agent session data
+.claude-flow/
