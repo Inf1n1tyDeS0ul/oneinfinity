@@ -1297,6 +1297,51 @@ install_python_tools() {
     fi
 
     # -------------------------------------------------------------------------
+    # 1d. Install core requirements (requests, pydantic, pyyaml, redis, etc.)
+    # -------------------------------------------------------------------------
+    local CORE_REQS="$REPO_DIR/requirements-core.txt"
+    if [[ -f "$CORE_REQS" ]]; then
+        step "Installing requirements-core.txt"
+        if (pip install -r "$CORE_REQS" 2>&1 | tee -a "$ONEINFINITY_LOG"); then
+            ok "Core dependencies installed"
+        else
+            warn "requirements-core.txt reported errors — check $ONEINFINITY_LOG"
+        fi
+    else
+        warn "requirements-core.txt not found — skipping"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 1e. Install web requirements (fastapi, uvicorn, jinja2, etc.)
+    # -------------------------------------------------------------------------
+    local WEB_REQS="$REPO_DIR/requirements-web.txt"
+    if [[ -f "$WEB_REQS" ]]; then
+        step "Installing requirements-web.txt"
+        if (pip install -r "$WEB_REQS" 2>&1 | tee -a "$ONEINFINITY_LOG"); then
+            ok "Web dependencies installed"
+        else
+            warn "requirements-web.txt reported errors — check $ONEINFINITY_LOG"
+        fi
+    else
+        warn "requirements-web.txt not found — skipping"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 1f. Install mobile analysis requirements (frida-tools, objection, apkid, etc.)
+    # -------------------------------------------------------------------------
+    local MOBILE_REQS="$REPO_DIR/requirements-mobile.txt"
+    if [[ -f "$MOBILE_REQS" ]]; then
+        step "Installing requirements-mobile.txt (frida-tools, objection, apkid…)"
+        if (pip install -r "$MOBILE_REQS" 2>&1 | tee -a "$ONEINFINITY_LOG"); then
+            ok "Mobile analysis dependencies installed"
+        else
+            warn "requirements-mobile.txt reported errors — check $ONEINFINITY_LOG"
+        fi
+    else
+        warn "requirements-mobile.txt not found — skipping"
+    fi
+
+    # -------------------------------------------------------------------------
     # 2. Web / API pentesting
     # -------------------------------------------------------------------------
     section "Python Tools — Web/API Pentesting"
