@@ -1,130 +1,36 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Zap, Square, RefreshCw, Terminal, Clock,
-  ShieldAlert, CheckCircle2, AlertTriangle,
-  ChevronDown, ChevronRight, Activity, Flame, Brain,
-  Users, Search, FileText, Trash2, ExternalLink,
-  Shield, GitMerge, Lock, Bot, Radar
+  RefreshCw, Terminal, 
+  CheckCircle2, 
+  Activity, Flame,
+  Zap, X, Radar, Menu
 } from 'lucide-react'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
-import { formatDateTime } from '../utils/time'
 import clsx from 'clsx'
+
+// Components
+import LaunchPad from '../components/GodMode/LaunchPad'
+import VitalSignsHUD from '../components/GodMode/VitalSignsHUD'
+import MissionPipeline from '../components/GodMode/MissionPipeline'
+import InsightFeed from '../components/GodMode/InsightFeed'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const MISSION_ICONS = {
-  foundation: Search,
-  full_scan:  ShieldAlert,
-  research:   Brain,
-  swarm:      Users,
-  chains:     Zap,
-  report:     FileText,
-}
-
-const MISSION_DISPLAY_NAMES = {
-  foundation: 'Foundation',
-  full_scan:  'Full Scan',
-  research:   'Research',
-  swarm:      'Swarm',
-  chains:     'Chains',
-  report:     'Report',
-}
-
-const MISSION_STATUS_STYLE = {
-  running: 'text-cyan-400 badge-running',
-  done:    'text-emerald-400 badge-completed',
-  failed:  'text-red-400 badge-failed',
-  pending: 'text-slate-500 badge-queued',
-  skipped: 'text-slate-600 badge-info',
-}
-
-const TERM_REASONS = {
-  convergence: { label: 'Converged',   color: 'text-emerald-400', icon: CheckCircle2 },
-  time:        { label: 'Time Cap',    color: 'text-yellow-400',  icon: Clock },
-  cap:         { label: 'Finding Cap', color: 'text-orange-400',  icon: ShieldAlert },
-  stop:        { label: 'Stopped',     color: 'text-slate-400',   icon: Square },
-  error:       { label: 'Error',       color: 'text-red-400',     icon: AlertTriangle },
-  all_done:    { label: 'All Done',    color: 'text-emerald-400', icon: CheckCircle2 },
-}
-
-// Modules — what God Mode runs. Swarm and Research are the two toggleable ones.
-const ALL_MODULES = [
-  { id: 'recon',          label: 'Recon',           icon: Radar,     desc: 'Subdomain enum, port scan, crawling, fingerprinting',           always: true },
-  { id: 'vuln_scan',      label: 'Vuln Scan',       icon: ShieldAlert, desc: 'Nuclei, dalfox, sqlmap, CRLFUZZ, KXSS',                       always: true },
-  { id: 'active_testing', label: 'Active Testing',  icon: Zap,       desc: 'Swarm agents: XSS, SQLi, SSRF, IDOR, CORS, JWT, Auth, IDOR',   key: 'swarm' },
-  { id: 'auth',           label: 'Auth & Sessions', icon: Lock,      desc: 'Default creds, session reuse, CSRF, cookie checks',             always: true },
-  { id: 'business_logic', label: 'Business Logic',  icon: GitMerge,  desc: 'Race conditions, price manipulation, workflow skips',            always: true },
-  { id: 'chains',         label: 'Exploit Chains',  icon: GitMerge,  desc: 'Cross-finding chains: SSRF→RCE, XSS→ATO, SQLi→bypass',         always: true },
-  { id: 'ai_hypothesis',  label: 'AI Hypothesis',   icon: Brain,     desc: 'AI-driven iterative hypothesis testing on uncovered classes',    key: 'research' },
-  { id: 'ai_llm',         label: 'AI/LLM Testing',  icon: Bot,       desc: 'Prompt injection, jailbreaks, model attacks (AI product targets)', key: 'ai_llm', comingSoon: true },
-]
-
-// Presets — map to backend no_swarm / no_research flags
 const PRESETS = [
-  {
-    id: 'quick',
-    label: 'Quick',
-    desc: 'Fast sweep, high/critical only',
-    color: 'border-blue-500/40 bg-blue-500/10 text-blue-300',
-    activeColor: 'border-blue-400 bg-blue-500/20 text-blue-200',
-    no_swarm: true,
-    no_research: true,
-    modules: ['recon', 'vuln_scan', 'auth', 'business_logic', 'chains'],
-  },
-  {
-    id: 'standard',
-    label: 'Standard',
-    desc: 'Full pipeline + swarm + AI research',
-    color: 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300',
-    activeColor: 'border-cyan-400 bg-cyan-500/20 text-cyan-200',
-    no_swarm: false,
-    no_research: false,
-    modules: ['recon', 'vuln_scan', 'active_testing', 'auth', 'business_logic', 'chains', 'ai_hypothesis'],
-  },
-  // Deep runs the same modules as Standard; the distinction is depth/intensity enforced by the engine
-  {
-    id: 'deep',
-    label: 'Deep',
-    desc: 'Everything — swarm + AI research',
-    color: 'border-orange-500/40 bg-orange-500/10 text-orange-300',
-    activeColor: 'border-orange-400 bg-orange-500/20 text-orange-200',
-    no_swarm: false,
-    no_research: false,
-    modules: ['recon', 'vuln_scan', 'active_testing', 'auth', 'business_logic', 'chains', 'ai_hypothesis'],
-  },
-  {
-    id: 'stealth',
-    label: 'Stealth',
-    desc: 'Passive recon only, zero active probes',
-    color: 'border-slate-500/40 bg-slate-500/10 text-slate-300',
-    activeColor: 'border-slate-400 bg-slate-500/20 text-slate-200',
-    no_swarm: true,
-    no_research: true,
-    stealth: true,
-    modules: ['recon'],
-  },
-  {
-    id: 'custom',
-    label: 'Custom',
-    desc: 'Pick modules + intensity yourself',
-    color: 'border-violet-500/40 bg-violet-500/10 text-violet-300',
-    activeColor: 'border-violet-400 bg-violet-500/20 text-violet-200',
-    no_swarm: false,
-    no_research: false,
-    modules: [],
-  },
+  { id: 'quick',    no_swarm: true,  no_research: true },
+  { id: 'standard', no_swarm: false, no_research: false },
+  { id: 'deep',     no_swarm: false, no_research: false },
+  { id: 'stealth',  no_swarm: true,  no_research: true, stealth: true },
+  { id: 'custom',   no_swarm: false, no_research: false },
 ]
 
-function formatDuration(secs) {
-  if (!secs && secs !== 0) return '—'
-  const h = Math.floor(secs / 3600)
-  const m = Math.floor((secs % 3600) / 60)
-  const s = Math.floor(secs % 60)
-  if (h > 0) return `${h}h ${m}m`
-  if (m > 0) return `${m}m ${s}s`
-  return `${s}s`
+const TYPE_TO_PRESET = {
+  mobile: 'quick',
+  api:    'standard',
+  ai:     'standard',
+  web:    'deep',
 }
 
 function detectTargetType(url) {
@@ -137,25 +43,15 @@ function detectTargetType(url) {
   return 'web'
 }
 
-const TYPE_TO_PRESET = {
-  mobile: 'quick',
-  api:    'standard',
-  ai:     'standard',
-  web:    'deep',
-}
-
-const INTENSITY_COLORS = {
-  low:        'border-blue-500/40 text-blue-300',
-  medium:     'border-cyan-500/40 text-cyan-300',
-  high:       'border-orange-500/40 text-orange-300',
-  aggressive: 'border-red-500/40 text-red-300',
-}
-
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function GodMode() {
   const { addNotification, setVulnerabilities } = useStore()
   const navigate = useNavigate()
+
+  // Layout state
+  const [showLogs, setShowLogs] = useState(false)
+  const [showSidebar, setShowSidebar] = useState(true)
 
   // Launch form state
   const [target, setTarget]       = useState('')
@@ -167,25 +63,36 @@ export default function GodMode() {
   const [authValue, setAuthValue] = useState('')
   const [savedSessions, setSavedSessions]         = useState([])
   const [authSessionId, setAuthSessionId]         = useState('')
+  const [appContext, setAppContext]               = useState('')
   const [isRecording, setIsRecording]             = useState(false)
   const [recordingId, setRecordingId]             = useState(null)
   const [recordingWarning, setRecordingWarning]   = useState('')
   const [loginFormDetected, setLoginFormDetected]  = useState(null)
 
+  // Safety Gate state
+  const [approvalRequest, setApprovalRequest] = useState(null)
+
   // Auto-detection state
-  const [detectedType, setDetectedType]         = useState(null)   // 'web'|'api'|'mobile'|'ai'|null
+  const [detectedType, setDetectedType]         = useState(null)
   const [userPickedPreset, setUserPickedPreset] = useState(false)
 
   // Custom preset module configuration
   const [customModules, setCustomModules] = useState({
-    recon:          { enabled: true,  intensity: 'medium' },
-    vuln_scan:      { enabled: true,  intensity: 'medium' },
-    active_testing: { enabled: false, intensity: 'medium' },
-    auth:           { enabled: true,  intensity: 'medium' },
-    business_logic: { enabled: false, intensity: 'medium' },
-    chains:         { enabled: false, intensity: 'medium' },
-    ai_hypothesis:  { enabled: false, intensity: 'medium' },
-    ai_llm:        { enabled: false, intensity: 'medium' },
+    recon:               { enabled: true,  intensity: 'medium' },
+    vuln_scan:           { enabled: true,  intensity: 'medium' },
+    active_testing:      { enabled: false, intensity: 'medium' },
+    auth:                { enabled: true,  intensity: 'medium' },
+    business_logic:      { enabled: false, intensity: 'medium' },
+    chains:              { enabled: false, intensity: 'medium' },
+    ai_hypothesis:       { enabled: false, intensity: 'medium' },
+    ai_llm:              { enabled: false, intensity: 'medium' },
+    adversarial_waf:     { enabled: false, intensity: 'medium' },
+    browser_reasoning:   { enabled: false, intensity: 'medium' },
+    attack_planner:      { enabled: false, intensity: 'medium' },
+    api_abuse:           { enabled: false, intensity: 'medium' },
+    graph_risk_analyzer: { enabled: false, intensity: 'medium' },
+    ai_validation:       { enabled: false, intensity: 'medium' },
+    poc_generator:       { enabled: false, intensity: 'medium' },
   })
 
   // Session state
@@ -210,22 +117,30 @@ export default function GodMode() {
       if (data?.status !== 'no_session' && data?.status !== 'error') {
         const prev = session
         setSession(data)
-        // Sync findings when a scan transitions to completed/terminated
         if (prev && !prev.terminated_by && data?.terminated_by) {
           try {
             const vr = await endpoints.vulnerabilities()
             setVulnerabilities(vr.data || [])
-          } catch (_) { /* findings sync failed silently */ }
+          } catch (_) {}
           refreshSessions()
         }
       }
-    } catch (e) { /* backend not ready */ }
+    } catch (e) {}
   }
 
   const refreshSessions = async () => {
     try {
       const r = await endpoints.godModeSessions()
-      setSessions(r.data?.sessions || [])
+      const list = r.data?.sessions || []
+      setSessions(list)
+      // Auto-select the most recent active (non-terminated) session so the
+      // polling refresh uses the fast /status/{scan_id} endpoint.
+      if (!selectedSessionId && list.length > 0) {
+        const active = list.find(s => !s.terminated_by) || list[0]
+        if (active?.scan_id) {
+          setSelectedSessionId(active.scan_id)
+        }
+      }
     } catch (e) { setSessions([]) }
   }
 
@@ -236,11 +151,28 @@ export default function GodMode() {
     try {
       const r = await endpoints.godModeLogs(id, 200)
       setLogs(r.data?.lines || [])
-    } catch (e) { /* no log yet */ }
+    } catch (e) {}
     finally { setLogsLoading(false) }
   }
 
-  useEffect(() => { refresh(); refreshSessions() }, [])
+  useEffect(() => {
+    const handleApprovalEvent = (e) => {
+      console.log('GOD MODE Approval Request Received:', e.detail)
+      setApprovalRequest(e.detail)
+    }
+    window.addEventListener('AWAITING_APPROVAL', handleApprovalEvent)
+    return () => window.removeEventListener('AWAITING_APPROVAL', handleApprovalEvent)
+  }, [])
+
+  useEffect(() => {
+    // Load sessions first, then auto-select the latest active one so polling
+    // uses the fast /status/{scan_id} path instead of the slow find_latest() path.
+    const init = async () => {
+      await refreshSessions()
+      refresh()
+    }
+    init()
+  }, [])
 
   useEffect(() => {
     clearInterval(pollRef.current)
@@ -251,28 +183,26 @@ export default function GodMode() {
   }, [session?.terminated_by, selectedSessionId])
 
   useEffect(() => {
-    if (tab === 'logs' && selectedSessionId) refreshLogs(selectedSessionId)
-  }, [tab, selectedSessionId])
+    if (showLogs && selectedSessionId) refreshLogs(selectedSessionId)
+  }, [showLogs, selectedSessionId])
 
   useEffect(() => {
     const active = !!(session && !session.terminated_by)
-    if (tab !== 'logs' || !selectedSessionId || !active) return
+    if (!showLogs || !selectedSessionId || !active) return
     const id = setInterval(() => refreshLogs(selectedSessionId), 8000)
     return () => clearInterval(id)
-  }, [tab, selectedSessionId, session?.terminated_by])
+  }, [showLogs, selectedSessionId, session?.terminated_by])
 
   useEffect(() => {
     logBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [logs])
 
-  // Load saved auth sessions on mount
   useEffect(() => {
     endpoints.authListSessions()
       .then(r => setSavedSessions(r.data || []))
       .catch(() => {})
   }, [])
 
-  // Detect login form 800ms after target changes
   useEffect(() => {
     if (!target.trim()) { setLoginFormDetected(null); return }
     const timer = setTimeout(() => {
@@ -283,7 +213,6 @@ export default function GodMode() {
     return () => clearTimeout(timer)
   }, [target])
 
-  // URL auto-detection — runs 400ms after target changes
   useEffect(() => {
     if (!target.trim() || userPickedPreset) {
       if (!target.trim()) setDetectedType(null)
@@ -297,7 +226,6 @@ export default function GodMode() {
     return () => clearTimeout(timer)
   }, [target, userPickedPreset])
 
-  // ── Auth Session Recording ────────────────────────────────────────────────
   const handleRecordSession = async () => {
     if (!target.trim()) return
     setIsRecording(true)
@@ -339,15 +267,12 @@ export default function GodMode() {
     if (!recordingId) { setIsRecording(false); return }
     try {
       await endpoints.authRecordCancel(recordingId)
-    } catch (e) {
-      // ignore — browser may already be closed
-    } finally {
+    } catch (e) {} finally {
       setIsRecording(false)
       setRecordingId(null)
     }
   }
 
-  // ── Launch ────────────────────────────────────────────────────────────────
   const handleLaunch = async () => {
     if (!target.trim()) return
     if (preset === 'custom') {
@@ -365,22 +290,18 @@ export default function GodMode() {
       if (authType === 'header' && authValue.trim())  authPayload.auth_header    = authValue.trim()
 
       const isCustom = preset === 'custom'
-      const comingSoonIds = new Set(ALL_MODULES.filter(m => m.comingSoon).map(m => m.id))
       const enabledModules = isCustom
         ? Object.entries(customModules)
-            .filter(([id, c]) => c.enabled && !comingSoonIds.has(id))
+            .filter(([id, c]) => c.enabled)
             .map(([id]) => id)
         : []
       const moduleIntensities = isCustom
         ? Object.fromEntries(
             Object.entries(customModules)
-              .filter(([id, c]) => c.enabled && !comingSoonIds.has(id))
+              .filter(([id, c]) => c.enabled)
               .map(([id, c]) => [id, c.intensity])
           )
         : {}
-      const launchLabel = isCustom
-        ? `Custom (${enabledModules.length} modules)`
-        : activePreset.label
 
       await endpoints.godModeRun({
         target:       target.trim(),
@@ -395,8 +316,9 @@ export default function GodMode() {
         }),
         ...authPayload,
         ...(authSessionId ? { auth_session_id: authSessionId } : {}),
+        ...(appContext.trim() ? { app_context: appContext.trim() } : {}),
       })
-      addNotification(`GOD MODE launched (${launchLabel}) — Foundation starting`, 'success')
+      addNotification(`GOD MODE launched — Foundation starting`, 'success')
       setSession(null)
       setTimeout(() => { refresh(); refreshSessions() }, 1500)
     } catch (e) {
@@ -406,7 +328,6 @@ export default function GodMode() {
     }
   }
 
-  // ── Stop / Delete ─────────────────────────────────────────────────────────
   const handleStop = async () => {
     setStopping(true)
     try {
@@ -414,8 +335,6 @@ export default function GodMode() {
       if (r.data?.stopped) {
         addNotification('Stop sentinel written — finalizing within 30s', 'success')
         setTimeout(refresh, 3000)
-      } else {
-        addNotification('No active session to stop', 'warn')
       }
     } catch (e) {
       addNotification('Stop failed: ' + e.message, 'error')
@@ -435,575 +354,352 @@ export default function GodMode() {
     }
   }
 
-  // ── Derived ───────────────────────────────────────────────────────────────
+  const handleApproveAction = async (decision) => {
+    if (!approvalRequest) return
+    try {
+      await endpoints.godModeApprove({
+        scan_id: approvalRequest.scan_id || session?.scan_id,
+        decision,
+        action_id: approvalRequest.action_id
+      })
+      addNotification(`Action ${decision === 'allow' ? 'APPROVED' : 'DENIED'}`, decision === 'allow' ? 'success' : 'warn')
+      setApprovalRequest(null)
+    } catch (e) {
+      addNotification('Approval failed: ' + (e.response?.data?.detail || e.message), 'error')
+    }
+  }
+
   const isRunning  = session && !session.terminated_by
-  const missions   = Object.entries(session?.missions || {})
-  const elapsed    = session?.elapsed_seconds ?? 0
-  const termReason = session?.terminated_by ? TERM_REASONS[session.terminated_by] : null
+  const activeStage = Object.entries(session?.missions || {}).find(([_, s]) => s === 'running')?.[0] || 
+                     (session?.terminated_by ? 'complete' : 'foundation')
+  
+  const completedStages = Object.entries(session?.missions || {})
+    .filter(([_, s]) => s === 'done')
+    .map(([name]) => {
+       if (name === 'full_scan') return 'scan'
+       return name
+    })
 
   const logLevelColor = (line) => {
     if (/ERROR|CRITICAL|\[-\]/i.test(line)) return 'text-red-400'
     if (/WARNING|\[!\]/i.test(line)) return 'text-yellow-400'
-    if (/\[GOD MODE\]|\[\+\]/i.test(line)) return 'text-cyan-400'
-    if (/\[Stage|Mission|converge|unlock/i.test(line)) return 'text-purple-400'
-    return 'text-slate-400'
+    if (/\[GOD MODE\]|\[\+\]/i.test(line)) return 'text-accent-primary'
+    if (/\[Stage|Mission|converge|unlock/i.test(line)) return 'text-accent-purple'
+    return 'text-slate-500'
   }
 
-  // Summary for Custom preset card
-  const customEnabledModules = Object.values(customModules).filter(c => c.enabled)
-  const customIntensitySet   = [...new Set(customEnabledModules.map(c => c.intensity))]
-  const customSummary = customEnabledModules.length === 0
-    ? 'no modules selected'
-    : `${customEnabledModules.length} module${customEnabledModules.length > 1 ? 's' : ''} · ${customIntensitySet.length > 1 ? 'Mixed intensity' : (customIntensitySet[0] ?? 'medium')}`
-
   return (
-    <div className="flex flex-col gap-5">
-      {/* Header */}
-      <div className="section-header">
-        <div>
-          <div className="section-title flex items-center gap-2.5">
-            <Flame size={20} className="text-red-400" style={{ filter: 'drop-shadow(0 0 8px rgba(239,68,68,0.8))' }} />
-            <span className="gradient-text" style={{ backgroundImage: 'linear-gradient(90deg,#ff4444,#ff8800,#ffcc00)' }}>
-              GOD MODE
-            </span>
-          </div>
-          <div className="text-xs text-slate-500">
-            Adaptive autonomous scanner — configure scope and modules, then launch
-          </div>
-        </div>
-        <button className="btn-secondary" onClick={() => { refresh(); refreshSessions() }}>
-          <RefreshCw size={13} />Refresh
+    <div className="flex h-[calc(100vh-64px)] -m-6 overflow-hidden bg-bg-primary relative">
+      {/* Sidebar Toggle for Mobile */}
+      <button 
+        onClick={() => setShowSidebar(!showSidebar)}
+        className="lg:hidden absolute top-4 left-4 z-[60] p-2 bg-bg-card border border-bg-border rounded-lg text-accent-primary"
+      >
+        <Menu size={20} />
+      </button>
+
+      {/* Aegis Sidebar: LaunchPad */}
+      <div className={clsx(
+        "absolute lg:relative inset-y-0 left-0 z-50 transition-all duration-300 transform",
+        showSidebar ? "translate-x-0 w-80" : "-translate-x-full lg:translate-x-0 lg:w-0 overflow-hidden"
+      )}>
+        <LaunchPad 
+          target={target} setTarget={setTarget}
+          preset={preset} setPreset={setPreset}
+          reportFmt={reportFmt} setReportFmt={setReportFmt}
+          launching={launching} isRunning={isRunning}
+          handleLaunch={handleLaunch}
+          detectedType={detectedType} userPickedPreset={userPickedPreset} setUserPickedPreset={setUserPickedPreset}
+          customModules={customModules} setCustomModules={setCustomModules}
+          showAuth={showAuth} setShowAuth={setShowAuth}
+          authType={authType} setAuthType={setAuthType}
+          authValue={authValue} setAuthValue={setAuthValue}
+          savedSessions={savedSessions}
+          authSessionId={authSessionId} setAuthSessionId={setAuthSessionId}
+          appContext={appContext} setAppContext={setAppContext}
+          isRecording={isRecording} handleRecordSession={handleRecordSession} handleRecordDone={handleRecordDone} handleRecordCancel={handleRecordCancel}
+          recordingWarning={recordingWarning} loginFormDetected={loginFormDetected}
+          sessions={sessions} selectedSessionId={selectedSessionId} setSelectedSessionId={setSelectedSessionId} setSession={setSession} setTab={setTab}
+          handleDelete={handleDelete}
+        />
+        {/* Close button for mobile sidebar overlay */}
+        <button 
+          onClick={() => setShowSidebar(false)}
+          className="lg:hidden absolute top-4 right-4 text-slate-500 hover:text-white"
+        >
+          <X size={20} />
         </button>
       </div>
 
-      {/* Active session banner */}
-      {isRunning && (
-        <div className="card border-orange-500/30 bg-orange-500/5 glow-orange p-4 flex items-center gap-4">
-          <Flame size={18} className="text-orange-400 flex-shrink-0 animate-pulse" />
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold text-orange-300">GOD MODE ACTIVE — {session.target}</div>
-            <div className="text-xs text-orange-400/70 mt-0.5">
-              Session: <span className="font-mono">{session.scan_id}</span> · Elapsed: {formatDuration(elapsed)} · Findings: {session.finding_count}
-            </div>
-            <div className="progress-bar mt-2" style={{ background: 'rgba(249,115,22,0.15)' }}>
-              <div className="progress-fill animate-pulse" style={{ width: '100%', background: 'linear-gradient(90deg,#ff4444,#f97316)' }} />
-            </div>
-          </div>
-          <button className="btn-danger flex-shrink-0" onClick={handleStop} disabled={stopping}>
-            <Square size={12} />{stopping ? 'Stopping...' : 'Stop'}
-          </button>
-        </div>
+      {/* Overlay for mobile sidebar */}
+      {showSidebar && (
+        <div 
+          className="lg:hidden absolute inset-0 bg-black/60 backdrop-blur-sm z-40"
+          onClick={() => setShowSidebar(false)}
+        />
       )}
 
-      {/* Completed banner */}
-      {session?.terminated_by && termReason && (
-        <div className="card border-emerald-500/20 bg-emerald-500/5 p-4 flex items-center gap-3">
-          <termReason.icon size={16} className={termReason.color} />
-          <div className="flex-1">
-            <div className={clsx('text-sm font-semibold', termReason.color)}>
-              Session Complete — {termReason.label}
-            </div>
-            <div className="text-xs text-slate-500 mt-0.5">
-              {session.target} · Completed in {formatDuration(elapsed)} · {session.finding_count} findings
-            </div>
-          </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <button className="btn-secondary" onClick={() => navigate(`/chains/${session.scan_id}`)}>
-              <Zap size={12} />View Exploit Chain
-            </button>
-            <button className="btn-secondary" onClick={() => navigate('/results')}>
-              <ExternalLink size={12} />View Findings
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div className="grid grid-cols-5 gap-4">
-        {/* ── Left: Launch Form ─────────────────────────────────────────────── */}
-        <div className="col-span-2 flex flex-col gap-4">
-          <div className="card">
-            <div className="card-header">
-              <span className="card-title">
-                <Flame size={14} className="text-red-400" />
-                Launch Scan
-              </span>
-            </div>
-            <div className="card-body flex flex-col gap-5">
-
-              {/* Target */}
-              <div>
-                <label className="label">Target</label>
-                <input
-                  className={clsx('input', detectedType && !userPickedPreset && 'border-cyan-500/40 shadow-[0_0_0_2px_rgba(0,217,255,0.08)]')}
-                  placeholder="https://target.com"
-                  value={target}
-                  onChange={e => { setTarget(e.target.value); setUserPickedPreset(false) }}
-                  onKeyDown={e => e.key === 'Enter' && !isRunning && !launching && target.trim() && handleLaunch()}
-                />
-                {detectedType && !userPickedPreset && target.trim() && (
-                  <div className="flex items-center gap-1.5 mt-1.5 text-[10px] text-cyan-400">
-                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse flex-shrink-0" />
-                    Detected: {detectedType.toUpperCase()} target — switched to {TYPE_TO_PRESET[detectedType]}
-                  </div>
-                )}
-              </div>
-
-              {/* Scope Presets */}
-              <div>
-                <label className="label">Scope</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {PRESETS.map(p => (
-                    <button
-                      key={p.id}
-                      onClick={() => { setPreset(p.id); setUserPickedPreset(true) }}
-                      className={clsx(
-                        'flex flex-col items-start gap-0.5 p-3 rounded-xl border text-left transition-all',
-                        p.id === 'custom' && 'col-span-2',
-                        preset === p.id ? p.activeColor : p.color + ' opacity-70 hover:opacity-100'
-                      )}
-                    >
-                      <div className="flex items-center gap-2 w-full">
-                        <span className="text-xs font-semibold">{p.label}</span>
-                        {p.id === 'custom' && preset === 'custom' && (
-                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-violet-500/20 border border-violet-500/30 text-violet-300">
-                            {customSummary}
-                          </span>
-                        )}
-                      </div>
-                      <span className="text-[10px] opacity-70 leading-tight">{p.desc}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Modules — badges for presets, interactive rows for Custom */}
-              <div>
-                <label className="label">
-                  Modules
-                  {preset === 'custom' && (
-                    <span className="ml-2 text-[9px] text-slate-500 normal-case tracking-normal">
-                      check to enable · set intensity per module
-                    </span>
-                  )}
-                </label>
-
-                {preset !== 'custom' ? (
-                  <div className="flex flex-wrap gap-1.5">
-                    {ALL_MODULES.map(m => {
-                      const included = activePreset.modules.includes(m.id)
-                      return (
-                        <div
-                          key={m.id}
-                          title={m.desc}
-                          className={clsx(
-                            'flex items-center gap-1 px-2 py-1 rounded-lg border text-[10px] font-medium transition-all',
-                            m.comingSoon
-                              ? 'border-slate-700 text-slate-600 bg-transparent'
-                              : included
-                              ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'
-                              : 'border-slate-700 text-slate-600 bg-transparent line-through'
-                          )}
-                        >
-                          <m.icon size={9} />
-                          {m.label}
-                          {m.comingSoon && <span className="text-[8px] text-slate-600 ml-0.5">soon</span>}
-                        </div>
-                      )
-                    })}
-                  </div>
-                ) : (
-                  <div className="flex flex-col gap-1.5">
-                    {ALL_MODULES.filter(m => !m.comingSoon).map(m => {
-                      const cfg = customModules[m.id]
-                      const enabled = cfg?.enabled ?? false
-                      const intensity = cfg?.intensity ?? 'medium'
-                      return (
-                        <div
-                          key={m.id}
-                          className={clsx(
-                            'flex items-center gap-2.5 px-3 py-2 rounded-lg border transition-all',
-                            enabled
-                              ? 'border-cyan-500/20 bg-cyan-500/[0.04]'
-                              : 'border-slate-700/60 bg-bg-secondary opacity-50'
-                          )}
-                        >
-                          {/* Checkbox */}
-                          <button
-                            onClick={() => setCustomModules(prev => ({
-                              ...prev,
-                              [m.id]: { ...prev[m.id], enabled: !enabled }
-                            }))}
-                            className={clsx(
-                              'w-4 h-4 rounded flex-shrink-0 flex items-center justify-center border transition-all',
-                              enabled
-                                ? 'bg-cyan-400 border-cyan-400 text-black'
-                                : 'border-slate-600 bg-transparent'
-                            )}
-                          >
-                            {enabled && <span className="text-[9px] font-black leading-none">✓</span>}
-                          </button>
-
-                          {/* Info */}
-                          <div className="flex-1 min-w-0">
-                            <div className="text-[11px] font-semibold text-slate-200">{m.label}</div>
-                            <div className="text-[9px] text-slate-500 truncate">{m.desc}</div>
-                          </div>
-
-                          {/* Intensity selector */}
-                          <select
-                            disabled={!enabled}
-                            value={intensity}
-                            onChange={e => setCustomModules(prev => ({
-                              ...prev,
-                              [m.id]: { ...prev[m.id], intensity: e.target.value }
-                            }))}
-                            className={clsx(
-                              'text-[10px] bg-bg-elevated border rounded-md px-1.5 py-1 flex-shrink-0 transition-all',
-                              enabled
-                                ? (INTENSITY_COLORS[intensity] ?? INTENSITY_COLORS.medium)
-                                : 'border-slate-700 text-slate-600'
-                            )}
-                          >
-                            <option value="low">Low</option>
-                            <option value="medium">Medium</option>
-                            <option value="high">High</option>
-                            <option value="aggressive">Aggressive</option>
-                          </select>
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* Report Format */}
-              <div>
-                <label className="label">Report Format</label>
-                <select className="select" value={reportFmt} onChange={e => setReportFmt(e.target.value)}>
-                  {['markdown', 'html', 'json', 'pdf'].map(f => <option key={f} value={f}>{f}</option>)}
-                </select>
-              </div>
-
-              {/* Authentication */}
-              <div>
-                <button
-                  className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors w-full"
-                  onClick={() => setShowAuth(!showAuth)}
-                >
-                  <Shield size={12} />
-                  Authentication
-                  <span className="text-slate-600 text-[10px]">(optional — deeper coverage)</span>
-                  <span className="ml-auto">{showAuth ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
-                </button>
-
-                {showAuth && (
-                  <div className="flex flex-col gap-3 mt-3 p-3 rounded-lg bg-bg-secondary border border-cyan-500/20">
-                    <div className="text-[10px] text-cyan-400/80 leading-relaxed">
-                      Enables authenticated scanning: IDOR, privilege escalation, post-login business logic, PII exposure.
-                    </div>
-                    <div>
-                      <label className="label">Auth Type</label>
-                      <select className="select" value={authType} onChange={e => { setAuthType(e.target.value); setAuthValue('') }}>
-                        <option value="none">None (unauthenticated)</option>
-                        <option value="record">⏺ Record Login Session</option>
-                        <option value="cookie">Session Cookie</option>
-                        <option value="bearer">Bearer Token (JWT)</option>
-                        <option value="header">Raw Auth Header</option>
-                      </select>
-                    </div>
-                    {authType !== 'none' && (
-                      <div>
-                        <label className="label">
-                          {authType === 'cookie' && 'Cookie Value'}
-                          {authType === 'bearer' && 'Bearer Token'}
-                          {authType === 'header' && 'Raw Header Value'}
-                        </label>
-                        <input
-                          className="input font-mono text-xs"
-                          placeholder={
-                            authType === 'cookie' ? 'session=abc123; _csrf=xyz789' :
-                            authType === 'bearer' ? 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...' :
-                            'Bearer eyJhbGciOiJIUzI1NiJ9...'
-                          }
-                          value={authValue}
-                          onChange={e => setAuthValue(e.target.value)}
-                        />
-                        {authValue && (
-                          <div className="text-[10px] text-emerald-400 mt-1 flex items-center gap-1">
-                            <CheckCircle2 size={9} /> Authenticated scanning enabled
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Saved session picker */}
-                    {savedSessions.length > 0 && (
-                      <div className="mt-3">
-                        <label className="label">Use Saved Session</label>
-                        <select
-                          className="select"
-                          value={authSessionId}
-                          onChange={e => setAuthSessionId(e.target.value)}
-                        >
-                          <option value="">— None —</option>
-                          {savedSessions.map(s => (
-                            <option key={s.session_id} value={s.session_id}>
-                              {s.name || s.session_id} ({s.target})
-                            </option>
-                          ))}
-                        </select>
-                        {authSessionId && !recordingWarning && (
-                          <p className="text-[10px] text-green-400 mt-1 flex items-center gap-1">
-                            <CheckCircle2 size={9} /> Authenticated session will be injected
-                          </p>
-                        )}
-                        {recordingWarning && (
-                          <div className="mt-2 p-2 rounded border border-orange-500/40 bg-orange-900/20">
-                            <p className="text-[10px] text-orange-300 font-medium flex items-center gap-1 mb-1">
-                              ⚠ Session captured on login page — not authenticated
-                            </p>
-                            <p className="text-[10px] text-orange-400 mb-2">
-                              You clicked Done before the login redirect completed. Re-record and wait until you see the app dashboard.
-                            </p>
-                            <button
-                              className="btn-secondary w-full text-[10px] py-1"
-                              onClick={() => { setRecordingWarning(''); setAuthSessionId(''); handleRecordSession(); }}
-                            >
-                              ⏺ Re-record Session
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Record new session */}
-                    {!isRecording && (
-                      <div className="mt-3">
-                        <button
-                          className="btn-secondary w-full flex items-center justify-center gap-2"
-                          onClick={handleRecordSession}
-                          disabled={!target.trim()}
-                        >
-                          <span>⏺</span> Record Login Session
-                        </button>
-                        <p className="text-[10px] text-slate-500 mt-1">
-                          {loginFormDetected
-                            ? 'Login form detected — click to open browser and record your session'
-                            : 'Open a browser to manually log in and record your session'}
-                        </p>
-                      </div>
-                    )}
-
-                    {/* Recording in progress overlay */}
-                    {isRecording && (
-                      <div className="mt-3 p-3 rounded border border-yellow-600/40 bg-yellow-900/20">
-                        <p className="text-xs text-yellow-300 font-medium mb-2">
-                          ⏺ Recording — browser is open on the server
-                        </p>
-                        <p className="text-[10px] text-yellow-400 mb-3">
-                          Log in to your account in the browser, then click Done below.
-                        </p>
-                        <button
-                          className="btn-primary w-full"
-                          onClick={handleRecordDone}
-                        >
-                          Done — I have logged in
-                        </button>
-                        <button
-                          className="btn-secondary w-full mt-2"
-                          onClick={handleRecordCancel}
-                        >
-                          Cancel — Close browser
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Launch button */}
-              <button
-                className={clsx(
-                  'btn-lg justify-center rounded-xl font-semibold transition-all',
-                  target.trim() && !launching && !isRunning
-                    ? 'bg-gradient-to-r from-red-600/80 to-orange-500/80 border border-orange-500/50 text-white hover:from-red-500/80 hover:to-orange-400/80 active:scale-95'
-                    : 'bg-bg-elevated border border-bg-border text-slate-500 cursor-not-allowed'
-                )}
-                onClick={handleLaunch}
-                disabled={!target.trim() || launching || isRunning}
-              >
-                {isRunning ? (
-                  <><Activity size={14} className="animate-pulse" />Running...</>
-                ) : launching ? (
-                  <><RefreshCw size={14} className="animate-spin" />Launching...</>
-                ) : (
-                  <><Flame size={14} />Launch GOD MODE</>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* Past sessions */}
-          {sessions.length > 0 && (
-            <div className="card">
-              <div className="card-header">
-                <span className="card-title"><Clock size={13} className="text-slate-400" />Scan History</span>
-              </div>
-              <div className="divide-y divide-bg-border">
-                {sessions.slice(0, 8).map((s, i) => (
-                  <div
-                    key={s.scan_id || i}
-                    onClick={() => { setSelectedSessionId(s.scan_id); setSession(s); setTab('status') }}
-                    className={clsx(
-                      'w-full text-left flex items-center gap-3 px-4 py-2.5 hover:bg-white/[0.02] transition-colors cursor-pointer group',
-                      selectedSessionId === s.scan_id && 'bg-accent-primary/5'
-                    )}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs font-medium text-slate-200 truncate">{s.target}</div>
-                      <div className="text-[10px] text-slate-500 font-mono">{s.scan_id}</div>
-                      <div className="text-[10px] text-slate-600 mt-0.5">
-                        <span className="text-slate-500">Started:</span> {formatDateTime(s.started_at)}
-                      </div>
-                      {s.completed_at && (
-                        <div className="text-[10px] text-slate-600">
-                          <span className="text-slate-500">Completed:</span> {formatDateTime(s.completed_at)}
-                        </div>
-                      )}
-                    </div>
-                    <div className="text-right flex-shrink-0">
-                      <div className={clsx('text-[10px] font-semibold', TERM_REASONS[s.terminated_by]?.color || 'text-cyan-400')}>
-                        {s.terminated_by ? TERM_REASONS[s.terminated_by]?.label : 'Running'}
-                      </div>
-                      <div className="text-[10px] text-slate-600">{s.finding_count ?? 0} findings</div>
-                    </div>
-                    <button
-                      className="btn-icon text-slate-600 hover:text-red-400 p-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                      onClick={e => handleDelete(s.scan_id, e)}
-                      title="Delete session"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+      {/* Aegis Main Command Center */}
+      <div className="flex-1 flex flex-col min-w-0 relative overflow-hidden">
+        
+        {/* Top HUD: VitalSignsHUD */}
+        <div className={clsx(
+          "transition-all duration-700 ease-in-out px-4",
+          session ? "opacity-100 translate-y-0 pt-4 pb-2" : "opacity-0 -translate-y-4 h-0 p-0 overflow-hidden"
+        )}>
+          <VitalSignsHUD 
+            findings={session?.finding_count || 0}
+            assets={session?.asset_count || 0}
+            coverage={session?.coverage_percent || 0}
+            confidence={session?.confidence_score || 0}
+            avgEma={session?.avg_ema || 0}
+            activePersona={savedSessions.find(s => s.session_id === authSessionId)}
+          />
         </div>
 
-        {/* ── Right: Status / Logs ──────────────────────────────────────────── */}
-        <div className="col-span-3 flex flex-col gap-4">
-          <div className="tab-bar">
-            {[{ id: 'status', label: 'Mission Status' }, { id: 'logs', label: 'Live Logs' }].map(t => (
-              <button key={t.id} onClick={() => setTab(t.id)} className={tab === t.id ? 'tab-active' : 'tab'}>{t.label}</button>
-            ))}
-            {tab === 'logs' && (
-              <button className="ml-auto btn-ghost btn-sm" onClick={() => refreshLogs()}>
-                <RefreshCw size={11} className={logsLoading ? 'animate-spin' : ''} />
-              </button>
-            )}
-          </div>
-
-          {tab === 'status' && (
-            <div className="card flex-1">
-              {session ? (
-                <div className="card-body flex flex-col gap-5">
-                  {/* Session meta */}
-                  <div className="grid grid-cols-3 gap-3">
-                    {[
-                      { label: 'Target',       value: session.target,                                    mono: true },
-                      { label: 'Session ID',   value: session.scan_id,                                   mono: true },
-                      { label: 'Status',       value: session.terminated_by ? TERM_REASONS[session.terminated_by]?.label : 'Running' },
-                      { label: 'Started',      value: formatDateTime(session.started_at)  },
-                      { label: 'Completed',    value: formatDateTime(session.completed_at) },
-                      { label: 'Elapsed',      value: formatDuration(session.elapsed_seconds) },
-                      { label: 'Findings',     value: `${session.finding_count ?? 0}` },
-                      { label: 'Phases Done',  value: `${(session.phases_complete || []).length}` },
-                    ].map(item => (
-                      <div key={item.label} className="p-3 rounded-xl bg-bg-secondary border border-bg-border">
-                        <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">{item.label}</div>
-                        <div className={clsx('text-sm font-medium text-slate-200 truncate', item.mono && 'font-mono text-xs')}>{item.value}</div>
-                      </div>
-                    ))}
+        {/* Central Body */}
+        <div className="flex-1 flex flex-col gap-6 p-4 lg:p-6 pt-2 overflow-y-auto scrollbar-thin scrollbar-thumb-bg-border">
+          
+          {/* Mission Pipeline Section */}
+          <div className={clsx(
+            "transition-all duration-700 delay-100",
+            session ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"
+          )}>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 px-2 gap-4">
+              <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Mission Pipeline</h3>
+              {isRunning && (
+                <div className="flex items-center gap-4 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-accent-primary animate-ping" />
+                    <span className="text-[10px] font-mono text-accent-primary uppercase tracking-widest font-bold">Live Execution</span>
                   </div>
-
-                  {/* Mission pipeline */}
-                  {missions.length > 0 && (
-                    <div>
-                      <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Mission Pipeline</div>
-                      <div className="flex flex-col gap-2">
-                        {missions.map(([name, status], i) => {
-                          const Icon = MISSION_ICONS[name] || Zap
-                          const statusStyle = MISSION_STATUS_STYLE[status] || 'text-slate-500 badge-info'
-                          const isActive = status === 'running'
-                          const isDone   = status === 'done'
-                          return (
-                            <div
-                              key={name}
-                              className={clsx(
-                                'flex items-center gap-3 p-3 rounded-xl border transition-all',
-                                isActive  ? 'border-cyan-500/30 bg-cyan-500/5' :
-                                isDone    ? 'border-emerald-500/20 bg-emerald-500/5' :
-                                status === 'failed' ? 'border-red-500/20 bg-red-500/5' :
-                                'border-bg-border bg-bg-secondary'
-                              )}
-                            >
-                              <div className={clsx(
-                                'w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0',
-                                isActive ? 'bg-cyan-500/20 text-cyan-400' :
-                                isDone   ? 'bg-emerald-500/20 text-emerald-400' :
-                                'bg-bg-elevated text-slate-600'
-                              )}>{i + 1}</div>
-                              <Icon size={13} className={isActive ? 'text-cyan-400' : isDone ? 'text-emerald-400' : 'text-slate-600'} />
-                              <div className="flex-1">
-                                <span className={clsx('text-sm font-medium', isActive ? 'text-slate-100' : 'text-slate-400')}>
-                                  {MISSION_DISPLAY_NAMES[name] || name} Mission
-                                </span>
-                              </div>
-                              <span className={clsx('badge', statusStyle)}>
-                                {isActive && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse mr-1" />}
-                                {status}
-                              </span>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="empty-state">
-                  <div className="empty-icon"><Flame size={20} className="text-slate-600" /></div>
-                  <div className="empty-title">No active session</div>
-                  <div className="empty-sub">Configure scope and launch a scan to see the mission pipeline</div>
+                  <button onClick={handleStop} disabled={stopping} className="btn-danger btn-xs py-1 px-3 text-[10px] whitespace-nowrap">
+                    {stopping ? 'Stopping...' : 'Abort Mission'}
+                  </button>
                 </div>
               )}
             </div>
-          )}
+            <div className="bg-bg-secondary/20 backdrop-blur-sm border border-bg-border rounded-2xl overflow-hidden shadow-inner">
+               <MissionPipeline 
+                 missions={session?.missions || {}}
+                 phases_complete={session?.phases_complete || []}
+                 recursionLayer={session?.recursion_layer || 0}
+               />
+            </div>
+          </div>
 
-          {tab === 'logs' && (
-            <div className="card flex-1 flex flex-col">
-              <div className="card-header">
-                <span className="card-title"><Terminal size={13} className="text-accent-primary" />Session Log</span>
-                <span className="text-xs text-slate-600 font-mono">{selectedSessionId || '—'}</span>
+          {/* Intelligence & Results Grid */}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 flex-1 min-h-[500px]">
+             
+             {/* Insight Feed */}
+             <div className={clsx(
+               "flex flex-col gap-4 transition-all duration-700 delay-200 order-2 xl:order-1",
+               session ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-4"
+             )}>
+                <InsightFeed insights={session?.insights || []} />
+             </div>
+
+             {/* Live Telemetry / Session Info */}
+             <div className={clsx(
+               "flex flex-col gap-4 transition-all duration-700 delay-300 order-1 xl:order-2",
+               session ? "opacity-100 translate-x-0" : "opacity-0 translate-x-4"
+             )}>
+                <div className="flex items-center justify-between px-2">
+                  <div className="flex items-center gap-2 text-accent-purple">
+                    <Activity size={18} />
+                    <h3 className="text-sm font-bold uppercase tracking-[0.2em]">Live Telemetry</h3>
+                  </div>
+                  <button 
+                    onClick={() => setShowLogs(!showLogs)}
+                    className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-500 hover:text-accent-primary transition-colors"
+                  >
+                    <Terminal size={12} />
+                    {showLogs ? 'Hide Logs' : 'Show Logs'}
+                  </button>
+                </div>
+
+                <div className="flex-1 bg-bg-secondary/20 backdrop-blur-sm border border-bg-border rounded-2xl p-6 flex flex-col gap-6">
+                   {!session ? (
+                     <div className="flex-1 flex flex-col items-center justify-center text-slate-600 italic">
+                        <Radar size={48} className="opacity-10 mb-4 animate-pulse-slow" />
+                        <p className="text-sm font-mono tracking-tighter">Awaiting scan initialization...</p>
+                     </div>
+                   ) : (
+                     <>
+                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          <div className="p-4 rounded-xl bg-bg-primary/40 border border-bg-border">
+                            <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-2 opacity-60">Engine Status</div>
+                            <div className="flex items-center gap-3">
+                               <div className={clsx(
+                                 "w-2 h-2 rounded-full",
+                                 isRunning ? "bg-accent-primary shadow-glow-cyan" : "bg-accent-success shadow-glow-green"
+                               )} />
+                               <span className="text-sm font-bold text-slate-200 uppercase tracking-tight">
+                                 {session.terminated_by ? 'Terminated' : 'Operational'}
+                               </span>
+                            </div>
+                          </div>
+                          <div className="p-4 rounded-xl bg-bg-primary/40 border border-bg-border">
+                            <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-2 opacity-60">Scan Identity</div>
+                            <div className="text-xs font-mono text-accent-primary truncate">#{session.scan_id.slice(0, 12)}...</div>
+                          </div>
+                       </div>
+
+                       <div className="flex-1 overflow-y-auto scrollbar-thin pr-2">
+                          <div className="flex flex-col gap-4">
+                             <div className="flex flex-col gap-1">
+                                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest opacity-60">Primary Target</span>
+                                <div className="text-sm font-mono text-slate-200 break-all bg-bg-primary/30 p-2 rounded-lg border border-bg-border/50">
+                                   {session.target}
+                                </div>
+                             </div>
+                             
+                             <div className="flex flex-col gap-2">
+                                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest opacity-60">Completed Phases</span>
+                                <div className="flex flex-wrap gap-2">
+                                   {(session.phases_complete || []).length === 0 && <span className="text-2xs text-slate-600 italic">No phases finalized</span>}
+                                   {(session.phases_complete || []).map(p => (
+                                     <span key={p} className="px-2 py-1 rounded bg-accent-success/10 border border-accent-success/30 text-[9px] font-bold text-accent-success uppercase tracking-wider flex items-center gap-1">
+                                       <CheckCircle2 size={10} /> {p.replace(/_/g, ' ')}
+                                     </span>
+                                   ))}
+                                </div>
+                             </div>
+
+                             {session.terminated_by && (
+                               <div className="mt-4 p-4 rounded-xl bg-accent-success/5 border border-accent-success/20 animate-fade-in">
+                                  <div className="flex items-center gap-2 text-accent-success mb-2">
+                                     <CheckCircle2 size={16} />
+                                     <span className="text-xs font-bold uppercase tracking-widest">Mission Complete</span>
+                                  </div>
+                                  <p className="text-xs text-slate-400 mb-4">Autonomous execution has converged. Exploit chains and findings are ready for review.</p>
+                                  <div className="flex gap-2">
+                                     <button onClick={() => navigate(`/chains/${session.scan_id}`)} className="btn-primary flex-1 text-[10px] py-2">Exploit Chains</button>
+                                     <button onClick={() => navigate('/results')} className="btn-secondary flex-1 text-[10px] py-2">Findings</button>
+                                  </div>
+                               </div>
+                             )}
+                          </div>
+                       </div>
+                     </>
+                   )}
+                </div>
+             </div>
+          </div>
+        </div>
+
+        {/* Live Logs Slide-out Overlay */}
+        <div className={clsx(
+          "absolute inset-y-0 right-0 w-[450px] bg-bg-card/95 backdrop-blur-2xl border-l border-bg-border shadow-2xl transition-all duration-500 ease-in-out z-50 transform",
+          showLogs ? "translate-x-0" : "translate-x-full"
+        )}>
+           <div className="flex flex-col h-full">
+              <div className="p-4 border-b border-bg-border flex items-center justify-between bg-bg-secondary/50">
+                 <div className="flex items-center gap-3 text-accent-primary">
+                    <Terminal size={18} />
+                    <h3 className="text-xs font-bold uppercase tracking-[0.2em]">Core Execution Logs</h3>
+                 </div>
+                 <button 
+                   onClick={() => setShowLogs(false)}
+                   className="p-1 hover:bg-bg-elevated rounded-lg transition-colors text-slate-500 hover:text-white"
+                 >
+                   <X size={20} />
+                 </button>
               </div>
-              <div className="flex-1 overflow-y-auto bg-bg-primary rounded-b-xl p-4 font-mono text-xs h-96 max-h-[60vh]">
-                {logsLoading && <div className="text-slate-600">Loading logs...</div>}
-                {!logsLoading && logs.length === 0 && (
-                  <div className="text-slate-600">
-                    {selectedSessionId ? '// No log lines yet — session may just be starting' : '// Select a session to view logs'}
+              
+              <div className="flex-1 overflow-y-auto p-6 font-mono text-[11px] leading-relaxed scrollbar-thin scrollbar-thumb-bg-border bg-black/40">
+                 {logsLoading && logs.length === 0 ? (
+                   <div className="flex items-center gap-3 text-slate-600">
+                      <RefreshCw size={14} className="animate-spin" />
+                      Initializing telemetry stream...
+                   </div>
+                 ) : logs.length === 0 ? (
+                   <div className="text-slate-600 italic">// Awaiting log synchronization...</div>
+                 ) : (
+                   <div className="flex flex-col gap-1">
+                      {logs.map((line, i) => (
+                        <div key={i} className={clsx("whitespace-pre-wrap transition-colors duration-300 rounded px-1 -mx-1 hover:bg-white/5", logLevelColor(line))}>
+                          {line}
+                        </div>
+                      ))}
+                      <div ref={logBottomRef} />
+                   </div>
+                 )}
+              </div>
+
+              <div className="p-4 border-t border-bg-border bg-bg-secondary/50 flex items-center justify-between">
+                 <div className="text-[10px] font-mono text-slate-600 uppercase tracking-widest">
+                   Stream: Active · PID: Auto
+                 </div>
+                 <button onClick={() => refreshLogs()} className="text-[10px] font-bold text-accent-primary hover:underline uppercase tracking-tighter">
+                    Force Reload
+                 </button>
+              </div>
+           </div>
+        </div>
+        
+        {/* Toggle Button for Logs (Visible when logs are hidden) */}
+        {!showLogs && session && (
+          <button 
+            onClick={() => setShowLogs(true)}
+            className="absolute bottom-6 right-6 w-12 h-12 rounded-full bg-bg-card border border-bg-border shadow-glow-cyan/10 flex items-center justify-center text-accent-primary hover:scale-110 active:scale-95 transition-all z-40 group"
+          >
+            <Terminal size={20} className="group-hover:animate-pulse" />
+            <div className="absolute -top-1 -right-1 w-3 h-3 bg-accent-primary rounded-full animate-ping opacity-75" />
+          </button>
+        )}
+
+        {/* Safety Gate: Approval Modal */}
+        {approvalRequest && (
+          <div className="absolute inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-6">
+            <div className="w-full max-w-lg bg-bg-card border-2 border-accent-warn shadow-[0_0_50px_rgba(234,179,8,0.2)] rounded-3xl overflow-hidden animate-in zoom-in duration-300">
+              <div className="bg-accent-warn/10 p-6 border-b border-accent-warn/20 flex items-center gap-4">
+                <div className="w-12 h-12 rounded-2xl bg-accent-warn/20 flex items-center justify-center text-accent-warn animate-pulse">
+                  <ShieldAlert size={28} />
+                </div>
+                <div>
+                  <h2 className="text-lg font-black uppercase tracking-widest text-accent-warn">Safety Gate Active</h2>
+                  <p className="text-[10px] text-accent-warn/60 font-bold uppercase tracking-tighter">Human intervention required for high-risk action</p>
+                </div>
+              </div>
+              
+              <div className="p-8 flex flex-col gap-6">
+                <div className="space-y-2">
+                  <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Proposed Action</span>
+                  <div className="p-4 rounded-2xl bg-bg-primary/50 border border-bg-border font-mono text-sm text-slate-200 leading-relaxed italic">
+                    "{approvalRequest.thought || approvalRequest.action_desc}"
                   </div>
-                )}
-                {logs.map((line, i) => (
-                  <div key={i} className={clsx('leading-5 hover:bg-white/[0.02] px-1 -mx-1 rounded', logLevelColor(line))}>
-                    {line}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                  <div className="space-y-1">
+                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Type</span>
+                    <div className="text-xs font-bold text-slate-300 uppercase">{approvalRequest.action || 'destructive'}</div>
                   </div>
-                ))}
-                <div ref={logBottomRef} />
+                  <div className="space-y-1">
+                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Target</span>
+                    <div className="text-xs font-mono text-accent-primary truncate">{approvalRequest.target}</div>
+                  </div>
+                </div>
+
+                <div className="flex gap-4 pt-4">
+                  <button 
+                    onClick={() => handleApproveAction('allow')}
+                    className="flex-1 py-4 rounded-2xl bg-accent-success text-black font-black uppercase tracking-widest text-xs shadow-glow-green/20 hover:scale-[1.02] active:scale-95 transition-all"
+                  >
+                    Allow Action
+                  </button>
+                  <button 
+                    onClick={() => handleApproveAction('deny')}
+                    className="flex-1 py-4 rounded-2xl bg-bg-elevated border border-bg-border text-slate-300 font-black uppercase tracking-widest text-xs hover:bg-red-500/10 hover:border-red-500/50 hover:text-red-500 transition-all"
+                  >
+                    Deny Action
+                  </button>
+                </div>
               </div>
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   )

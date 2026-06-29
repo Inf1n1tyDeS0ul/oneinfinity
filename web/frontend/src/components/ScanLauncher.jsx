@@ -22,7 +22,7 @@ const SCAN_CATEGORIES = [
     color: 'text-red-400',
     types: [
       { value: 'vuln_scan',      label: 'Vuln Scan',           desc: 'Nuclei + Dalfox + SQLMap + secrets' },
-      { value: 'full',           label: 'Full Autonomous',     desc: 'All phases — recon → scan → exploit → report' },
+      { value: 'full',           label: 'Full Autonomous',     desc: 'All phases — recon → port scan → form discovery → credential intel → vuln scan → auth tests → exploit → report' },
       { value: 'graphql_scan',   label: 'GraphQL Scan',        desc: 'Introspection, fuzzing, mutations, IDOR' },
       { value: 'smuggling_scan', label: 'HTTP Smuggling',      desc: 'CL.TE, TE.CL, TE.TE detection' },
       { value: 'browser_scan',   label: 'Browser Scan',        desc: 'Headless DOM XSS, JS secrets, endpoint discovery' },
@@ -90,6 +90,8 @@ export default function ScanLauncher({ onClose }) {
   const [oob, setOob] = useState('')
   const [rate, setRate] = useState('')
   const [phases, setPhases] = useState('')
+  const [rpcUrl, setRpcUrl] = useState('')
+  const [githubRepo, setGithubRepo] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [launching, setLaunching] = useState(false)
   const [activeCategory, setActiveCategory] = useState('recon')
@@ -98,6 +100,10 @@ export default function ScanLauncher({ onClose }) {
     if (!target.trim()) return
     setLaunching(true)
     try {
+      const options = {}
+      if (rpcUrl.trim())    options.rpc_url     = rpcUrl.trim()
+      if (githubRepo.trim()) options.github_repo = githubRepo.trim()
+
       const payload = {
         target: target.trim(),
         scan_type: scanType,
@@ -107,6 +113,7 @@ export default function ScanLauncher({ onClose }) {
         oob_url: oob || undefined,
         rate: rate ? parseInt(rate) : undefined,
         phases: phases || undefined,
+        options: Object.keys(options).length ? options : undefined,
       }
       const r = await endpoints.launchScan(payload)
       setScans([r.data, ...scans])
@@ -123,8 +130,8 @@ export default function ScanLauncher({ onClose }) {
   const selectedType = SCAN_CATEGORIES.flatMap(c => c.types).find(t => t.value === scanType)
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="card glow-cyan w-[680px] max-h-[90vh] overflow-hidden flex flex-col shadow-modal animate-[fade-in_0.15s_ease-out]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="card glow-cyan w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col shadow-modal animate-[fade-in_0.15s_ease-out]">
         {/* Header */}
         <div className="card-header">
           <div className="flex items-center gap-2.5">
@@ -139,9 +146,9 @@ export default function ScanLauncher({ onClose }) {
           <button onClick={onClose} className="btn-icon"><X size={15} /></button>
         </div>
 
-        <div className="flex flex-1 overflow-hidden">
+        <div className="flex flex-col sm:flex-row flex-1 overflow-hidden">
           {/* Left: scan type picker */}
-          <div className="w-44 border-r border-bg-border bg-bg-secondary flex flex-col overflow-y-auto flex-shrink-0">
+          <div className="w-full sm:w-44 border-b sm:border-b-0 sm:border-r border-bg-border bg-bg-secondary flex sm:flex-col overflow-x-auto sm:overflow-y-auto flex-shrink-0">
             {SCAN_CATEGORIES.map(cat => {
               const Icon = cat.icon
               const isActive = cat.id === activeCategory
@@ -150,12 +157,12 @@ export default function ScanLauncher({ onClose }) {
                   key={cat.id}
                   onClick={() => { setActiveCategory(cat.id); setScanType(cat.types[0].value) }}
                   className={clsx(
-                    'flex items-center gap-2.5 px-4 py-3 text-left border-b border-bg-border transition-colors',
+                    'flex items-center gap-2.5 px-4 py-3 text-left border-r sm:border-r-0 sm:border-b border-bg-border transition-colors flex-shrink-0 sm:flex-shrink',
                     isActive ? 'bg-accent-primary/10 text-accent-primary border-l-2 border-l-accent-primary' : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
                   )}
                 >
                   <Icon size={13} className={isActive ? 'text-accent-primary' : cat.color} />
-                  <span className="text-xs font-medium leading-tight">{cat.label}</span>
+                  <span className="text-xs font-medium leading-tight whitespace-nowrap">{cat.label}</span>
                 </button>
               )
             })}
@@ -168,7 +175,7 @@ export default function ScanLauncher({ onClose }) {
               <label className="label">Target</label>
               <input
                 className="input"
-                placeholder="example.com or https://api.target.com"
+                placeholder="example.com, https://api.target.com, or 0x... / Solana address"
                 value={target}
                 onChange={e => setTarget(e.target.value)}
                 list="launcher-target-list"
@@ -204,7 +211,7 @@ export default function ScanLauncher({ onClose }) {
             {/* Profile */}
             <div>
               <label className="label">Scan Profile</label>
-              <div className="grid grid-cols-5 gap-1.5">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
                 {PROFILES.map(p => (
                   <button
                     key={p.value}
@@ -224,7 +231,7 @@ export default function ScanLauncher({ onClose }) {
             </div>
 
             {/* Platform + Auth */}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="label">Platform</label>
                 <select className="select" value={platform} onChange={e => setPlatform(e.target.value)}>
@@ -254,7 +261,7 @@ export default function ScanLauncher({ onClose }) {
               </button>
 
               {showAdvanced && (
-                <div className="grid grid-cols-2 gap-3 mt-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
                   <div>
                     <label className="label">OOB Callback URL</label>
                     <input className="input" placeholder="https://your-oob.domain" value={oob} onChange={e => setOob(e.target.value)} />
@@ -266,6 +273,29 @@ export default function ScanLauncher({ onClose }) {
                   <div className="col-span-2">
                     <label className="label">Phase Range <span className="text-slate-600">(e.g. 1-4 or 2)</span></label>
                     <input className="input" placeholder="1-9" value={phases} onChange={e => setPhases(e.target.value)} />
+                  </div>
+                  <div className="col-span-2 border-t border-bg-border pt-3">
+                    <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Web3 / On-Chain</div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="label">EVM RPC URL <span className="text-slate-600">(optional)</span></label>
+                        <input
+                          className="input"
+                          placeholder="https://mainnet.infura.io/v3/..."
+                          value={rpcUrl}
+                          onChange={e => setRpcUrl(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="label">GitHub Repo <span className="text-slate-600">(CI/CD scan)</span></label>
+                        <input
+                          className="input"
+                          placeholder="owner/repo"
+                          value={githubRepo}
+                          onChange={e => setGithubRepo(e.target.value)}
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
-import { Terminal, Play, RefreshCw, AlertTriangle, Search, Database, Activity } from 'lucide-react'
+import { Terminal, Play, RefreshCw, AlertTriangle, Search } from 'lucide-react'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
 import clsx from 'clsx'
@@ -11,11 +11,9 @@ export default function Fuzzer() {
   const [request, setRequest] = useState(null)
   const [fuzzParam, setFuzzParam] = useState('')
   const [results, setResults] = useState([])
+  const [fuzzing, setFuzzing] = useState(false)
+  const [selectedResult, setSelectedResult] = useState(null)
   const [sortConfig, setSortConfig] = useState({ key: 'payload', direction: 'asc' })
-  // Phase 2: fuzzer enhancements
-  const [adaptiveRun, setAdaptiveRun] = useState(false)
-  const [corpusStats, setCorpusStats] = useState(null)
-  const [coverageEdges, setCoverageEdges] = useState(0)
 
   useEffect(() => {
     const fetchRequest = async () => {
@@ -49,17 +47,8 @@ export default function Fuzzer() {
     setFuzzing(true)
     setResults([])
     try {
-      const res = await endpoints.fuzzTraffic(id, {
-        param: fuzzParam,
-        values: null,
-        adaptive_run: adaptiveRun,
-        corpus_stats: corpusStats,
-      })
-      const data = res.data
-      setResults(data?.results || data || [])
-      // Update coverage edge count from response if provided
-      if (data?.coverage_edges != null) setCoverageEdges(data.coverage_edges)
-      if (data?.corpus_stats) setCorpusStats(data.corpus_stats)
+      const res = await endpoints.fuzzTraffic(id, { param: fuzzParam, values: null })
+      setResults(res.data?.results || res.data || [])
       addNotification('Fuzzing completed', 'success')
     } catch (e) {
       addNotification(`Fuzzing failed: ${e.message}`, 'error')
@@ -103,23 +92,13 @@ export default function Fuzzer() {
               <span className="font-bold mr-2">{request.method}</span>
               {request.url}
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
               <input 
                 className="input text-xs w-48" 
                 placeholder="Parameter to fuzz..." 
                 value={fuzzParam}
                 onChange={e => setFuzzParam(e.target.value)}
               />
-              {/* Phase 2: adaptive run toggle */}
-              <label className="flex items-center gap-1 text-xs text-slate-400 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={adaptiveRun}
-                  onChange={e => setAdaptiveRun(e.target.checked)}
-                  className="accent-cyan-500"
-                />
-                Adaptive Run
-              </label>
               <button 
                 className="btn-primary flex items-center gap-2 text-xs py-1.5" 
                 onClick={handleStartFuzzing}
@@ -132,34 +111,6 @@ export default function Fuzzer() {
           </div>
         </div>
       )}
-
-      {/* Phase 2: Corpus Stats Panel */}
-      <div className="card flex items-center gap-6 py-2 px-3 flex-wrap">
-        <div className="flex items-center gap-1.5 text-xs text-slate-400">
-          <Activity size={12} className="text-cyan-400" />
-          <span>Coverage Edges:</span>
-          <span className="font-mono text-cyan-300 font-semibold">{coverageEdges.toLocaleString()}</span>
-        </div>
-        {corpusStats ? (
-          <>
-            <div className="flex items-center gap-1.5 text-xs text-slate-400">
-              <Database size={12} className="text-purple-400" />
-              <span>Corpus Entries:</span>
-              <span className="font-mono text-purple-300 font-semibold">{corpusStats.total_entries ?? '—'}</span>
-            </div>
-            <div className="flex items-center gap-1.5 text-xs text-slate-400">
-              <span>Seeds:</span>
-              <span className="font-mono text-slate-300">{corpusStats.seed_count ?? '—'}</span>
-            </div>
-            <div className="flex items-center gap-1.5 text-xs text-slate-400">
-              <span>Last Mutation:</span>
-              <span className="font-mono text-slate-300">{corpusStats.last_mutation ?? '—'}</span>
-            </div>
-          </>
-        ) : (
-          <span className="text-xs text-slate-600 italic">No corpus data yet — run a fuzz to populate.</span>
-        )}
-      </div>
 
       <div className="flex flex-1 gap-4 overflow-hidden min-h-0">
         {/* Results Table */}

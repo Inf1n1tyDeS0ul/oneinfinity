@@ -106,7 +106,7 @@ function BudgetTab() {
     try {
       const [td, mo, rc] = await Promise.allSettled([
         endpoints.orchestratorBudgetSummary('today'),
-        endpoints.orchestratorBudgetSummary('month'),
+        endpoints.orchestratorBudgetSummary('this_month'),
         endpoints.orchestratorRecords(50),
       ])
       if (td.status === 'fulfilled') setToday(td.value.data)

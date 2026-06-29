@@ -9,15 +9,18 @@
     "preview": "vite preview --port 3000"
   },
   "dependencies": {
+    "axios": "^1.7.4",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.441.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-force-graph-2d": "^1.25.5",
+    "react-force-graph-3d": "^1.29.1",
     "react-router-dom": "^6.26.0",
     "recharts": "^2.12.7",
-    "react-force-graph-2d": "^1.25.5",
-    "zustand": "^4.5.4",
-    "axios": "^1.7.4",
-    "lucide-react": "^0.441.0",
-    "clsx": "^2.1.1"
+    "three": "^0.184.0",
+    "three-spritetext": "^1.10.0",
+    "zustand": "^4.5.4"
   },
   "devDependencies": {
     "@types/react": "^18.3.5",

@@ -23,6 +23,10 @@ export const useStore = create((set, get) => ({
   setAttackGraph: (attackGraph) => set({ attackGraph }),
   setSelectedTarget: (selectedTarget) => set({ selectedTarget }),
 
+  clearLogs: () => set({ logs: [] }),
+  consoleOpen: false,
+  setConsoleOpen: (consoleOpen) => set({ consoleOpen }),
+
   addLog: (entry) => set((state) => ({
     logs: [...state.logs.slice(-499), entry],
   })),

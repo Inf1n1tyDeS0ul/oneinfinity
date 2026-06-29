@@ -1,11 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Users, Play, RefreshCw, Trash2 } from 'lucide-react'
+import { Users, Play, RefreshCw, Trash2, Activity, ShieldAlert, Cpu } from 'lucide-react'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
 import { relativeTime } from '../utils/time'
 import clsx from 'clsx'
+import AgentHoneycomb from '../components/Swarm/AgentHoneycomb'
+import TelemetryTerminal from '../components/Swarm/TelemetryTerminal'
+import RiskHeatmap from '../components/Swarm/RiskHeatmap'
+import SessionTimeline from '../components/Swarm/SessionTimeline'
+import FindingCard from '../components/Swarm/FindingCard'
 
-const ALL_AGENTS = ['xss', 'sqli', 'ssrf', 'idor', 'auth', 'biz_logic', 'mobile', 'api']
+const ALL_AGENTS = ['xss', 'sqli', 'ssrf', 'idor', 'auth', 'business_logic', 'mobile', 'api', 'deserialization', 'race_condition', 'file_upload', 'oauth', 'prototype_pollution', 'clickjacking']
 const SEV_COLORS = { critical: 'text-red-400', high: 'text-orange-400', medium: 'text-yellow-400', low: 'text-blue-400', info: 'text-slate-400' }
 
 // ── Tab: Swarm Scan ──────────────────────────────────────────────────────────
@@ -17,7 +22,12 @@ function SwarmScanTab({ onNewSession }) {
   const [sessionId, setSessionId] = useState(null)
   const [sessionStatus, setSessionStatus] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [agentCatalogue, setAgentCatalogue] = useState([])
   const pollRef = useRef(null)
+
+  useEffect(() => {
+    endpoints.swarmIntelAgents().then(r => setAgentCatalogue(r.data?.agents || []))
+  }, [])
 
   const toggleAgent = (a) => {
     const next = new Set(selectedAgents)
@@ -52,7 +62,7 @@ function SwarmScanTab({ onNewSession }) {
         } catch (err) {
           console.error('Status poll failed', err)
         }
-      }, 5000) // Increased interval
+      }, 5000)
     } catch (e) {
       addNotification(`Scan failed: ${e.message}`, 'error')
       setScanning(false)
@@ -65,67 +75,115 @@ function SwarmScanTab({ onNewSession }) {
   const findings = sessionStatus?.findings || []
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="card">
-        <div className="text-xs font-semibold text-slate-300 mb-3">Configure Swarm Scan</div>
-        <input className="input w-full mb-3" placeholder="Target (e.g. https://example.com)"
-          value={target} onChange={e => setTarget(e.target.value)} />
-        <div className="flex flex-wrap gap-2 mb-4">
-          {ALL_AGENTS.map(a => (
-            <label key={a} className="flex items-center gap-1.5 cursor-pointer select-none">
-              <input type="checkbox" checked={selectedAgents.has(a)} onChange={() => toggleAgent(a)}
-                className="w-3 h-3 accent-cyan-400" />
-              <span className="text-xs text-slate-300 uppercase">{a}</span>
-            </label>
-          ))}
+    <div className="flex flex-col gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Configuration Column */}
+        <div className="flex flex-col gap-4">
+          <div className="glass-card p-5">
+            <h3 className="text-xs font-bold text-slate-400 mb-4 uppercase flex items-center gap-2">
+              <Cpu size={14} className="text-cyan-400" />
+              Configure Deployment
+            </h3>
+            <input className="input w-full mb-4" placeholder="Target (e.g. https://example.com)"
+              value={target} onChange={e => setTarget(e.target.value)} disabled={scanning} />
+            
+            <div className="flex flex-wrap gap-2 mb-6">
+              {ALL_AGENTS.map(a => (
+                <button
+                  key={a}
+                  onClick={() => toggleAgent(a)}
+                  disabled={scanning}
+                  className={clsx(
+                    "px-2.5 py-1 rounded-lg text-[10px] font-mono border transition-all",
+                    selectedAgents.has(a) 
+                      ? "bg-cyan-500/10 border-cyan-500/40 text-cyan-400" 
+                      : "bg-slate-800/50 border-slate-700 text-slate-500 hover:border-slate-600"
+                  )}
+                >
+                  {a.toUpperCase()}
+                </button>
+              ))}
+            </div>
+
+            <button className="btn-primary w-full justify-center h-10" onClick={startScan} disabled={scanning || !target.trim()}>
+              {scanning ? (
+                <RefreshCw size={14} className="animate-spin" />
+              ) : (
+                <Play size={14} />
+              )}
+              {scanning ? 'Deploying Swarm...' : 'Launch Swarm Scan'}
+            </button>
+          </div>
+
+          <div className="glass-card p-5">
+            <h3 className="text-xs font-bold text-slate-400 mb-4 uppercase flex items-center gap-2">
+              <Activity size={14} className="text-indigo-400" />
+              Deployment Pulse
+            </h3>
+            <AgentHoneycomb 
+              agents={agentCatalogue.length > 0 ? agentCatalogue : ALL_AGENTS} 
+              activeAgents={scanning ? [...selectedAgents] : []}
+              findings={findings}
+            />
+          </div>
         </div>
-        <button className="btn-primary flex items-center gap-1.5" onClick={startScan} disabled={scanning}>
-          <Play size={12} /> {scanning ? 'Scanning...' : 'Launch Swarm Scan'}
-        </button>
+
+        {/* Telemetry Column */}
+        <div className="lg:col-span-2 flex flex-col gap-4">
+          <div className="glass-card p-5 flex-1 min-h-[300px] flex flex-col">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xs font-bold text-slate-400 uppercase flex items-center gap-2">
+                <Activity size={14} className="text-emerald-400" />
+                Live Telemetry
+              </h3>
+              {sessionStatus && (
+                <span className="text-[10px] font-mono text-slate-500">ID: {sessionId}</span>
+              )}
+            </div>
+            <TelemetryTerminal logs={sessionStatus?.log || []} />
+            
+            <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-3">
+                <div className="text-[10px] text-slate-500 uppercase font-bold mb-1">Findings</div>
+                <div className="text-xl font-bold text-emerald-400">{findings.length}</div>
+              </div>
+              <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-3">
+                <div className="text-[10px] text-slate-500 uppercase font-bold mb-1">Status</div>
+                <div className={clsx("text-xs font-bold uppercase mt-1.5", 
+                  sessionStatus?.status === 'completed' ? 'text-emerald-400' : 
+                  sessionStatus?.status === 'failed' ? 'text-red-400' : 'text-cyan-400')}>
+                  {sessionStatus?.status || 'Idle'}
+                </div>
+              </div>
+              <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-3">
+                <div className="text-[10px] text-slate-500 uppercase font-bold mb-1">Progress</div>
+                <div className="text-xl font-bold text-indigo-400">{sessionStatus?.progress || 0}%</div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      {sessionStatus && (
-        <div className="card">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-3">
-              <span className="text-xs font-semibold text-slate-300">Session: {sessionId}</span>
-              <span className={clsx('text-xs px-2 py-0.5 rounded-full',
-                sessionStatus.status === 'completed' ? 'bg-green-900/50 text-green-400' :
-                sessionStatus.status === 'failed' ? 'bg-red-900/50 text-red-400' :
-                'bg-blue-900/50 text-blue-400')}>
-                {sessionStatus.status}
-              </span>
-              <span className="text-xs text-slate-500">{findings.length} findings</span>
-            </div>
-            <span className="text-[10px] text-slate-500">Last updated: {new Date().toLocaleTimeString()}</span>
+      {/* Findings Feed */}
+      {(findings.length > 0 || sessionStatus?.status === 'completed') && (
+        <div className="glass-card p-6">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-sm font-bold flex items-center gap-2">
+              <ShieldAlert size={16} className="text-red-400" />
+              Intelligence Findings Feed
+            </h3>
           </div>
+          
           {findings.length === 0 ? (
-            <div className="text-xs text-slate-500 p-4">
-              {scanning ? 'Scan in progress...' : 'No findings recorded for this session.'}
+            <div className="text-center py-12 text-slate-500 italic text-sm">
+              Scan completed with no vulnerabilities detected.
             </div>
           ) : (
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-slate-500 border-b border-bg-border">
-                  <th className="text-left py-2 px-3">Severity</th>
-                  <th className="text-left py-2 px-3">Type</th>
-                  <th className="text-left py-2 px-3">Endpoint</th>
-                  <th className="text-left py-2 px-3">Agent</th>
-                  <th className="text-left py-2 px-3">Score</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-bg-border">
-                {findings.map((f, i) => (
-                  <tr key={i} className="hover:bg-white/5">
-                    <td className={clsx('py-1.5 px-3 font-semibold uppercase text-xs', SEV_COLORS[f.severity] || 'text-slate-400')}>{f.severity}</td>
-                    <td className="py-1.5 px-3 text-slate-300">{f.type || f.vuln_type || '—'}</td>
-                    <td className="py-1.5 px-3 font-mono text-slate-400 truncate max-w-xs">{f.endpoint || f.url || '—'}</td>
-                    <td className="py-1.5 px-3 text-cyan-400">{f.selected_agent || f.agent_type || f.agent || '—'}</td>
-                    <td className="py-1.5 px-3 font-mono text-slate-300">{typeof (f.priority_score ?? f.score) === 'number' ? (f.priority_score ?? f.score).toFixed(2) : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {findings.map((f, i) => (
+                <FindingCard key={i} finding={f} />
+              ))}
+            </div>
           )}
         </div>
       )}
@@ -179,52 +237,83 @@ function SimulationTab() {
 
   const paths = results?.results || results?.paths || []
 
+  const heatmapData = paths.map(p => ({
+    name: p.attack_type || p.name || p.path_name,
+    probability: (p.success_probability || 0) * 100,
+    impact: p.impact_score || 0,
+    ev: (p.expected_value || 0) * 10
+  }))
+
   return (
-    <div className="flex flex-col gap-4">
-      <div className="card">
-        <div className="text-xs font-semibold text-slate-300 mb-3">Monte Carlo Attack Simulation</div>
-        <div className="flex gap-3 mb-3">
-          <input className="input flex-1" placeholder="Target" value={target} onChange={e => setTarget(e.target.value)} />
-          <input className="input w-32" type="number" min={10} max={1000} value={iterations}
-            onChange={e => setIterations(Number(e.target.value))} />
-          <span className="text-xs text-slate-500 self-center">iterations</span>
+    <div className="flex flex-col gap-6">
+      <div className="glass-card p-5">
+        <h3 className="text-xs font-bold text-slate-400 mb-4 uppercase flex items-center gap-2">
+          <Activity size={14} className="text-orange-400" />
+          Monte Carlo Attack Simulation
+        </h3>
+        <div className="flex flex-col md:flex-row gap-3 mb-4">
+          <input className="input flex-1" placeholder="Target (e.g. https://example.com)" value={target} onChange={e => setTarget(e.target.value)} />
+          <div className="flex items-center gap-2 bg-slate-950/30 px-3 py-1 rounded-lg border border-slate-800">
+            <input className="bg-transparent text-xs font-mono text-cyan-400 w-12 focus:outline-none" type="number" min={10} max={1000} value={iterations}
+              onChange={e => setIterations(Number(e.target.value))} />
+            <span className="text-[10px] text-slate-500 uppercase font-bold">iterations</span>
+          </div>
         </div>
-        <button className="btn-primary flex items-center gap-1.5" onClick={launch} disabled={running}>
-          <Play size={12} /> {running ? 'Running...' : 'Launch Monte Carlo'}
+        <button className="btn-primary w-full md:w-fit justify-center h-10 px-6" onClick={launch} disabled={running}>
+          {running ? <RefreshCw size={14} className="animate-spin" /> : <Play size={14} />}
+          {running ? 'Simulating...' : 'Launch Monte Carlo'}
         </button>
       </div>
 
       {results && (
-        <div className="card overflow-auto">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-semibold text-slate-300">Ranked Attack Paths</span>
-            <span className="text-[10px] text-slate-500">Last updated: {new Date().toLocaleTimeString()}</span>
+        <>
+          <RiskHeatmap data={heatmapData} />
+          <div className="glass-card overflow-hidden">
+            <div className="flex items-center justify-between p-5 border-b border-slate-800/50">
+              <h3 className="text-xs font-bold text-slate-400 uppercase flex items-center gap-2">
+                <Users size={14} className="text-cyan-400" />
+                Ranked Attack Paths
+              </h3>
+              <span className="text-[10px] text-slate-500 font-mono">Synced: {new Date().toLocaleTimeString()}</span>
+            </div>
+            {paths.length === 0 ? (
+              <div className="text-center py-12 text-slate-500 italic text-sm">
+                {running ? 'Simulation in progress...' : 'No attack paths generated.'}
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-slate-950/20">
+                      <th className="py-3 px-5 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Attack Type</th>
+                      <th className="py-3 px-5 text-[10px] font-bold text-slate-500 uppercase tracking-wider w-24">EV Score</th>
+                      <th className="py-3 px-5 text-[10px] font-bold text-slate-500 uppercase tracking-wider w-24">Probability</th>
+                      <th className="py-3 px-5 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Reasoning</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/30">
+                    {paths.map((p, i) => (
+                      <tr key={i} className="hover:bg-cyan-500/5 transition-colors group">
+                        <td className="py-3 px-5 text-xs font-bold text-slate-200 group-hover:text-cyan-400 transition-colors">
+                          {p.attack_type || p.path_name || p.name || `Path ${i + 1}`}
+                        </td>
+                        <td className="py-3 px-5 font-mono text-cyan-400 text-xs">
+                          {typeof p.expected_value === 'number' ? p.expected_value.toFixed(3) : '—'}
+                        </td>
+                        <td className="py-3 px-5 font-mono text-slate-400 text-xs">
+                          {typeof p.success_probability === 'number' ? (p.success_probability * 100).toFixed(1) + '%' : '—'}
+                        </td>
+                        <td className="py-3 px-5 text-[11px] text-slate-500 italic leading-relaxed">
+                          {p.decision_reason || p.reasoning || (p.recommended ? 'Recommended path based on swarm heuristics.' : '—')}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
-          {paths.length === 0 ? (
-            <div className="text-xs text-slate-500 p-4">{running ? 'Simulation in progress...' : 'No paths generated.'}</div>
-          ) : (
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-slate-500 border-b border-bg-border">
-                  <th className="text-left py-2 px-3">Attack Type</th>
-                  <th className="text-left py-2 px-3 w-20">EV Score</th>
-                  <th className="text-left py-2 px-3 w-20">Probability</th>
-                  <th className="text-left py-2 px-3">Reasoning</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-bg-border">
-                {paths.map((p, i) => (
-                  <tr key={i} className="hover:bg-white/5">
-                    <td className="py-1.5 px-3 text-slate-300">{p.attack_type || p.path_name || p.name || `Path ${i + 1}`}</td>
-                    <td className="py-1.5 px-3 font-mono text-cyan-400">{typeof p.expected_value === 'number' ? p.expected_value.toFixed(3) : '—'}</td>
-                    <td className="py-1.5 px-3 font-mono text-slate-300">{typeof p.success_probability === 'number' ? (p.success_probability * 100).toFixed(1) + '%' : '—'}</td>
-                    <td className="py-1.5 px-3 text-slate-400 italic text-[11px]">{p.decision_reason || p.reasoning || (p.recommended ? 'Recommended' : '—')}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+        </>
       )}
     </div>
   )
@@ -284,53 +373,72 @@ function WorkflowTab() {
   const defaultWorkflows = ['price_manipulation', 'coupon_abuse', 'race_condition', 'payment_bypass']
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="card">
-        <div className="text-xs font-semibold text-slate-300 mb-3">Workflow Attack Simulation</div>
-        <div className="flex gap-3 mb-3">
-          <input className="input flex-1" placeholder="Target" value={target} onChange={e => setTarget(e.target.value)} />
-          <select className="select w-48" value={workflow} onChange={e => setWorkflow(e.target.value)} disabled={loading}>
-            {(workflows.length > 0 ? workflows : defaultWorkflows).map((w, i) => (
-              <option key={i} value={typeof w === 'string' ? w : w.name}>{typeof w === 'string' ? w : w.name}</option>
-            ))}
-          </select>
+    <div className="flex flex-col gap-6">
+      <div className="glass-card p-5">
+        <h3 className="text-xs font-bold text-slate-400 mb-4 uppercase flex items-center gap-2">
+          <Activity size={14} className="text-indigo-400" />
+          Workflow Attack Simulation
+        </h3>
+        <div className="flex flex-col md:flex-row gap-3 mb-4">
+          <input className="input flex-1" placeholder="Target (e.g. https://example.com)" value={target} onChange={e => setTarget(e.target.value)} />
+          <div className="flex items-center gap-2 bg-slate-950/30 px-3 py-1 rounded-lg border border-slate-800">
+            <select className="bg-transparent text-xs font-mono text-cyan-400 focus:outline-none min-w-[150px]" value={workflow} onChange={e => setWorkflow(e.target.value)} disabled={loading}>
+              {(workflows.length > 0 ? workflows : defaultWorkflows).map((w, i) => (
+                <option key={i} value={typeof w === 'string' ? w : w.name} className="bg-slate-900">{typeof w === 'string' ? w : w.name}</option>
+              ))}
+            </select>
+          </div>
         </div>
-        <button className="btn-primary flex items-center gap-1.5" onClick={launch} disabled={running}>
-          <Play size={12} /> {running ? 'Running...' : 'Launch Workflow'}
+        <button className="btn-primary w-full md:w-fit justify-center h-10 px-6" onClick={launch} disabled={running}>
+          {running ? <RefreshCw size={14} className="animate-spin" /> : <Play size={14} />}
+          {running ? 'Executing...' : 'Launch Workflow Attack'}
         </button>
       </div>
 
       {results && (
-        <div className="card overflow-auto">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-semibold text-slate-300">Results</span>
-            <span className="text-[10px] text-slate-500">Last updated: {new Date().toLocaleTimeString()}</span>
+        <div className="flex flex-col gap-4">
+          <div className="flex items-center justify-between px-2">
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Execution Results</span>
+            <span className="text-[10px] text-slate-600 font-mono italic">Last sync: {new Date().toLocaleTimeString()}</span>
           </div>
+          
           {wfResults.length === 0 ? (
-            <div className="text-xs text-slate-500 p-4">{running ? 'Attacking...' : 'No results found.'}</div>
+            <div className="glass-card p-12 text-center text-slate-500 italic text-sm">
+              {running ? 'Attacking...' : 'No results found.'}
+            </div>
           ) : (
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-slate-500 border-b border-bg-border">
-                  <th className="text-left py-2 px-3">Workflow</th>
-                  <th className="text-left py-2 px-3 w-24">Attacks Run</th>
-                  <th className="text-left py-2 px-3 w-24">Vulnerable</th>
-                  <th className="text-left py-2 px-3 w-24">Findings</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-bg-border">
-                {wfResults.map((c, i) => (
-                  <tr key={i} className="hover:bg-white/5">
-                    <td className="py-1.5 px-3 text-slate-300">{c.workflow || c.name || `Workflow ${i + 1}`}</td>
-                    <td className="py-1.5 px-3 text-slate-400">{c.attacks_run ?? '—'}</td>
-                    <td className={clsx('py-1.5 px-3', (c.vulnerable || 0) > 0 ? 'text-orange-400' : 'text-slate-400')}>
-                      {c.vulnerable ?? 0}
-                    </td>
-                    <td className="py-1.5 px-3 text-slate-300">{c.findings_count ?? 0}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {wfResults.map((c, i) => (
+                <div key={i} className="glass-card p-4 group hover:border-slate-600 transition-all">
+                  <div className="flex justify-between items-start mb-3">
+                    <span className={clsx(
+                      "px-2 py-0.5 rounded text-[9px] font-bold uppercase border",
+                      (c.vulnerable || 0) > 0 
+                        ? "bg-red-500/10 text-red-400 border-red-500/30" 
+                        : "bg-slate-500/10 text-slate-400 border-slate-500/30"
+                    )}>
+                      {(c.vulnerable || 0) > 0 ? 'Vulnerable' : 'Secure'}
+                    </span>
+                    <div className="text-[9px] font-mono text-cyan-500 bg-cyan-500/5 px-2 py-0.5 rounded-full border border-cyan-500/20">
+                      {c.attacks_run ?? 0} ATTACKS
+                    </div>
+                  </div>
+                  
+                  <h4 className="text-sm font-bold text-slate-100 mb-4 group-hover:text-cyan-400 transition-colors uppercase tracking-tight">
+                    {c.workflow || c.name || `Workflow ${i + 1}`}
+                  </h4>
+                  
+                  <div className="flex justify-between items-center pt-3 border-t border-slate-800/50">
+                    <div className="text-[9px] text-slate-600 uppercase font-bold tracking-wider">
+                      Findings
+                    </div>
+                    <span className="text-xs font-mono text-slate-300">
+                      {c.findings_count ?? 0}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       )}
@@ -342,7 +450,7 @@ function WorkflowTab() {
 function HistoryTab({ refresh }) {
   const { addNotification } = useStore()
   const [sessions, setSessions] = useState([])
-  const [expanded, setExpanded] = useState(null)
+  const [expandedId, setExpandedId] = useState(null)
   const [loading, setLoading] = useState(false)
   const [lastUpdated, setLastUpdated] = useState(null)
 
@@ -375,68 +483,29 @@ function HistoryTab({ refresh }) {
     } catch (e) { addNotification(`Failed: ${e.message}`, 'error') }
   }
 
-  const statusColor = (s) => {
-    if (s === 'completed') return 'bg-green-900/50 text-green-400'
-    if (s === 'failed') return 'bg-red-900/50 text-red-400'
-    if (s === 'running') return 'bg-blue-900/50 text-blue-400'
-    return 'bg-slate-700 text-slate-400'
-  }
-
   return (
-    <div className="card overflow-auto">
-      <div className="flex items-center justify-between mb-3">
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between px-2">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold text-slate-300">All Sessions ({sessions.length})</span>
-          <button className="btn-secondary flex items-center gap-1" onClick={load} disabled={loading}>
-            <RefreshCw size={11} className={clsx(loading && 'animate-spin')} /> Refresh
+          <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Session Archive ({sessions.length})</span>
+          <button className="btn-ghost p-1" onClick={load} disabled={loading}>
+            <RefreshCw size={12} className={clsx(loading && 'animate-spin')} />
           </button>
         </div>
-        {lastUpdated && <span className="text-[10px] text-slate-500">Last updated: {lastUpdated}</span>}
+        {lastUpdated && <span className="text-[10px] text-slate-600 font-mono">Synced: {lastUpdated}</span>}
       </div>
+
       {sessions.length === 0 ? (
-        <div className="text-xs text-slate-500 p-4">{loading ? 'Loading history...' : 'No sessions yet. Launch a scan or simulation.'}</div>
+        <div className="glass-card p-12 text-center text-slate-500 italic text-sm">
+          {loading ? 'Decrypting history...' : 'No sessions found in the archive.'}
+        </div>
       ) : (
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="text-slate-500 border-b border-bg-border">
-              <th className="text-left py-2 px-3">Type</th>
-              <th className="text-left py-2 px-3">Target</th>
-              <th className="text-left py-2 px-3">Started</th>
-              <th className="text-left py-2 px-3 w-20">Status</th>
-              <th className="text-left py-2 px-3 w-20">Findings</th>
-              <th className="text-left py-2 px-3 w-16"></th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-bg-border">
-            {sessions.map((s) => (
-              <React.Fragment key={s.id}>
-                <tr className="hover:bg-white/5 cursor-pointer" onClick={() => setExpanded(expanded === s.id ? null : s.id)}>
-                  <td className="py-1.5 px-3 text-cyan-400 uppercase text-xs">{s.type || s.session_type || 'scan'}</td>
-                  <td className="py-1.5 px-3 font-mono text-slate-300 truncate max-w-xs">{s.target || '—'}</td>
-                  <td className="py-1.5 px-3 text-slate-500 whitespace-nowrap">{relativeTime(s.started_at || s.created_at)}</td>
-                  <td className="py-1.5 px-3">
-                    <span className={clsx('text-xs px-1.5 py-0.5 rounded-full', statusColor(s.status))}>{s.status}</span>
-                  </td>
-                  <td className="py-1.5 px-3 text-slate-300">{s.findings_count ?? s.findings?.length ?? 0}</td>
-                  <td className="py-1.5 px-3">
-                    <button className="p-1 rounded hover:bg-white/10" onClick={(e) => { e.stopPropagation(); handleDelete(s.session_id || s.id) }}>
-                      <Trash2 size={11} className="text-red-400" />
-                    </button>
-                  </td>
-                </tr>
-                {expanded === s.id && (
-                  <tr className="bg-bg-secondary">
-                    <td colSpan={6} className="px-4 py-3">
-                      <pre className="text-xs text-slate-400 font-mono whitespace-pre-wrap max-h-48 overflow-auto">
-                        {JSON.stringify(s, null, 2)}
-                      </pre>
-                    </td>
-                  </tr>
-                )}
-              </React.Fragment>
-            ))}
-          </tbody>
-        </table>
+        <SessionTimeline 
+          sessions={sessions} 
+          onDelete={handleDelete} 
+          onExpand={(id) => setExpandedId(expandedId === id ? null : id)}
+          expandedId={expandedId}
+        />
       )}
     </div>
   )
@@ -457,11 +526,13 @@ export default function SwarmIntelligence() {
         Swarm Intelligence
       </h1>
 
-      <div className="flex gap-1 border-b border-bg-border pb-1">
+      <div className="flex bg-slate-900/40 p-1 rounded-xl w-fit border border-slate-800/50 mb-4">
         {TABS.map((t, i) => (
           <button key={t} onClick={() => setTab(i)}
-            className={clsx('px-3 py-1.5 text-xs rounded-t transition-colors',
-              tab === i ? 'bg-accent-primary/20 text-accent-primary' : 'text-slate-400 hover:text-slate-200')}>
+            className={clsx('px-4 py-1.5 text-[11px] font-bold rounded-lg transition-all',
+              tab === i 
+                ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 shadow-[0_0_15px_rgba(6,182,212,0.1)]' 
+                : 'text-slate-500 hover:text-slate-300')}>
             {t}
           </button>
         ))}

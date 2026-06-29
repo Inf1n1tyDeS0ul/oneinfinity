@@ -60,7 +60,7 @@ export default function Targets() {
       {showAdd && (
         <div className="card p-4 flex flex-col gap-3">
           <div className="text-xs text-slate-300 font-medium mb-1">New Target</div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="label">Program Name</label>
               <input className="input" placeholder="ACME Corp" value={form.name}
@@ -94,7 +94,7 @@ export default function Targets() {
       )}
 
       {/* Targets grid */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {targets.map(t => (
           <div key={t.id} className="card p-4 flex flex-col gap-2 hover:border-accent-primary/30 transition-colors">
             <div className="flex items-start justify-between">

@@ -135,7 +135,7 @@ export default function Reports() {
               <label className="label">Finding ID <span className="text-slate-600">(leave empty for batch — all findings)</span></label>
               <input className="input" placeholder="finding_id or blank for all" value={findingId} onChange={e => setFindingId(e.target.value)} />
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="label">Platform</label>
                 <select className="select" value={platform} onChange={e => setPlatform(e.target.value)}>
@@ -172,19 +172,43 @@ export default function Reports() {
             </div>
           ) : (
             <table className="data-table">
-              <thead><tr><th>Report</th><th>Target</th><th>Platform</th><th>Format</th><th>Created</th><th>Actions</th></tr></thead>
+              <thead><tr><th>Report</th><th>Target</th><th>Type</th><th>Format</th><th>Created</th><th>Actions</th></tr></thead>
               <tbody>
                 {reports.map((r, i) => (
                   <tr key={i}>
                     <td className="text-sm text-slate-200 font-medium">{r.name || r.id}</td>
                     <td className="text-xs text-slate-400">{r.target || '—'}</td>
-                    <td><span className="badge badge-info">{r.platform || '—'}</span></td>
-                    <td className="text-xs text-slate-400">{r.format || '—'}</td>
+                    <td>
+                      {r.report_type === 'ai_narrative' || r.name?.includes('narrative') || r.name?.includes('llm')
+                        ? <span className="badge badge-primary">AI Narrative</span>
+                        : <span className="badge badge-info">{r.platform || r.format || 'template'}</span>
+                      }
+                    </td>
+                    <td className="text-xs text-slate-400">{r.format || r.name?.split('.').pop() || '—'}</td>
                     <td className="text-xs text-slate-500">{r.created_at ? new Date(r.created_at).toLocaleDateString() : '—'}</td>
                     <td>
                       <div className="flex items-center gap-1.5">
-                        <button className="btn-ghost btn-sm"><Eye size={11} />View</button>
-                        <button className="btn-ghost btn-sm"><Download size={11} />Download</button>
+                        {r.path && (
+                          <a
+                            href={`/api/reports/${encodeURIComponent(r.id || r.name)}/download`}
+                            download={r.name || `report-${i}.${r.format || 'json'}`}
+                            className="btn-ghost btn-sm"
+                          >
+                            <Download size={11} />Download
+                          </a>
+                        )}
+                        <button
+                          className="btn-ghost btn-sm"
+                          onClick={() => {
+                            const blob = new Blob([JSON.stringify(r, null, 2)], { type: 'application/json' })
+                            const a = document.createElement('a')
+                            a.href = URL.createObjectURL(blob)
+                            a.download = `report-${r.id || i}.json`
+                            a.click()
+                          }}
+                        >
+                          <Eye size={11} />JSON
+                        </button>
                       </div>
                     </td>
                   </tr>

@@ -73,32 +73,9 @@ export default function CICDCenter() {
   const [loading, setLoading]   = useState(false)
   const [error, setError]       = useState(null)
   const [filterSev, setFilterSev] = useState('all')
-  const [activeTab, setActiveTab] = useState('pipeline')
-  const [scAllFindings, setScAllFindings] = useState([])
-  const [scLoading, setScLoading] = useState(false)
 
   useEffect(() => {
     api.get('/cicd/scans').then(r => setScans(r.data.scans || [])).catch(() => {})
-  }, [])
-  // Load supply chain findings from all scans on mount
-  useEffect(() => {
-    setScLoading(true)
-    api.get('/cicd/scans')
-      .then(r => {
-        const allScans = r.data.scans || []
-        const sc = []
-        allScans.forEach(s => {
-          const fds = s.findings || []
-          fds.forEach(f => {
-            if (f.tool === 'supply_chain_attack_engine' || f.category === 'supply_chain') {
-              sc.push({ ...f, _repo: s.repo, _scan_id: s.scan_id })
-            }
-          })
-        })
-        setScAllFindings(sc)
-      })
-      .catch(() => {})
-      .finally(() => setScLoading(false))
   }, [])
 
   useEffect(() => {
@@ -154,209 +131,133 @@ export default function CICDCenter() {
   return (
     <div className="p-6 bg-gray-900 min-h-screen text-white">
       <div className="max-w-6xl mx-auto">
-        <div className="mb-6 flex items-start justify-between flex-wrap gap-4">
-          <div>
-            <h1 className="text-2xl font-bold">CI/CD Security Center</h1>
-            <p className="text-gray-400 text-sm mt-1">
-              Scan GitHub Actions, GitLab CI, and Jenkins pipelines for injection, secrets, supply chain risks
-            </p>
-          </div>
-          {/* Tab switcher */}
-          <div className="flex gap-1 bg-gray-800 rounded-lg p-1">
-            <button
-              onClick={() => setActiveTab('pipeline')}
-              className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${
-                activeTab === 'pipeline'
-                  ? 'bg-blue-600 text-white'
-                  : 'text-gray-400 hover:text-white'
-              }`}
-            >
-              Pipeline Scan
-            </button>
-            <button
-              onClick={() => setActiveTab('supply_chain')}
-              className={`flex items-center gap-1.5 px-4 py-1.5 rounded text-sm font-medium transition-colors ${
-                activeTab === 'supply_chain'
-                  ? 'bg-orange-600 text-white'
-                  : 'text-gray-400 hover:text-white'
-              }`}
-            >
-              ⛓️ Supply Chain
-              {scAllFindings.length > 0 && (
-                <span className="bg-orange-500 text-white text-xs font-bold rounded-full px-1.5 py-0.5 min-w-[1.25rem] text-center">
-                  {scAllFindings.length}
-                </span>
-              )}
-            </button>
-          </div>
+        <div className="mb-6">
+          <h1 className="text-2xl font-bold">CI/CD Security Center</h1>
+          <p className="text-gray-400 text-sm mt-1">
+            Scan GitHub Actions, GitLab CI, and Jenkins pipelines for injection, secrets, supply chain risks
+          </p>
         </div>
 
-        {activeTab === 'pipeline' && (
+        {/* Scan Form */}
+        <div className="bg-gray-800/50 rounded-lg p-6 border border-gray-700 mb-6">
+          <div className="flex gap-3">
+            <input
+              value={repo}
+              onChange={e => setRepo(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && runScan()}
+              placeholder="owner/repo or https://github.com/owner/repo"
+              className="flex-1 bg-gray-900 border border-gray-700 rounded px-4 py-2 text-white placeholder-gray-500 focus:border-blue-500 outline-none"
+            />
+            <button
+              onClick={runScan}
+              disabled={loading || !repo.trim()}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-medium disabled:opacity-50"
+            >
+              {loading ? 'Scanning…' : 'Scan Pipeline'}
+            </button>
+          </div>
+          {error && <div className="text-red-400 text-sm mt-2">{error}</div>}
+        </div>
 
-          <>
-            {/* Scan Form */}
-            <div className="bg-gray-800/50 rounded-lg p-6 border border-gray-700 mb-6">
-              <div className="flex gap-3">
-                <input
-                  value={repo}
-                  onChange={e => setRepo(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && runScan()}
-                  placeholder="owner/repo or https://github.com/owner/repo"
-                  className="flex-1 bg-gray-900 border border-gray-700 rounded px-4 py-2 text-white placeholder-gray-500 focus:border-blue-500 outline-none"
-                />
-                <button
-                  onClick={runScan}
-                  disabled={loading || !repo.trim()}
-                  className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-medium disabled:opacity-50"
-                >
-                  {loading ? 'Scanning…' : 'Scan Pipeline'}
-                </button>
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          {/* Scan History */}
+          <div className="lg:col-span-1">
+            <div className="bg-gray-800/50 rounded-lg border border-gray-700 overflow-hidden">
+              <div className="px-4 py-3 border-b border-gray-700 text-sm text-gray-400 uppercase tracking-wide">
+                Scan History
               </div>
-              {error && <div className="text-red-400 text-sm mt-2">{error}</div>}
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-              {/* Scan History */}
-              <div className="lg:col-span-1">
-                <div className="bg-gray-800/50 rounded-lg border border-gray-700 overflow-hidden">
-                  <div className="px-4 py-3 border-b border-gray-700 text-sm text-gray-400 uppercase tracking-wide">
-                    Scan History
-                  </div>
-                  {scans.length === 0 ? (
-                    <div className="p-4 text-gray-500 text-sm">No scans yet</div>
-                  ) : (
-                    scans.slice(0, 20).map(s => (
-                      <button
-                        key={s.scan_id}
-                        onClick={() => loadScan(s)}
-                        className={`w-full text-left px-4 py-3 border-b border-gray-700 hover:bg-gray-700/50 transition-colors ${
-                          activeScan?.scan_id === s.scan_id ? 'bg-blue-900/30' : ''
-                        }`}
-                      >
-                        <div className="text-sm text-white font-mono truncate">{s.repo}</div>
-                        <div className="flex items-center gap-2 mt-1">
-                          <span className={`w-2 h-2 rounded-full ${
-                            s.status === 'completed' ? 'bg-green-400' :
-                            s.status === 'running'   ? 'bg-yellow-400 animate-pulse' :
-                            s.status === 'failed'    ? 'bg-red-400' : 'bg-gray-500'
-                          }`} />
-                          <span className="text-xs text-gray-400">{s.status}</span>
-                          {s.finding_count > 0 && (
-                            <span className="text-xs text-red-400 ml-auto">{s.finding_count} findings</span>
-                          )}
-                        </div>
-                      </button>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              {/* Results */}
-              <div className="lg:col-span-3">
-                {activeScan ? (
-                  <>
-                    {/* Status bar */}
-                    <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700 mb-4">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <span className="font-mono text-white">{activeScan.repo}</span>
-                          <span className={`ml-3 text-xs px-2 py-0.5 rounded ${
-                            activeScan.status === 'completed' ? 'bg-green-900 text-green-300' :
-                            activeScan.status === 'running'   ? 'bg-yellow-900 text-yellow-300' :
-                            activeScan.status === 'failed'    ? 'bg-red-900 text-red-300' :
-                            'bg-gray-700 text-gray-400'
-                          }`}>{activeScan.status}</span>
-                        </div>
-                        {activeScan.status === 'running' && (
-                          <div className="text-yellow-400 text-sm animate-pulse">Scanning…</div>
-                        )}
-                      </div>
-                      {/* Severity summary */}
-                      {findings.length > 0 && (
-                        <div className="flex gap-3 mt-3">
-                          {['critical','high','medium','low','info'].map(sev => counts[sev] ? (
-                            <button
-                              key={sev}
-                              onClick={() => setFilterSev(filterSev === sev ? 'all' : sev)}
-                              className={`text-xs px-2 py-1 rounded border ${SEVERITY_COLOR[sev]} ${
-                                filterSev === sev ? 'ring-2 ring-white/30' : ''
-                              }`}
-                            >
-                              {counts[sev]} {sev}
-                            </button>
-                          ) : null)}
-                          {filterSev !== 'all' && (
-                            <button onClick={() => setFilterSev('all')} className="text-xs text-gray-400 hover:text-white">
-                              clear filter
-                            </button>
-                          )}
-                        </div>
+              {scans.length === 0 ? (
+                <div className="p-4 text-gray-500 text-sm">No scans yet</div>
+              ) : (
+                scans.slice(0, 20).map(s => (
+                  <button
+                    key={s.scan_id}
+                    onClick={() => loadScan(s)}
+                    className={`w-full text-left px-4 py-3 border-b border-gray-700 hover:bg-gray-700/50 transition-colors ${
+                      activeScan?.scan_id === s.scan_id ? 'bg-blue-900/30' : ''
+                    }`}
+                  >
+                    <div className="text-sm text-white font-mono truncate">{s.repo}</div>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className={`w-2 h-2 rounded-full ${
+                        s.status === 'completed' ? 'bg-green-400' :
+                        s.status === 'running'   ? 'bg-yellow-400 animate-pulse' :
+                        s.status === 'failed'    ? 'bg-red-400' : 'bg-gray-500'
+                      }`} />
+                      <span className="text-xs text-gray-400">{s.status}</span>
+                      {s.finding_count > 0 && (
+                        <span className="text-xs text-red-400 ml-auto">{s.finding_count} findings</span>
                       )}
                     </div>
-
-                    {/* Findings */}
-                    {activeScan.status === 'running' ? (
-                      <div className="text-gray-400 text-center py-12">Scanning pipeline… results will appear here</div>
-                    ) : filtered.length === 0 ? (
-                      <div className="text-gray-500 text-center py-12">
-                        {findings.length === 0
-                          ? '✅ No pipeline vulnerabilities found'
-                          : `No ${filterSev} severity findings`}
-                      </div>
-                    ) : (
-                      <div>{filtered.map((f, i) => <FindingCard key={i} finding={f} />)}</div>
-                    )}
-                  </>
-                ) : (
-                  <div className="text-gray-500 text-center py-24">
-                    Enter a GitHub repository to scan for CI/CD vulnerabilities
-                  </div>
-                )}
-              </div>
+                  </button>
+                ))
+              )}
             </div>
-          </>
-        )}
+          </div>
 
-        {activeTab === 'supply_chain' && (
-          <div>
-            <div className="bg-orange-900/20 border border-orange-700/30 rounded-lg px-5 py-3 mb-6 flex items-center gap-3">
-              <span className="text-xl">⛓️</span>
-              <div>
-                <div className="font-semibold text-orange-200">Supply Chain Attack Surface</div>
-                <div className="text-xs text-orange-400/70 mt-0.5">
-                  Findings tagged <code className="bg-orange-900/40 px-1 rounded">supply_chain_attack_engine</code> across all CI/CD scans
-                </div>
-              </div>
-            </div>
-
-            {scLoading ? (
-              <div className="text-gray-400 text-center py-16 animate-pulse">Loading supply chain findings…</div>
-            ) : scAllFindings.length === 0 ? (
-              <div className="text-gray-500 text-center py-20">
-                <div className="text-4xl mb-3">✅</div>
-                <div>No supply chain findings detected across scanned repositories.</div>
-                <div className="text-xs mt-2">Run a pipeline scan first to populate this view.</div>
-              </div>
-            ) : (
+          {/* Results */}
+          <div className="lg:col-span-3">
+            {activeScan ? (
               <>
-                <div className="text-xs text-gray-500 mb-4">
-                  {scAllFindings.length} supply chain finding{scAllFindings.length !== 1 ? 's' : ''} across all scans
-                </div>
-                {scAllFindings.map((f, i) => (
-                  <div key={i} className="mb-2">
-                    {f._repo && (
-                      <div className="text-[10px] font-mono text-orange-400/60 mb-1 px-1">
-                        repo: {f._repo}
-                      </div>
+                {/* Status bar */}
+                <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700 mb-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="font-mono text-white">{activeScan.repo}</span>
+                      <span className={`ml-3 text-xs px-2 py-0.5 rounded ${
+                        activeScan.status === 'completed' ? 'bg-green-900 text-green-300' :
+                        activeScan.status === 'running'   ? 'bg-yellow-900 text-yellow-300' :
+                        activeScan.status === 'failed'    ? 'bg-red-900 text-red-300' :
+                        'bg-gray-700 text-gray-400'
+                      }`}>{activeScan.status}</span>
+                    </div>
+                    {activeScan.status === 'running' && (
+                      <div className="text-yellow-400 text-sm animate-pulse">Scanning…</div>
                     )}
-                    <FindingCard finding={f} />
                   </div>
-                ))}
+                  {/* Severity summary */}
+                  {findings.length > 0 && (
+                    <div className="flex gap-3 mt-3">
+                      {['critical','high','medium','low','info'].map(sev => counts[sev] ? (
+                        <button
+                          key={sev}
+                          onClick={() => setFilterSev(filterSev === sev ? 'all' : sev)}
+                          className={`text-xs px-2 py-1 rounded border ${SEVERITY_COLOR[sev]} ${
+                            filterSev === sev ? 'ring-2 ring-white/30' : ''
+                          }`}
+                        >
+                          {counts[sev]} {sev}
+                        </button>
+                      ) : null)}
+                      {filterSev !== 'all' && (
+                        <button onClick={() => setFilterSev('all')} className="text-xs text-gray-400 hover:text-white">
+                          clear filter
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Findings */}
+                {activeScan.status === 'running' ? (
+                  <div className="text-gray-400 text-center py-12">Scanning pipeline… results will appear here</div>
+                ) : filtered.length === 0 ? (
+                  <div className="text-gray-500 text-center py-12">
+                    {findings.length === 0
+                      ? '✅ No pipeline vulnerabilities found'
+                      : `No ${filterSev} severity findings`}
+                  </div>
+                ) : (
+                  <div>{filtered.map((f, i) => <FindingCard key={i} finding={f} />)}</div>
+                )}
               </>
+            ) : (
+              <div className="text-gray-500 text-center py-24">
+                Enter a GitHub repository to scan for CI/CD vulnerabilities
+              </div>
             )}
           </div>
-        )}
-
+        </div>
       </div>
     </div>
   )

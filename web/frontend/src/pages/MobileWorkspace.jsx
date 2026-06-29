@@ -500,194 +500,6 @@ function ControlButton({ label, icon: Icon, color, onClick, disabled }) {
   );
 }
 
-// ── iOS Security Panel ─────────────────────────────────────────────────────
-// Displays ATS bypass, jailbreak detection bypass, keychain exposure, and
-// URL-scheme injection findings sourced from report.ios_security[].
-
-const IOS_FINDING_COLORS = {
-  critical:   { dot: 'bg-red-500 shadow-glow-red',    badge: 'bg-red-500/15 text-red-400',    border: 'border-red-500/20' },
-  high:       { dot: 'bg-orange-500',                  badge: 'bg-orange-500/15 text-orange-400', border: 'border-orange-500/20' },
-  medium:     { dot: 'bg-yellow-500',                  badge: 'bg-yellow-500/15 text-yellow-400', border: 'border-yellow-500/20' },
-  low:        { dot: 'bg-slate-500',                   badge: 'bg-slate-500/15 text-slate-400',  border: 'border-slate-500/20' },
-  info:       { dot: 'bg-cyan-500',                    badge: 'bg-cyan-500/15 text-cyan-400',    border: 'border-cyan-500/20' },
-};
-
-const IOS_CHECK_GROUPS = [
-  {
-    id:    'ats',
-    label: 'App Transport Security',
-    icon:  Network,
-    color: 'text-orange-400',
-    match: f => f.attack_type === 'ats_disabled' || f.type === 'ats_disabled',
-  },
-  {
-    id:    'jailbreak',
-    label: 'Jailbreak Detection',
-    icon:  Unlock,
-    color: 'text-yellow-400',
-    match: f => f.attack_type === 'jailbreak_detection_bypassable' || f.type === 'jailbreak_detection_bypassable',
-  },
-  {
-    id:    'keychain',
-    label: 'Keychain Exposure',
-    icon:  Lock,
-    color: 'text-red-400',
-    match: f => f.attack_type === 'keychain_secret_exposed' || f.type === 'keychain_secret_exposed',
-  },
-  {
-    id:    'urlscheme',
-    label: 'URL Scheme Injection',
-    icon:  Globe,
-    color: 'text-cyan-400',
-    match: f => f.attack_type === 'url_scheme_injection' || f.type === 'url_scheme_injection',
-  },
-];
-
-function IOSFindingRow({ finding }) {
-  const sev = (finding.severity || 'medium').toLowerCase();
-  const colors = IOS_FINDING_COLORS[sev] || IOS_FINDING_COLORS.medium;
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <div
-      className={clsx(
-        'rounded-xl border transition-all cursor-pointer',
-        colors.border, expanded ? 'bg-bg-secondary/60' : 'bg-bg-primary/30 hover:bg-bg-secondary/40'
-      )}
-      onClick={() => setExpanded(v => !v)}
-    >
-      <div className="flex items-center gap-3 p-3">
-        <span className={clsx('w-2 h-2 rounded-full flex-shrink-0', colors.dot)} />
-        <div className="flex-1 min-w-0">
-          <div className="text-[11px] font-black text-slate-200 uppercase truncate">
-            {finding.vulnerability || finding.title || finding.type}
-          </div>
-          {!expanded && finding.evidence && (
-            <div className="text-[9px] text-slate-500 font-mono mt-0.5 truncate">{finding.evidence}</div>
-          )}
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <span className={clsx('px-1.5 py-0.5 rounded text-[8px] font-black uppercase', colors.badge)}>
-            {sev}
-          </span>
-          {finding.confidence != null && (
-            <span className="text-[8px] font-mono text-slate-600">
-              {Math.round(finding.confidence * 100)}%
-            </span>
-          )}
-          <ChevronDown
-            size={11}
-            className={clsx('text-slate-600 transition-transform', expanded && 'rotate-180')}
-          />
-        </div>
-      </div>
-      {expanded && (
-        <div className="px-4 pb-3 space-y-1.5 border-t border-white/5 pt-2 mt-0">
-          {finding.evidence && (
-            <p className="text-[10px] text-slate-400 font-mono leading-relaxed">{finding.evidence}</p>
-          )}
-          {finding.target && (
-            <p className="text-[9px] text-slate-600 font-mono">Target: {finding.target}</p>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function IOSSecurityPanel({ report }) {
-  const findings = report?.ios_security || [];
-  const [activeGroup, setActiveGroup] = useState('ats');
-
-  const grouped = IOS_CHECK_GROUPS.map(g => ({
-    ...g,
-    findings: findings.filter(g.match),
-  }));
-
-  const currentGroup = grouped.find(g => g.id === activeGroup) || grouped[0];
-  const totalCritical = findings.filter(f => (f.severity || '').toLowerCase() === 'critical').length;
-  const totalHigh     = findings.filter(f => (f.severity || '').toLowerCase() === 'high').length;
-
-  return (
-    <div className="max-w-5xl mx-auto space-y-6 animate-in fade-in duration-500">
-      {/* Header stat row */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="glass-card p-4 border-l-4 border-l-red-500">
-          <div className="text-[8px] font-black text-slate-600 uppercase tracking-widest mb-1">Critical</div>
-          <div className="text-2xl font-black font-mono text-red-400">{totalCritical}</div>
-        </div>
-        <div className="glass-card p-4 border-l-4 border-l-orange-500">
-          <div className="text-[8px] font-black text-slate-600 uppercase tracking-widest mb-1">High</div>
-          <div className="text-2xl font-black font-mono text-orange-400">{totalHigh}</div>
-        </div>
-        <div className="glass-card p-4 border-l-4 border-l-cyan-500">
-          <div className="text-[8px] font-black text-slate-600 uppercase tracking-widest mb-1">Total Findings</div>
-          <div className="text-2xl font-black font-mono text-cyan-400">{findings.length}</div>
-        </div>
-        <div className="glass-card p-4 border-l-4 border-l-slate-500">
-          <div className="text-[8px] font-black text-slate-600 uppercase tracking-widest mb-1">Checks Run</div>
-          <div className="text-2xl font-black font-mono text-slate-400">{grouped.filter(g => g.findings.length > 0).length}</div>
-        </div>
-      </div>
-
-      {/* Check group selector */}
-      <div className="glass-card p-0 overflow-hidden">
-        <div className="flex border-b border-bg-border">
-          {grouped.map(g => (
-            <button
-              key={g.id}
-              onClick={() => setActiveGroup(g.id)}
-              className={clsx(
-                'flex items-center gap-2 px-5 py-3 text-[9px] font-black uppercase transition-all border-b-2 -mb-px',
-                activeGroup === g.id
-                  ? `${g.color} border-current bg-white/5`
-                  : 'text-slate-600 border-transparent hover:text-slate-400'
-              )}
-            >
-              <g.icon size={11} />
-              {g.label}
-              {g.findings.length > 0 && (
-                <span className="px-1.5 py-0.5 rounded-full bg-white/10 text-[8px] font-black">
-                  {g.findings.length}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-
-        <div className="p-5 space-y-2 min-h-[200px]">
-          {currentGroup.findings.length === 0 ? (
-            <div className="py-14 flex flex-col items-center gap-3 opacity-30">
-              <currentGroup.icon size={32} className={currentGroup.color} />
-              <p className="text-xs font-black uppercase text-slate-500">No findings in this category</p>
-              <p className="text-[9px] text-slate-600 font-mono">
-                {findings.length === 0
-                  ? 'Run analysis against an IPA with an iOS device connected'
-                  : 'All checks passed for this category'}
-              </p>
-            </div>
-          ) : (
-            currentGroup.findings.map((f, i) => (
-              <IOSFindingRow key={i} finding={f} />
-            ))
-          )}
-        </div>
-      </div>
-
-      {/* Empty state when no report yet */}
-      {findings.length === 0 && !report && (
-        <div className="glass-card p-12 flex flex-col items-center gap-4 opacity-40">
-          <Lock size={40} className="text-slate-600" />
-          <p className="text-sm font-black uppercase text-slate-500">No iOS Analysis Data</p>
-          <p className="text-[10px] text-slate-600 text-center max-w-xs leading-relaxed">
-            Upload an .ipa file and connect an iOS device to run ATS, keychain, jailbreak,
-            and URL-scheme injection tests.
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── Unified Mobile Workspace ────────────────────────────────────────────────
 // Merges static analysis and dynamic agent into a single high-performance IDE.
 
@@ -988,13 +800,12 @@ export default function MobileWorkspace() {
           <div className="flex items-center gap-4">
             <div className={s.tabBar}>
               {[
-                { id: 'agent',       label: 'Agent',        icon: Smartphone },
-                { id: 'research',    label: 'Research',     icon: Search },
-                { id: 'sitemap',     label: 'Sitemap',      icon: Globe },
-                { id: 'execution',   label: 'Execution',    icon: Zap, badge: capturedTraffic.length },
-                { id: 'ios',         label: 'iOS Security', icon: Lock, badge: (report?.ios_security?.length || 0) },
-                { id: 'correlation', label: 'Correlation',  icon: Activity },
-                { id: 'report',      label: 'Report',       icon: Shield },
+                { id: 'agent',    label: 'Agent',    icon: Smartphone },
+                { id: 'research', label: 'Research', icon: Search },
+                { id: 'sitemap',  label: 'Sitemap',  icon: Globe },
+                { id: 'execution',label: 'Execution', icon: Zap, badge: capturedTraffic.length },
+                { id: 'correlation', label: 'Correlation', icon: Activity },
+                { id: 'report',   label: 'Report',   icon: Shield },
               ].map(t => (
                 <button 
                   key={t.id} 
@@ -1196,10 +1007,6 @@ export default function MobileWorkspace() {
                  Start Instrumentation
                </button>
             </div>
-          )}
-
-          {activeTab === 'ios' && (
-            <IOSSecurityPanel report={report} />
           )}
 
           {activeTab === 'report' && report && (

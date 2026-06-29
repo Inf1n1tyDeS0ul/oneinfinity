@@ -14,28 +14,6 @@ export default function UnifiedScan() {
   const [maxDorks, setMaxDorks] = useState(30)
   const [loadedTokensCount, setLoadedTokensCount] = useState(0)
   const [rateLimits, setRateLimits] = useState(null)
-  // Phase 2: advanced scanners
-  const ADVANCED_SCANNERS = [
-    { id: 'deser',                       label: 'Deserialization',         color: 'text-orange-400' },
-    { id: 'http2',                        label: 'HTTP/2 Attacks',          color: 'text-blue-400'   },
-    { id: 'prototype-pollution',          label: 'Prototype Pollution',     color: 'text-yellow-400' },
-    { id: 'supply-chain',                 label: 'Supply Chain',            color: 'text-red-400'    },
-    { id: 'h2c_scanner',                  label: 'H2C Upgrade',             color: 'text-sky-400'    },
-    { id: 'zero_day_engine',              label: 'Zero-Day Engine',         color: 'text-rose-400'   },
-    { id: 'blind_xss_engine',             label: 'Blind XSS',               color: 'text-red-400'    },
-    { id: 'cache_deception',              label: 'Cache Deception',         color: 'text-teal-400'   },
-    { id: 'network_service_scanner',      label: 'Network Services',        color: 'text-cyan-400'   },
-    { id: 'dns_security_scanner',         label: 'DNS Security',            color: 'text-blue-400'   },
-    { id: 'mass_assignment',              label: 'Mass Assignment',         color: 'text-orange-400' },
-    { id: 'rag_poisoning',                label: 'RAG Poisoning',           color: 'text-violet-400' },
-    { id: 'llm_dos',                      label: 'LLM DoS',                 color: 'text-red-400'    },
-    { id: 'intent_fuzzer',                label: 'Intent Fuzzer',           color: 'text-green-400'  },
-    { id: 'graphql_introspection_attacker', label: 'GraphQL Introspection', color: 'text-indigo-400' },
-    { id: 'rate_limit_bypass',            label: 'Rate Limit Bypass',       color: 'text-yellow-400' },
-  ]
-  const [enabledScanners, setEnabledScanners] = useState([])
-  const toggleScanner = (id) =>
-    setEnabledScanners(prev => prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id])
 
   useEffect(() => {
     loadScans()
@@ -93,7 +71,6 @@ export default function UnifiedScan() {
       // Backend will use configured tokens from .env automatically
       payload.max_repos = maxRepos
       payload.max_dorks = maxDorks
-      if (enabledScanners.length > 0) payload.advanced_scanners = enabledScanners
       await endpoints.unifiedScanStart(payload)
       setTarget('')
       loadScans()
@@ -250,37 +227,6 @@ export default function UnifiedScan() {
                     className="w-full"
                   />
                 </div>
-              </div>
-
-              {/* Phase 2: Advanced Scanners */}
-              <div className="pt-2 border-t border-slate-700/60">
-                <label className="block text-slate-300 text-sm font-semibold mb-2 flex items-center gap-2">
-                  <Shield className="w-4 h-4 text-purple-400" />
-                  Advanced Scanners
-                </label>
-                <div className="flex flex-wrap gap-2">
-                  {ADVANCED_SCANNERS.map(({ id, label, color }) => (
-                    <button
-                      key={id}
-                      type="button"
-                      onClick={() => toggleScanner(id)}
-                      className={clsx(
-                        'px-3 py-1.5 rounded text-xs font-mono border transition-colors',
-                        enabledScanners.includes(id)
-                          ? 'bg-purple-600/30 border-purple-500 text-purple-200'
-                          : 'bg-slate-700 border-slate-600 text-slate-400 hover:border-slate-500'
-                      )}
-                    >
-                      <span className={enabledScanners.includes(id) ? color : ''}>{label}</span>
-                    </button>
-                  ))}
-                </div>
-                <p className="text-xs text-slate-500 mt-1">
-                  Selected scanners run after the standard recon phases.
-                  {enabledScanners.length > 0 && (
-                    <span className="text-purple-400 ml-1">Active: {enabledScanners.join(', ')}</span>
-                  )}
-                </p>
               </div>
             </div>
           </details>

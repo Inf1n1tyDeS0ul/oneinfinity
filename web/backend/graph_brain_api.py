@@ -204,12 +204,12 @@ def brain_integrate_finding(req: IntegrateFindingRequest):
     return {"status": "integrated"}
 
 
-@brain_router.get("/attack-paths/{target}")
+@brain_router.get("/attack-paths/{target:path}")
 def brain_attack_paths(target: str):
     return _brain().attack_paths(target)
 
 
-@brain_router.get("/risk-report/{target}")
+@brain_router.get("/risk-report/{target:path}")
 def brain_risk_report(target: str):
     return _brain().risk_report(target)
 

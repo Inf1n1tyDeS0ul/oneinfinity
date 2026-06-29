@@ -62,6 +62,8 @@ export const endpoints = {
   vulnerabilities: (params) => api.get('/vulnerabilities', { params }),
   getVuln:         (id) => api.get(`/vulnerabilities/${id}`),
   updateVuln:      (id, data) => api.patch(`/vulnerabilities/${id}`, data),
+  findingsStats:   () => api.get('/vulnerabilities/stats'),
+  vulnerabilitiesBulkUpdate: (ids, updates) => api.post('/vulnerabilities/bulk-update', { ids, updates }),
   replayVuln:      (id) => api.post(`/vulnerabilities/${id}/replay`),
   mutatePayload:   (id, data) => api.post(`/vulnerabilities/${id}/mutate`, data),
   generateReport:  (id) => api.post(`/vulnerabilities/${id}/report`),
@@ -69,6 +71,8 @@ export const endpoints = {
   launchCampaign:  (data) => api.post('/ai-campaigns', data),
   testPrompt:      (data) => api.post('/ai-prompt-test', data),
   attackGraph:     (target) => api.get('/attack-graph', { params: target ? { target } : {} }),
+  graphAttackPaths: (target) => api.get(`/graph/${target}/attack-paths`),
+  getAttackChains:  (target) => api.get(`/graph/${target}/chains`),
   reports:         () => api.get('/reports'),
   publishReport:   (scanId, sections) => api.post('/reports/publish',
     { scan_id: scanId, sections: sections || null },
@@ -90,6 +94,10 @@ export const endpoints = {
   proxyStatus:     () => api.get('/proxy/status'),
   proxyConfigure:  (data) => api.post('/proxy/configure', data),
   proxyDisable:    () => api.post('/proxy/disable'),
+  interceptStatus: () => api.get('/proxy/intercept/requests'),
+  interceptToggle: (enabled) => api.post('/proxy/intercept/toggle', { enabled }),
+  interceptForward:(id, data) => api.post(`/proxy/intercept/${id}/forward`, data),
+  interceptDrop:   (id) => api.post(`/proxy/intercept/${id}/drop`),
 
   // Attacks
   attacks:         () => api.get('/attacks'),
@@ -100,7 +108,11 @@ export const endpoints = {
 
   // Mobile Security
   mobileApps:          () => api.get('/mobile/apps'),
+  mobileDevices:       () => api.get('/mobile/devices'),
+  devicePackages:      (serial) => api.get(`/mobile/devices/${serial}/packages`),
+  packageIngest:       (serial, pkg) => api.post(`/mobile/devices/${serial}/packages/${pkg}/ingest`),
   getMobileApp:        (id) => api.get(`/mobile/apps/${id}`),
+  mobileMobsfStatus:   () => api.get('/mobile/mobsf-status'),
   mobileAnalyze:       (id, params) => api.post(`/mobile/apps/${id}/analyze`, null, { params }),
   mobileStatic:        (id) => api.get(`/mobile/apps/${id}/static`),
   mobileSecrets:       (id) => api.get(`/mobile/apps/${id}/secrets`),
@@ -113,15 +125,30 @@ export const endpoints = {
   mobileNetwork:       (id) => api.get(`/mobile/apps/${id}/network`),
   mobileApiAttack:     (id) => api.get(`/mobile/apps/${id}/api-attack`),
   mobileTools:         (id) => api.get(`/mobile/apps/${id}/tools`),
+  mobileCommand:       (deviceId, data) => api.post('/mobile/agent/command', data, { params: { device_id: deviceId } }),
   mobileFullReport:    (id) => api.get(`/mobile/apps/${id}/report`),
-  mobileUpload:        (formData) => api.post('/mobile/upload', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' }
+  forensicSignals:     (id) => api.get(`/mobile/apps/${id}/forensic-signals`),
+  forensicAudit:       (id, deviceId) => api.post(`/mobile/apps/${id}/forensic-audit?device_id=${encodeURIComponent(deviceId)}`),
+  mobileUpload:        (formData, onProgress) => api.post('/mobile/upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 300000,          // 5 min — APKs can be 50-150 MB
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity,
+    onUploadProgress: onProgress,
   }),
+
+  // Week 5 Mobile Enhancements
+  mobileInjectFrida:   (id, body) => api.post(`/mobile/apps/${id}/frida`, body),
+  mobileGetTraffic:    (id, limit = 100) => api.get(`/mobile/apps/${id}/traffic`, { params: { limit } }),
+  mobileBypassSSL:     (id, body) => api.post(`/mobile/apps/${id}/bypass-ssl`, body),
 
   // Bounty Hunter
   hunterStart:         (config) => api.post('/hunter/start', config),
   hunterScan:          (target, config) => api.post('/hunter/scan', { target, ...(config || {}) }),
   hunterStatus:        (sessionId) => api.get(sessionId ? `/hunter/status/${sessionId}` : '/hunter/status'),
+  hunterStats:         () => api.get('/hunter/stats'),
+  getHunterConfig:     () => api.get('/hunter/config'),
+  updateHunterConfig:  (data) => api.post('/hunter/config', data),
   hunterSessions:      () => api.get('/hunter/sessions'),
   hunterFindings:      (sessionId) => api.get(`/hunter/findings/${sessionId}`),
   hunterReport:        (sessionId, params) => api.post(`/hunter/report/${sessionId}`, params),
@@ -270,22 +297,87 @@ export const endpoints = {
   authRecordCancel:    (recId) => api.post(`/auth/record/${recId}/cancel`),
   authListSessions:    () => api.get('/auth/sessions'),
   authGetSession:      (id) => api.get(`/auth/sessions/${id}`),
+  authSessionVerify:   (id) => api.post(`/auth/sessions/${id}/verify`),
   authDeleteSession:   (id) => api.delete(`/auth/sessions/${id}`),
   godModeStatus:       (scanId) => scanId ? api.get(`/god-mode/status/${scanId}`) : api.get('/god-mode/status'),
   godModeSessions:     () => api.get('/god-mode/sessions'),
   godModeStop:         (scanId) => api.post('/god-mode/stop', { scan_id: scanId || null }),
   godModeDelete:       (scanId) => api.delete(`/god-mode/${scanId}`),
   godModeLogs:         (scanId, lines) => api.get(`/god-mode/logs/${scanId}`, { params: { lines: lines || 150 } }),
+  godModeApprove:      (data) => api.post('/god-mode/approve', data),
+
+  // HITL Researcher Feedback
+  findingFeedback:     (findingId, data) => api.post(`/findings/${findingId}/feedback`, data),
+  hitlStats:           () => api.get('/hitl/stats'),
 
   // Tools & Plugins
   learningStats:       () => api.get('/learning/stats'),
   learningPlan:        (target, tech) => api.post('/learning/plan', { target, tech }),
   toolsStatus:         () => api.get('/tools/status'),
   toolsCapmap:         () => api.get('/tools/capmap'),
+  toolsMetrics:        () => api.get('/tools/metrics'),
+  toolsHealth:         () => api.get('/tools/health'),
+  toolsFailures:       () => api.get('/tools/failures'),
 
   // Utilities
   utilsCvss:           (vector, describe) => api.post('/utils/cvss', { vector, describe }),
   utilsDedup:          (title) => api.post('/utils/dedup', { title }),
   utilsWafBypass:      (waf, vuln_type) => api.post('/utils/waf-bypass', { waf, vuln_type }),
   utilsMethodology:    (vuln_class) => api.post('/utils/methodology', { vuln_class }),
+
+  // MCP Integration
+  mcpStatus:           () => api.get('/mcp/status'),
+  mcpManifest:         () => api.get('/mcp/manifest'),
+  mcpInvokeTool:       (tool, parameters) => api.post('/mcp/tools/invoke', { tool, parameters }),
+  mcpUpdateConfig:     (config) => api.patch('/mcp/config', config),
+  mcpCostTracking:     () => api.get('/mcp/cost-tracking'),
+  mcpIntegrationStatus: () => api.get('/mcp/integration-status'),
+
+  // AI Red Team
+  aiRedteamStart:      (data) => api.post('/ai-redteam/start', data),
+  aiRedteamList:       () => api.get('/ai-redteam/campaigns'),
+  aiRedteamGet:        (campaignId) => api.get(`/ai-redteam/campaigns/${campaignId}`),
+  aiPromptTest:        (data) => api.post('/ai-prompt-test', data),
+
+  // AI Security Engine (multi-tool)
+  aiSecToolStatus:     () => api.get('/ai-security/tool-status'),
+  aiSecScanStart:      (data) => api.post('/ai-security/scan', data),
+  aiSecScanList:       () => api.get('/ai-security/scans'),
+  aiSecScanGet:        (scanId) => api.get(`/ai-security/scans/${scanId}`),
+
+  // SSO + Endpoint Discovery
+  aiSecGetToken:       (data) => api.post('/ai-security/get-token', data),
+  aiSecProbeEndpoint:  (data) => api.post('/ai-security/probe-endpoint', data),
+
+  // Custom Tests
+  customTestsStart:    (data) => api.post('/custom-tests/start', data),
+  customTestsList:     () => api.get('/custom-tests/runs'),
+  customTestsGet:      (testId) => api.get(`/custom-tests/runs/${testId}`),
+
+  // AI Agent Test
+  aiAgentTestStart:    (data) => api.post('/ai-agent-test/start', data),
+  aiAgentTestList:     () => api.get('/ai-agent-test/tests'),
+  aiAgentTestGet:      (testId) => api.get(`/ai-agent-test/tests/${testId}`),
+
+  // Configuration / Environment
+  getEnvVars:          () => api.get('/config/env'),
+  getEnvVar:           (key, reveal) => api.get(`/config/env/${key}${reveal ? '?reveal=true' : ''}`),
+  setEnvVars:          (data) => api.post('/config/env', data),
+  deleteEnvVar:        (key) => api.delete(`/config/env/${key}`),
+  getGithubTokens:     () => api.get('/config/github-tokens'),
+  setGithubTokens:     (data) => api.post('/config/github-tokens', data),
+
+  // GitHub Reconnaissance (Unified Scan)
+  unifiedScanStart:    (data) => api.post('/github-recon/unified-scan', data),
+  unifiedScanList:     () => api.get('/github-recon/unified-scans'),
+  unifiedScanGet:      (unifiedId) => api.get(`/github-recon/unified-scan/${unifiedId}`),
+  githubRateLimit:     () => api.get('/github-recon/rate-limit'),
+
+  // Advanced Features (New Engines)
+  liveExpansion:       (data) => api.post('/scan/live-expansion', data),
+  trafficCorrelation:  (data) => api.post('/scan/traffic-correlation', data),
+  chainSuggestions:    (data) => api.post('/scan/chain-suggestions', data),
+  payloadMutation:     (data) => api.post('/scan/payload-mutation', data),
+  zeroDayDetection:    (data) => api.post('/scan/zero-day-detection', data),
+  validateFindings:    (data) => api.post('/scan/validate-findings', data),
 }

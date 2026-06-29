@@ -5,9 +5,9 @@ import {
   Eye, CheckCircle, XCircle, Clock, Globe, Shield, Zap, ChevronRight, Binary, Activity as ActivityIcon
 } from 'lucide-react';
 import clsx from 'clsx';
-import api from '../../utils/api';
 import JSONViewer from './mobile/JSONViewer';
 import './TrafficViewer.css';
+
 export default function TrafficViewer({ deviceId, onViewCode }) {
   const [traffic, setTraffic] = useState([]);
   const [filter, setFilter] = useState('all');
@@ -17,15 +17,18 @@ export default function TrafficViewer({ deviceId, onViewCode }) {
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [diffBase, setDiffBase] = useState(null); // ID for diff comparison
 
+  const apiBase = useMemo(() => import.meta.env.VITE_API_BASE_URL || window.location.origin.replace('3000', '8000'), []);
+
   const fetchTraffic = useCallback(async () => {
     if (!deviceId) return;
     try {
-      const response = await api.get(`/mobile/agent/traffic/${deviceId}`, { params: { limit: 250 } });
-      setTraffic(response.data);
+      const response = await fetch(`${apiBase}/api/mobile/agent/traffic/${deviceId}?limit=250`);
+      const data = await response.json();
+      setTraffic(data);
     } catch (err) {
       console.error('Failed to fetch traffic:', err);
     }
-  }, [deviceId]);
+  }, [deviceId, apiBase]);
 
   useEffect(() => {
     fetchTraffic();
@@ -73,7 +76,7 @@ export default function TrafficViewer({ deviceId, onViewCode }) {
   const clearTraffic = async () => {
     if (!window.confirm('Delete all captured traffic for this device?')) return;
     try {
-      await api.delete(`/mobile/agent/traffic/${deviceId}`);
+      await fetch(`${apiBase}/api/mobile/agent/traffic/${deviceId}`, { method: 'DELETE' });
       setTraffic([]);
       setSelectedEntry(null);
     } catch {}
@@ -382,7 +385,11 @@ export default function TrafficViewer({ deviceId, onViewCode }) {
                               <button 
                                 onClick={async () => {
                                   try {
-                                    await api.post(`/mobile/agent/mirror_fuzz/${deviceId}`, { traffic_id: selectedEntry.id });
+                                    await fetch(`${apiBase}/api/mobile/agent/mirror_fuzz/${deviceId}`, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ traffic_id: selectedEntry.id })
+                                    });
                                     alert('Mirror Fuzz Triggered');
                                   } catch(e) {}
                                 }}

@@ -22,7 +22,7 @@ export default function Infrastructure() {
   }
 
   const loadCacheStats = async () => {
-    try { const r = await endpoints.launchScan({ scan_type: 'cache_stats' }); setCacheStats(r.data) }
+    try { const r = await endpoints.cacheStats(); setCacheStats(r.data) }
     catch (e) { setCacheStats(null) }
   }
 
@@ -34,7 +34,11 @@ export default function Infrastructure() {
   const handleProxyConfigure = async () => {
     if (!proxyHost.trim()) return
     try {
-      await endpoints.proxyConfigure({ host: proxyHost, port: proxyPort ? parseInt(proxyPort) : 8080 })
+      await endpoints.proxyConfigure({ 
+        host: proxyHost, 
+        port: proxyPort ? parseInt(proxyPort) : 8080,
+        enabled: true 
+      })
       addNotification('Proxy configured', 'success')
       loadProxy()
     } catch (e) { addNotification('Error: ' + e.message, 'error') }
@@ -50,7 +54,8 @@ export default function Infrastructure() {
 
   const handleCacheAction = async (action) => {
     try {
-      await endpoints.launchScan({ scan_type: `cache_${action}` })
+      if (action === 'sweep') await endpoints.cacheSweep()
+      else if (action === 'clear') await endpoints.cacheClear()
       addNotification(`Cache ${action} done`, 'success')
       loadCacheStats()
     } catch (e) { addNotification('Error: ' + e.message, 'error') }
@@ -60,7 +65,7 @@ export default function Infrastructure() {
     if (!distTarget.trim()) return
     setLoading(true)
     try {
-      const r = await endpoints.launchScan({ scan_type: 'distributed', target: distTarget, workers: distWorkers })
+      const r = await endpoints.distributedScan({ target: distTarget, workers: distWorkers })
       setDistResult(r.data)
       addNotification('Distributed scan started', 'success')
     } catch (e) { addNotification('Error: ' + e.message, 'error') }
@@ -86,7 +91,7 @@ export default function Infrastructure() {
       </div>
 
       {tab === 'proxy' && (
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div className="card">
             <div className="card-header">
               <span className="card-title"><Network size={14} className="text-cyan-400" />Proxy Status</span>
@@ -120,7 +125,7 @@ export default function Infrastructure() {
           <div className="card">
             <div className="card-header"><span className="card-title"><Settings2 size={14} className="text-cyan-400" />Configure Proxy</span></div>
             <div className="card-body flex flex-col gap-3">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="label">Host</label>
                   <input className="input" placeholder="127.0.0.1" value={proxyHost} onChange={e => setProxyHost(e.target.value)} />
@@ -146,7 +151,7 @@ export default function Infrastructure() {
           </div>
           <div className="card-body flex flex-col gap-4">
             {cacheStats && (
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 {[
                   { label: 'Total Entries', value: cacheStats?.total_entries ?? 0 },
                   { label: 'Size on Disk', value: cacheStats?.size_mb ? `${cacheStats.size_mb} MB` : '—' },

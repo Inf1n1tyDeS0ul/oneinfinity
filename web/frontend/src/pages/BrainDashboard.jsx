@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react'
-import { Brain, Play, Square, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react'
+import React, { useState, useEffect, useRef } from 'react'
+import { Brain, Play, Square, RefreshCw, ChevronDown, ChevronUp, Target } from 'lucide-react'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
 import { relativeTime } from '../utils/time'
@@ -9,12 +9,15 @@ const SEV_COLORS = { critical: 'badge-critical', high: 'badge-high', medium: 'ba
 
 // ── Tab: Overview ────────────────────────────────────────────────────────────
 function OverviewTab() {
-  const { addNotification } = useStore()
+  const { addNotification, scans } = useStore()
   const [brain, setBrain] = useState(null)
   const [ede, setEde] = useState(null)
   const [fabric, setFabric] = useState(null)
   const [loading, setLoading] = useState(false)
   const [lastUpdated, setLastUpdated] = useState(null)
+  const [showTargetInput, setShowTargetInput] = useState(false)
+  const [manualTarget, setManualTarget] = useState('')
+  const targetInputRef = useRef(null)
 
   const load = async () => {
     setLoading(true)
@@ -35,19 +38,51 @@ function OverviewTab() {
 
   useEffect(() => { load() }, [])
 
+  // Derive unique targets from completed scans
+  const knownTargets = [...new Set(scans.map(s => s.target).filter(Boolean))]
+
+  const startBrain = async (targets) => {
+    await endpoints.brainStart({ targets })
+    addNotification(`Brain started for ${targets.length} target${targets.length > 1 ? 's' : ''}`, 'success')
+    setShowTargetInput(false)
+    setManualTarget('')
+    load()
+  }
+
   const handleBrain = async (action) => {
     try {
-      if (action === 'start') await endpoints.brainStart({})
-      else await endpoints.brainStop()
-      addNotification(`Brain ${action}ed`, 'success')
-      load()
+      if (action === 'start') {
+        if (knownTargets.length > 0) {
+          await startBrain(knownTargets)
+        } else {
+          // No known targets — show inline input
+          setShowTargetInput(true)
+          setTimeout(() => targetInputRef.current?.focus(), 50)
+        }
+      } else {
+        await endpoints.brainStop()
+        addNotification('Brain stopped', 'success')
+        load()
+      }
+    } catch (e) { addNotification(`Failed: ${e.message}`, 'error') }
+  }
+
+  const handleManualStart = async () => {
+    const t = manualTarget.trim()
+    if (!t) { addNotification('Enter a target domain or IP', 'error'); return }
+    try {
+      await startBrain([t])
     } catch (e) { addNotification(`Failed: ${e.message}`, 'error') }
   }
 
   const handleEde = async (action) => {
     try {
-      if (action === 'start') await endpoints.edeStart({})
-      else await endpoints.edeStop()
+      if (action === 'start') {
+        const targets = knownTargets.length > 0 ? knownTargets : ['*']
+        await endpoints.edeStart({ targets })
+      } else {
+        await endpoints.edeStop()
+      }
       addNotification(`EDE ${action}ed`, 'success')
       load()
     } catch (e) { addNotification(`Failed: ${e.message}`, 'error') }
@@ -67,59 +102,217 @@ function OverviewTab() {
         {lastUpdated && <span className="text-[10px] text-slate-500">Last updated: {lastUpdated}</span>}
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
-        <div className={clsx('card', running ? 'border-green-600/40' : '')}>
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-semibold text-slate-300">Attack Graph Brain</span>
-            <span className={clsx('text-xs px-2 py-0.5 rounded-full', running ? 'bg-green-900/50 text-green-400' : 'bg-slate-700 text-slate-400')}>
-              {running ? 'Running' : 'Stopped'}
-            </span>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className={clsx('card p-4 flex flex-col justify-between', running ? 'border-green-600/40 ring-1 ring-green-600/20' : 'border-white/5')}>
+          <div>
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-sm font-bold text-slate-200">Attack Graph Brain</span>
+              <span className={clsx('text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider', running ? 'bg-green-900/50 text-green-400' : 'bg-slate-800 text-slate-500')}>
+                {running ? 'Online' : 'Offline'}
+              </span>
+            </div>
+            <div className="space-y-2 mb-6">
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Findings Integrated</span>
+                <span className="text-slate-300 font-mono font-bold">{brain?.findings_integrated ?? 0}</span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Queue Depth</span>
+                <span className={clsx('font-mono font-bold', (brain?.queue_depth || 0) > 0 ? 'text-yellow-400' : 'text-slate-300')}>
+                  {brain?.queue_depth ?? 0}
+                </span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Active Targets</span>
+                <span className="text-slate-300 font-mono font-bold">{brain?.targets?.length ?? 0}</span>
+              </div>
+            </div>
           </div>
-          <div className="text-xs text-slate-500 mb-3 space-y-1">
-            <div>Findings integrated: <span className="text-slate-300">{brain?.findings_integrated ?? 0}</span></div>
-            <div>Queue depth: <span className="text-slate-300">{brain?.queue_size ?? 0}</span></div>
-            <div>Targets: <span className="text-slate-300">{brain?.targets?.length ?? 0}</span></div>
-          </div>
-          <div className="flex gap-2">
-            <button className="btn-primary flex items-center gap-1" onClick={() => handleBrain('start')} disabled={running || loading}>
-              <Play size={11} /> Start
+          {/* Known targets hint */}
+          {knownTargets.length > 0 && !running && (
+            <div className="mt-2 mb-1 flex flex-wrap gap-1">
+              {knownTargets.slice(0, 3).map(t => (
+                <span key={t} className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-bg-elevated border border-bg-border text-slate-500 truncate max-w-[100px]" title={t}>{t}</span>
+              ))}
+              {knownTargets.length > 3 && (
+                <span className="text-[10px] text-slate-600">+{knownTargets.length - 3} more</span>
+              )}
+            </div>
+          )}
+
+          <div className="flex gap-2 pt-2 border-t border-white/5">
+            <button className="btn-primary flex-1 py-1.5 text-[11px] flex items-center justify-center gap-1.5" onClick={() => handleBrain('start')} disabled={running || loading}>
+              <Play size={10} fill="currentColor" /> Start
             </button>
-            <button className="btn-danger flex items-center gap-1" onClick={() => handleBrain('stop')} disabled={!running || loading}>
-              <Square size={11} /> Stop
+            <button className="btn-danger flex-1 py-1.5 text-[11px] flex items-center justify-center gap-1.5" onClick={() => handleBrain('stop')} disabled={!running || loading}>
+              <Square size={10} fill="currentColor" /> Stop
+            </button>
+          </div>
+
+          {/* Inline target input — shown when no known targets */}
+          {showTargetInput && (
+            <div className="mt-2 flex gap-2">
+              <div className="relative flex-1">
+                <Target size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                <input
+                  ref={targetInputRef}
+                  className="input pl-7 w-full text-xs"
+                  placeholder="e.g. example.com"
+                  value={manualTarget}
+                  onChange={e => setManualTarget(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleManualStart()}
+                />
+              </div>
+              <button className="btn-primary text-xs px-3" onClick={handleManualStart}>Go</button>
+              <button className="btn-secondary text-xs px-2" onClick={() => setShowTargetInput(false)}>✕</button>
+            </div>
+          )}
+        </div>
+
+        <div className={clsx('card p-4 flex flex-col justify-between', edeRunning ? 'border-cyan-600/40 ring-1 ring-cyan-600/20' : 'border-white/5')}>
+          <div>
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-sm font-bold text-slate-200">Event Bus (EDE)</span>
+              <span className={clsx('text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider', edeRunning ? 'bg-cyan-900/50 text-cyan-400' : 'bg-slate-800 text-slate-500')}>
+                {edeRunning ? 'Active' : 'Idle'}
+              </span>
+            </div>
+            <div className="space-y-2 mb-6">
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Events Received</span>
+                <span className="text-slate-300 font-mono font-bold">{ede?.events_received ?? 0}</span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Actions Dispatched</span>
+                <span className="text-slate-300 font-mono font-bold">{ede?.actions_sent ?? 0}</span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Iterations</span>
+                <span className="text-slate-300 font-mono font-bold">{ede?.iterations ?? 0}</span>
+              </div>
+            </div>
+          </div>
+          <div className="flex gap-2 pt-2 border-t border-white/5">
+            <button className="btn-primary flex-1 py-1.5 text-[11px] flex items-center justify-center gap-1.5" onClick={() => handleEde('start')} disabled={edeRunning || loading}>
+              <Play size={10} fill="currentColor" /> Resume
+            </button>
+            <button className="btn-danger flex-1 py-1.5 text-[11px] flex items-center justify-center gap-1.5" onClick={() => handleEde('stop')} disabled={!edeRunning || loading}>
+              <Square size={10} fill="currentColor" /> Pause
             </button>
           </div>
         </div>
 
-        <div className={clsx('card', edeRunning ? 'border-cyan-600/40' : '')}>
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-semibold text-slate-300">Event-Driven Engine</span>
-            <span className={clsx('text-xs px-2 py-0.5 rounded-full', edeRunning ? 'bg-cyan-900/50 text-cyan-400' : 'bg-slate-700 text-slate-400')}>
-              {edeRunning ? 'Running' : 'Stopped'}
-            </span>
-          </div>
-          <div className="text-xs text-slate-500 mb-3 space-y-1">
-            <div>Events routed: <span className="text-slate-300">{ede?.events_routed ?? 0}</span></div>
-            <div>Dispatch interval: <span className="text-slate-300">{ede?.dispatch_interval ?? '1s'}</span></div>
-          </div>
-          <div className="flex gap-2">
-            <button className="btn-primary flex items-center gap-1" onClick={() => handleEde('start')} disabled={edeRunning || loading}>
-              <Play size={11} /> Start
-            </button>
-            <button className="btn-danger flex items-center gap-1" onClick={() => handleEde('stop')} disabled={!edeRunning || loading}>
-              <Square size={11} /> Stop
-            </button>
+        <div className="card p-4 flex flex-col justify-between border-white/5">
+          <div>
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-sm font-bold text-slate-200">Agent Fabric</span>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-900/30 text-indigo-400 font-bold uppercase tracking-wider">
+                Cluster
+              </span>
+            </div>
+            <div className="space-y-2">
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Active Tasks</span>
+                <span className={clsx('font-mono font-bold', (fabric?.active_tasks || 0) > 0 ? 'text-indigo-400' : 'text-slate-300')}>
+                  {fabric?.active_tasks ?? 0}
+                </span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Task Queue</span>
+                <span className="text-slate-300 font-mono font-bold">{fabric?.queue_depth ?? 0}</span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Provisioned Capacity</span>
+                <span className="text-slate-300 font-mono">{fabric?.max_workers ?? 8} CPU</span>
+              </div>
+              <div className="flex justify-between text-xs pt-1 border-t border-white/5 mt-1">
+                <span className="text-slate-500">Available Agents</span>
+                <span className="text-slate-300 font-mono">{fabric?.agent_types?.length ?? 12}</span>
+              </div>
+            </div>
           </div>
         </div>
+      </div>
 
-        <div className="card">
-          <div className="text-xs font-semibold text-slate-300 mb-3">Agent Fabric</div>
-          <div className="text-xs text-slate-500 space-y-1">
-            <div>Workers active: <span className="text-slate-300">{fabric?.active_tasks ?? 0}</span></div>
-            <div>Queued: <span className="text-slate-300">{fabric?.queue_size ?? 0}</span></div>
-            <div>Max workers: <span className="text-slate-300">{fabric?.max_workers ?? 8}</span></div>
-            <div>Agents registered: <span className="text-slate-300">{fabric?.agent_types?.length ?? 12}</span></div>
-          </div>
+      {/* Running Targets Panel */}
+      {running && (
+        <RunningTargetsPanel
+          targets={brain?.targets ?? []}
+          onAdd={async (t) => {
+            try {
+              await endpoints.brainAddTarget(t)
+              addNotification(`Added target: ${t}`, 'success')
+              load()
+            } catch (e) { addNotification(`Failed to add target: ${e.message}`, 'error') }
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Running Targets Panel ────────────────────────────────────────────────────
+function RunningTargetsPanel({ targets, onAdd }) {
+  const [addInput, setAddInput] = useState('')
+  const [adding, setAdding] = useState(false)
+  const inputRef = useRef(null)
+
+  const handleAdd = async () => {
+    const t = addInput.trim()
+    if (!t) return
+    setAdding(true)
+    await onAdd(t)
+    setAddInput('')
+    setAdding(false)
+  }
+
+  return (
+    <div className="card p-4 border-green-600/20 bg-green-950/10">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+          <span className="text-xs font-semibold text-slate-200">Running Targets</span>
+          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-green-900/40 text-green-400 border border-green-700/30">
+            {targets.length} active
+          </span>
         </div>
+        <span className="text-[10px] text-slate-500">Brain is autonomously monitoring these targets</span>
+      </div>
+
+      {targets.length === 0 ? (
+        <p className="text-xs text-slate-500 italic mb-3">No targets registered yet.</p>
+      ) : (
+        <div className="flex flex-wrap gap-2 mb-3">
+          {targets.map(t => (
+            <div key={t} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-bg-elevated border border-green-700/30 text-xs font-mono text-green-300">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-400 flex-shrink-0" />
+              {t}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Add target inline */}
+      <div className="flex gap-2 pt-3 border-t border-white/5">
+        <div className="relative flex-1 max-w-xs">
+          <Target size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+          <input
+            ref={inputRef}
+            className="input pl-7 w-full text-xs"
+            placeholder="Add target (e.g. api.example.com)"
+            value={addInput}
+            onChange={e => setAddInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleAdd()}
+          />
+        </div>
+        <button
+          className="btn-primary text-xs flex items-center gap-1.5"
+          onClick={handleAdd}
+          disabled={adding || !addInput.trim()}
+        >
+          {adding ? <RefreshCw size={11} className="animate-spin" /> : <Play size={11} fill="currentColor" />}
+          Add Target
+        </button>
       </div>
     </div>
   )
@@ -152,48 +345,60 @@ function QueueTab() {
   }, [])
 
   return (
-    <div className="card overflow-auto">
-      <div className="flex items-center justify-between mb-3">
+    <div className="flex flex-col gap-4 flex-1 min-h-0">
+      <div className="flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold text-slate-300">Action Queue ({queue.length})</span>
-          <button className="btn-secondary flex items-center gap-1" onClick={load} disabled={loading}>
-            <RefreshCw size={11} className={clsx(loading && 'animate-spin')} /> Refresh
+          <span className="text-sm font-bold text-slate-200">Autonomous Action Queue ({queue.length})</span>
+          <button className="btn-secondary flex items-center gap-1.5 px-2 py-1" onClick={load} disabled={loading}>
+            <RefreshCw size={11} className={clsx(loading && 'animate-spin')} /> 
+            <span className="text-[10px]">Refresh</span>
           </button>
         </div>
-        {lastUpdated && <span className="text-[10px] text-slate-500">Last updated: {lastUpdated}</span>}
+        {lastUpdated && <span className="text-[10px] text-slate-500 italic">Synced: {lastUpdated}</span>}
       </div>
-      {queue.length === 0 ? (
-        <div className="text-xs text-slate-500 p-4">{loading ? 'Loading queue...' : 'Queue is empty'}</div>
-      ) : (
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="text-slate-500 border-b border-bg-border">
-              <th className="text-left py-2 px-3">Agent</th>
-              <th className="text-left py-2 px-3">Node</th>
-              <th className="text-left py-2 px-3">Type</th>
-              <th className="text-left py-2 px-3">Priority</th>
-              <th className="text-left py-2 px-3">Reason</th>
-              <th className="text-left py-2 px-3">Target</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-bg-border">
-            {queue.map((a, i) => (
-              <tr key={i} className="hover:bg-white/5">
-                <td className="py-1.5 px-3 text-cyan-400">{a.agent_type || a.agent || '—'}</td>
-                <td className="py-1.5 px-3 text-slate-300 font-mono truncate max-w-[150px]">{a.node_label || a.node || '—'}</td>
-                <td className="py-1.5 px-3 text-slate-400">{a.node_type || '—'}</td>
-                <td className="py-1.5 px-3">
-                  <span className={clsx('font-mono', (a.priority || 0) > 7 ? 'text-red-400' : (a.priority || 0) > 4 ? 'text-yellow-400' : 'text-slate-400')}>
-                    {typeof (a.priority_score ?? a.priority) === 'number' ? (a.priority_score ?? a.priority).toFixed(2) : (a.priority_score ?? a.priority) || '—'}
-                  </span>
-                </td>
-                <td className="py-1.5 px-3 text-slate-500 truncate max-w-[200px]" title={a.decision_reason || a.reason}>{a.decision_reason || a.reason || '—'}</td>
-                <td className="py-1.5 px-3 text-slate-400 truncate max-w-[150px]">{a.target || '—'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      
+      <div className="card flex-1 min-h-0 overflow-hidden flex flex-col border-white/5">
+        <div className="overflow-x-auto overflow-y-auto flex-1 custom-scrollbar">
+          {queue.length === 0 ? (
+            <div className="text-xs text-slate-500 p-8 text-center">{loading ? 'Synchronizing queue...' : 'Brain queue is currently idle.'}</div>
+          ) : (
+            <table className="w-full text-xs border-collapse">
+              <thead className="sticky top-0 bg-bg-secondary z-10">
+                <tr className="text-slate-500 border-b border-white/5">
+                  <th className="text-left py-3 px-4 font-bold uppercase tracking-widest text-[9px]">Agent</th>
+                  <th className="text-left py-3 px-4 font-bold uppercase tracking-widest text-[9px]">Node</th>
+                  <th className="text-left py-3 px-4 font-bold uppercase tracking-widest text-[9px]">Type</th>
+                  <th className="text-left py-3 px-4 font-bold uppercase tracking-widest text-[9px]">Priority</th>
+                  <th className="text-left py-3 px-4 font-bold uppercase tracking-widest text-[9px]">Hypothesis / Rationale</th>
+                  <th className="text-left py-3 px-4 font-bold uppercase tracking-widest text-[9px]">Scope</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {queue.map((a, i) => (
+                  <tr key={i} className="hover:bg-white/[0.02] transition-colors group">
+                    <td className="py-2.5 px-4">
+                      <span className="px-2 py-0.5 rounded bg-cyan-900/20 text-cyan-400 font-mono font-bold text-[10px] border border-cyan-500/20">
+                        {a.agent_type || a.agent || '—'}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-4 text-slate-300 font-mono text-[11px] truncate max-w-[180px]">{a.node_label || a.node || '—'}</td>
+                    <td className="py-2.5 px-4 text-slate-500 italic text-[11px] capitalize">{a.node_type?.replace('_', ' ') || '—'}</td>
+                    <td className="py-2.5 px-4">
+                      <span className={clsx('font-mono font-bold text-[11px]', (a.priority || 0) > 7 ? 'text-red-400' : (a.priority || 0) > 4 ? 'text-yellow-400' : 'text-slate-400')}>
+                        {typeof (a.priority_score ?? a.priority) === 'number' ? (a.priority_score ?? a.priority).toFixed(2) : (a.priority_score ?? a.priority) || '—'}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-4 text-slate-400 text-[11px] leading-relaxed max-w-[350px]" title={a.reasoning || a.decision_reason || a.reason}>
+                      <span className="line-clamp-1 group-hover:line-clamp-none">{a.reasoning || a.decision_reason || a.reason || '—'}</span>
+                    </td>
+                    <td className="py-2.5 px-4 text-slate-500 font-mono text-[10px] truncate max-w-[120px]">{a.target || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
@@ -293,48 +498,81 @@ function DecisionsTab() {
   useEffect(() => { load() }, [])
 
   return (
-    <div className="card overflow-auto">
-      <div className="flex items-center justify-between mb-3">
+    <div className="flex flex-col gap-4 flex-1 min-h-0">
+      <div className="flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold text-slate-300">Recent Decisions</span>
-          <button className="btn-secondary flex items-center gap-1" onClick={load} disabled={loading}>
-            <RefreshCw size={11} className={clsx(loading && 'animate-spin')} /> Refresh
+          <span className="text-sm font-bold text-slate-200">Historical Decisions ({decisions.length})</span>
+          <button className="btn-secondary flex items-center gap-1.5 px-2 py-1" onClick={load} disabled={loading}>
+            <RefreshCw size={11} className={clsx(loading && 'animate-spin')} /> 
+            <span className="text-[10px]">Refresh</span>
           </button>
         </div>
-        {lastUpdated && <span className="text-[10px] text-slate-500">Last updated: {lastUpdated}</span>}
+        {lastUpdated && <span className="text-[10px] text-slate-500 italic">Synced: {lastUpdated}</span>}
       </div>
-      {decisions.length === 0 ? (
-        <div className="text-xs text-slate-500 p-4">{loading ? 'Loading decisions...' : 'No decisions recorded yet'}</div>
-      ) : (
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="text-slate-500 border-b border-bg-border">
-              <th className="text-left py-2 px-3">Timestamp</th>
-              <th className="text-left py-2 px-3">Agent</th>
-              <th className="text-left py-2 px-3">Node</th>
-              <th className="text-left py-2 px-3">Action</th>
-              <th className="text-left py-2 px-3">Score</th>
-              <th className="text-left py-2 px-3">Reason</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-bg-border">
-            {decisions.map((d, i) => (
-              <tr key={i} className="hover:bg-white/5">
-                <td className="py-1.5 px-3 text-slate-500 whitespace-nowrap">{relativeTime(d.timestamp)}</td>
-                <td className="py-1.5 px-3 text-cyan-400">{d.selected_agent || d.agent_type || d.agent || '—'}</td>
-                <td className="py-1.5 px-3 font-mono text-slate-300 truncate max-w-[150px]">{d.node_label || d.node || '—'}</td>
-                <td className="py-1.5 px-3 text-slate-400">{d.action || d.action_type || '—'}</td>
-                <td className="py-1.5 px-3 font-mono text-slate-300">
-                  {typeof (d.priority_score ?? d.score) === 'number' ? (d.priority_score ?? d.score).toFixed(3) : (d.priority_score ?? d.score) || '—'}
-                </td>
-                <td className="py-1.5 px-3 text-slate-500 truncate max-w-[200px]" title={d.decision_reason || d.reason}>
-                  {d.decision_reason || d.reason || '—'}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+
+      <div className="card flex-1 min-h-0 overflow-hidden flex flex-col border-white/5">
+        <div className="overflow-x-auto overflow-y-auto flex-1 custom-scrollbar">
+          {decisions.length === 0 ? (
+            <div className="text-xs text-slate-500 p-8 text-center">{loading ? 'Retrieving archive...' : 'No historical decisions found.'}</div>
+          ) : (
+            <table className="w-full text-xs border-collapse">
+              <thead className="sticky top-0 bg-bg-secondary z-10">
+                <tr className="text-slate-500 border-b border-white/5">
+                  <th className="text-left py-3 px-4 font-bold uppercase tracking-widest text-[9px]">Timestamp</th>
+                  <th className="text-left py-3 px-4 font-bold uppercase tracking-widest text-[9px]">Agent</th>
+                  <th className="text-left py-3 px-4 font-bold uppercase tracking-widest text-[9px]">Node</th>
+                  <th className="text-left py-3 px-4 font-bold uppercase tracking-widest text-[9px]">Action</th>
+                  <th className="text-left py-3 px-4 font-bold uppercase tracking-widest text-[9px]">Confidence</th>
+                  <th className="text-left py-3 px-4 font-bold uppercase tracking-widest text-[9px]">Justification</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {decisions.map((d, i) => {
+                  // BrainDecision.to_dict() shape:
+                  //   made_at (unix float), target, confidence, reasoning
+                  //   action: { agent_type, node_label, node_id, action_id, priority }
+                  const act = d.action && typeof d.action === 'object' ? d.action : null
+                  const agent     = act?.agent_type   || d.selected_agent || d.agent_type || '—'
+                  const nodeLabel = act?.node_label   || d.node_label     || d.node       || '—'
+                  const actionId  = act?.action_id    || d.action_id      || '—'
+                  const confidence = d.confidence     ?? d.priority_score ?? d.score
+                  const reasoning  = d.reasoning      || d.decision_reason || d.reason    || '—'
+                  const ts = d.made_at
+                    ? (d.made_at > 1e10 ? new Date(d.made_at) : new Date(d.made_at * 1000))
+                    : (d.timestamp ? new Date(d.timestamp) : null)
+
+                  return (
+                    <tr key={d.decision_id || i} className="hover:bg-white/[0.02] transition-colors group">
+                      <td className="py-2.5 px-4 text-slate-500 whitespace-nowrap text-[10px]">
+                        {ts ? relativeTime(ts.toISOString()) : '—'}
+                      </td>
+                      <td className="py-2.5 px-4">
+                        <span className="px-2 py-0.5 rounded bg-indigo-900/20 text-indigo-400 font-mono font-bold text-[10px] border border-indigo-500/20">
+                          {agent}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-4 text-slate-300 font-mono text-[11px] truncate max-w-[150px]" title={nodeLabel}>
+                        {nodeLabel}
+                      </td>
+                      <td className="py-2.5 px-4">
+                        <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] uppercase font-semibold">
+                          {actionId}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-4 font-mono text-slate-300 text-[11px]">
+                        {typeof confidence === 'number' ? confidence.toFixed(3) : confidence || '—'}
+                      </td>
+                      <td className="py-2.5 px-4 text-slate-400 text-[11px] leading-relaxed max-w-[400px]" title={reasoning}>
+                        <span className="line-clamp-1 group-hover:line-clamp-none">{reasoning}</span>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
@@ -379,15 +617,15 @@ function TriggersTab() {
       <div className="grid grid-cols-3 gap-3">
         <div className="stat-card">
           <div className="stat-label">Total Rules</div>
-          <div className="stat-value">{triggerStats.total_rules ?? rules.length}</div>
+          <div className="stat-value">{triggerStats.rules ?? triggerStats.total_rules ?? rules.length}</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Triggers Fired</div>
-          <div className="stat-value">{triggerStats.total_fired ?? 0}</div>
+          <div className="stat-value">{triggerStats.total_fired ?? triggerStats.total_evaluated ?? 0}</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Last 24h</div>
-          <div className="stat-value">{triggerStats.fired_24h ?? 0}</div>
+          <div className="stat-label">History Size</div>
+          <div className="stat-value">{triggerStats.history_size ?? triggerStats.fired_24h ?? 0}</div>
         </div>
       </div>
 
@@ -398,7 +636,7 @@ function TriggersTab() {
             {rules.map((r, i) => (
               <div key={i} className="flex items-center justify-between px-2 py-1.5 rounded bg-bg-secondary text-xs">
                 <span className="text-slate-300">{r.name || r.condition || JSON.stringify(r)}</span>
-                <span className="text-slate-500">{r.attack_types?.join(', ') || r.action || '—'}</span>
+                <span className="text-slate-500">{(r.agents || r.attack_types)?.join(', ') || r.action || '—'}</span>
               </div>
             ))}
             {rules.length === 0 && <div className="text-slate-500 text-xs">{loading ? 'Loading rules...' : 'No rules loaded'}</div>}

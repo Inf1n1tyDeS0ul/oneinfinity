@@ -5,7 +5,7 @@ import { useStore } from '../store/useStore'
 import { relativeTime } from '../utils/time'
 import clsx from 'clsx'
 
-const MODES = ['full', 'jailbreak', 'prompt_injection', 'data_leak', 'rag_attack', 'tool_abuse', 'output_manipulation', 'model_extraction', 'tool_call_injection']
+const MODES = ['full', 'jailbreak', 'prompt_injection', 'data_leak', 'rag_attack', 'tool_abuse', 'output_manipulation']
 const SEV_COLORS = { critical: 'text-red-500', high: 'text-orange-500', medium: 'text-yellow-500', low: 'text-blue-500', info: 'text-slate-400' }
 const SEV_BG = { critical: 'bg-red-500/20 text-red-500', high: 'bg-orange-500/20 text-orange-500', medium: 'bg-yellow-500/20 text-yellow-500', low: 'bg-blue-500/20 text-blue-500', info: 'bg-slate-500/20 text-slate-400' }
 
@@ -27,9 +27,6 @@ export default function AIRedTeam() {
   const [campaigns, setCampaigns] = useState([])
   const [selectedCampaign, setSelectedCampaign] = useState(null)
   const [loading, setLoading] = useState(false)
-  // Phase 2: new campaign options
-  const [metaPromptSynthesizer, setMetaPromptSynthesizer] = useState(false)
-  const [aiCampaignType, setAiCampaignType] = useState('agentic_injection')
 
   // SSO + Endpoint Discovery state
   const [ssoTenant, setSsoTenant] = useState('')
@@ -148,9 +145,6 @@ export default function AIRedTeam() {
         model,
         endpoint_path: endpointPath,
         context,
-        // Phase 2 fields
-        ai_campaign: aiCampaignType,
-        meta_prompt_synthesizer: metaPromptSynthesizer,
       })
       addNotification('AI Red Team campaign started!', 'success')
       setTarget('')
@@ -455,37 +449,6 @@ export default function AIRedTeam() {
               placeholder="customer support chatbot for a bank"
               className="w-full bg-slate-700 rounded px-3 py-2 text-sm"
             />
-          </div>
-        </div>
-
-        {/* Phase 2: AI Campaign type + MetaPromptSynthesizer */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-3 border-t border-slate-700">
-          <div>
-            <label className="block text-sm mb-2 text-slate-300">AI Campaign</label>
-            <select
-              value={aiCampaignType}
-              onChange={e => setAiCampaignType(e.target.value)}
-              className="w-full bg-slate-700 rounded px-3 py-2 text-sm"
-            >
-              <option value="agentic_injection">Agentic Injection</option>
-              <option value="model_extraction">Model Extraction</option>
-              <option value="rag_poisoning">RAG Attack (Poisoning)</option>
-              <option value="llm_dos">LLM DoS (Token Flood)</option>
-              <option value="supply_chain">LLM Supply Chain Attack</option>
-            </select>
-            <p className="text-xs text-slate-500 mt-1">Runs as a parallel campaign alongside the main attack mode.</p>
-          </div>
-          <div className="flex items-start gap-3 pt-6">
-            <label className="flex items-center gap-2 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={metaPromptSynthesizer}
-                onChange={e => setMetaPromptSynthesizer(e.target.checked)}
-                className="w-4 h-4 accent-red-500"
-              />
-              <span className="text-sm text-slate-300">MetaPromptSynthesizer</span>
-            </label>
-            <span className="text-xs text-slate-500 mt-0.5">Synthesizes meta-level adversarial prompts to amplify jailbreak and injection attacks.</span>
           </div>
         </div>
 

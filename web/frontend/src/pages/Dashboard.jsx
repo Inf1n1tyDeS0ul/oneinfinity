@@ -165,7 +165,7 @@ export default function Dashboard() {
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <div className="stat-card glow-cyan">
           <div className="flex items-center justify-between mb-2">
             <span className="stat-label">Active Scans</span>
@@ -203,9 +203,9 @@ export default function Dashboard() {
       </div>
 
       {/* Charts row */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         {/* Scan activity */}
-        <div className="card col-span-2">
+        <div className="card lg:col-span-2">
           <div className="card-header">
             <div className="card-title">
               <Activity size={13} className="text-accent-primary" />
@@ -267,7 +267,7 @@ export default function Dashboard() {
       </div>
 
       {/* Recent activity */}
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         {/* Recent scans */}
         <div className="card">
           <div className="card-header">
@@ -332,7 +332,7 @@ export default function Dashboard() {
             Attack Surface
           </div>
         </div>
-        <div className="p-4 grid grid-cols-4 gap-3">
+        <div className="p-4 grid grid-cols-2 lg:grid-cols-4 gap-3">
           {[
             { label: 'Domains', value: stats?.attack_surface?.domains ?? 0, color: 'text-accent-primary' },
             { label: 'Endpoints', value: stats?.attack_surface?.endpoints ?? 0, color: 'text-accent-secondary' },

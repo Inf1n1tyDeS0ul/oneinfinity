@@ -116,10 +116,10 @@ export default function Utilities() {
       </div>
 
       {tab === 'cvss' && (
-        <div className="grid grid-cols-3 gap-4">
-          <div className="col-span-2 card">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="lg:col-span-2 card">
             <div className="card-header"><span className="card-title"><Calculator size={14} className="text-cyan-400" />CVSS 3.1 Metrics</span></div>
-            <div className="card-body grid grid-cols-2 gap-4">
+            <div className="card-body grid grid-cols-1 sm:grid-cols-2 gap-4">
               {Object.entries(CVSS_METRICS).map(([key, m]) => (
                 <div key={key}>
                   <label className="label-sm">{m.label}</label>
@@ -165,9 +165,35 @@ export default function Utilities() {
                     {cvssResult?.severity || 'Unknown'}
                   </div>
                   <div className="font-mono text-xs text-slate-500 text-center break-all">{cvssResult?.vector || buildVector()}</div>
-                  <button className="btn-ghost btn-sm" onClick={() => copyToClipboard(cvssResult?.vector || buildVector())}>
-                    <Copy size={11} /> Copy Vector
-                  </button>
+                  <div className="flex gap-2">
+                    <button className="btn-ghost btn-sm" onClick={() => copyToClipboard(cvssResult?.vector || buildVector())}>
+                      <Copy size={11} /> Copy Vector
+                    </button>
+                  </div>
+
+                  {cvssResult?.suggested && (
+                    <div className="mt-6 w-full p-4 rounded-xl border border-dashed border-accent-primary/30 bg-accent-primary/5">
+                      <div className="text-[10px] uppercase font-bold text-accent-primary mb-2 flex items-center gap-1.5">
+                        <AlertTriangle size={10} /> Heuristic Suggestion
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <div className={`text-2xl font-bold ${scoreColor(cvssResult.suggested.score)}`}>
+                          {cvssResult.suggested.score} ({cvssResult.suggested.severity})
+                        </div>
+                        <button className="btn-primary btn-xs" onClick={() => {
+                          const parts = cvssResult.suggested.vector.replace('CVSS:3.1/', '').split('/')
+                          const newMetrics = { ...cvssMetrics }
+                          parts.forEach(p => {
+                            const [k, v] = p.split(':')
+                            if (newMetrics[k]) newMetrics[k] = v
+                          })
+                          setCvssMetrics(newMetrics)
+                          addNotification('Suggested vector applied', 'info')
+                        }}>Apply</button>
+                      </div>
+                      <div className="text-[10px] font-mono text-slate-500 mt-2 break-all">{cvssResult.suggested.vector}</div>
+                    </div>
+                  )}
                 </>
               ) : (
                 <>

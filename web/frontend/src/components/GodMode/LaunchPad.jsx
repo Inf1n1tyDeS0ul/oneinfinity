@@ -445,7 +445,7 @@ export default function LaunchPad({
                   </div>
                 </div>
                 <div className="flex items-center justify-between text-[9px] text-slate-500 font-mono">
-                  <span>{formatDateTime(s.start_time || s.started_at)}</span>
+                  <span>{formatDateTime(s.started_at)}</span>
                   <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                     <span className="text-accent-warn">{s.finding_count || 0}F</span>
                     <button 

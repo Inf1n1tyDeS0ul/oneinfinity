@@ -153,8 +153,33 @@
   .neon-glow-cyan {
     box-shadow: 0 0 15px rgba(0, 217, 255, 0.2);
   }
-  .neon-glow-emerald {
-    box-shadow: 0 0 15px rgba(16, 185, 129, 0.2);
+  .neon-glow-indigo {
+    box-shadow: 0 0 15px rgba(99, 102, 241, 0.2);
   }
+  .clip-hexagon {
+    clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
   }
+}
 
+
+/* Mobile Responsive Overrides */
+@layer utilities {
+  .mobile-grid {
+    @apply grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4;
+  }
+  .mobile-sidebar-hide {
+    @apply hidden lg:flex;
+  }
+  .mobile-header-text {
+    @apply text-xs md:text-sm;
+  }
+}
+
+@media (max-width: 1024px) {
+  .sidebar-hidden {
+    transform: translateX(-100%);
+    position: absolute;
+    z-index: 50;
+    height: 100%;
+  }
+}

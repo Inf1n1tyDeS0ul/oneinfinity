@@ -88,7 +88,7 @@ export default function AIModels() {
 
       {/* Budget summary cards */}
       {budget && (
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           {[
             { label: 'Today Spend', value: `$${todaySpend.toFixed(4)}`, icon: DollarSign, color: 'text-yellow-400' },
             { label: 'Total Calls', value: totalCalls, icon: Zap, color: 'text-cyan-400' },
@@ -179,8 +179,8 @@ export default function AIModels() {
         <div className="card">
           <div className="card-header"><span className="card-title">Test AI Execution</span></div>
           <div className="card-body flex flex-col gap-4">
-            <div className="grid grid-cols-3 gap-3">
-              <div className="col-span-2">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="sm:col-span-2">
                 <label className="label">Prompt</label>
                 <textarea className="textarea h-24" placeholder="Enter a prompt to test the AI orchestrator..." value={testPrompt} onChange={e => setTestPrompt(e.target.value)} />
               </div>

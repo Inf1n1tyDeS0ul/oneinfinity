@@ -207,6 +207,39 @@ def list_event_types():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/top-payloads")
+def get_top_payloads(limit: int = Query(20, ge=1, le=100)):
+    """Return top-performing payloads from evolution memory."""
+    try:
+        mm = _get_memory()
+        # Get attack patterns which include payload effectiveness data
+        patterns = mm.get_attack_patterns(limit=limit * 2)  # Get more to filter
+
+        # Extract and rank payloads by effectiveness
+        payloads = []
+        for pattern in patterns:
+            if isinstance(pattern, dict):
+                payload_data = pattern.get("payload") or pattern.get("pattern")
+                success_rate = pattern.get("success_rate", 0.0)
+                vuln_type = pattern.get("vuln_type", "unknown")
+
+                if payload_data:
+                    payloads.append({
+                        "payload": payload_data,
+                        "vuln_type": vuln_type,
+                        "success_rate": success_rate,
+                        "usage_count": pattern.get("usage_count", 1),
+                        "last_success": pattern.get("last_success"),
+                    })
+
+        # Sort by success_rate * usage_count for ranking
+        payloads.sort(key=lambda p: p["success_rate"] * p["usage_count"], reverse=True)
+        return {"payloads": payloads[:limit], "total": len(payloads)}
+    except Exception as e:
+        # Fallback to empty list if memory system not available
+        return {"payloads": [], "total": 0, "error": str(e)}
+
+
 # ── Registration helper ───────────────────────────────────────────────────────
 
 def register_evolution_routes(app, require_auth=None):

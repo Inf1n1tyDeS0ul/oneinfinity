@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react'
 import { CheckCircle2, XCircle, RefreshCw, AlertTriangle, Shield, Target, Zap } from 'lucide-react'
 import clsx from 'clsx'
-import api, { endpoints } from '../utils/api'
+import { endpoints } from '../utils/api'
+
 /**
  * ValidationResultCard — Display validation orchestrator results
  *
@@ -22,16 +23,25 @@ export function ValidationResultCard({ findingId, onRetry, compact = false }) {
 
     const fetchValidation = async () => {
       try {
-        const response = await api.get(`/findings/${findingId}/validation`)
-        setValidation(response.data)
+        const response = await fetch(`${endpoints.base}/findings/${findingId}/validation`)
+
+        if (response.status === 404) {
+          // No validation result yet
+          setValidation(null)
+          setLoading(false)
+          return
+        }
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`)
+        }
+
+        const data = await response.json()
+        setValidation(data)
         setError(null)
       } catch (err) {
-        if (err.response?.status === 404) {
-          setValidation(null)
-        } else {
-          console.error('Failed to fetch validation:', err)
-          setError(err.message)
-        }
+        console.error('Failed to fetch validation:', err)
+        setError(err.message)
       } finally {
         setLoading(false)
       }
@@ -48,14 +58,18 @@ export function ValidationResultCard({ findingId, onRetry, compact = false }) {
       const data = JSON.parse(event.data)
 
       if (data.type === 'validation_complete' && data.finding_id === findingId) {
-        api.get(`/findings/${findingId}/validation`)
-          .then(res => setValidation(res.data))
+        // Refetch validation result
+        fetch(`${endpoints.base}/findings/${findingId}/validation`)
+          .then(res => res.json())
+          .then(data => setValidation(data))
           .catch(err => console.error('Failed to update validation:', err))
       }
     }
 
+    // Subscribe to WebSocket events (if available)
     if (window.websocket && window.websocket.readyState === WebSocket.OPEN) {
       window.websocket.addEventListener('message', handleValidationComplete)
+
       return () => {
         window.websocket.removeEventListener('message', handleValidationComplete)
       }
@@ -64,15 +78,31 @@ export function ValidationResultCard({ findingId, onRetry, compact = false }) {
 
   const handleRetry = async () => {
     if (!findingId) return
+
     setRetrying(true)
     setError(null)
+
     try {
-      const response = await api.post(`/findings/${findingId}/validate`, {
-        strategies: ['hybrid']
+      const response = await fetch(`${endpoints.base}/findings/${findingId}/validate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          strategies: ['hybrid']
+        })
       })
-      const data = response.data
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+
+      const data = await response.json()
       setValidation(data)
-      if (onRetry) onRetry(data)
+
+      if (onRetry) {
+        onRetry(data)
+      }
     } catch (err) {
       console.error('Failed to trigger validation:', err)
       setError(err.message)

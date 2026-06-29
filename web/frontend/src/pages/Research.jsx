@@ -82,20 +82,21 @@ export default function Research() {
   }
 
   return (
-    <div className="flex flex-col gap-5 max-w-5xl">
+    <div className="flex flex-col gap-6 max-w-6xl">
       <div className="section-header">
-        <div>
-          <div className="section-title flex items-center gap-2">
-            <FlaskConical size={18} className="text-purple-400" />
-            Research Mode
+        <div className="flex flex-col gap-1">
+          <div className="section-title flex items-center gap-2.5">
+            <FlaskConical size={20} className="text-accent-purple drop-shadow-[0_0_8px_rgba(168,85,247,0.4)]" />
+            Autonomous Research
           </div>
-          <div className="section-sub">Autonomous vulnerability discovery — theorize, test, and report</div>
+          <div className="section-sub">Execute high-intensity autonomous discovery workflows with AI-driven hypothesis loops.</div>
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Mode selector */}
-        <div className="col-span-1 flex flex-col gap-2">
+        <div className="lg:col-span-4 flex flex-col gap-3">
+          <div className="label-sm px-1">Research Strategy</div>
           {RESEARCH_MODES.map(m => {
             const Icon = m.icon
             return (
@@ -103,97 +104,140 @@ export default function Research() {
                 key={m.value}
                 onClick={() => setMode(m.value)}
                 className={clsx(
-                  'text-left px-4 py-3.5 rounded-xl border transition-all',
+                  'text-left px-4 py-4 rounded-xl border transition-all duration-200 group relative overflow-hidden',
                   mode === m.value
-                    ? 'border-accent-primary/40 bg-accent-primary/8 shadow-glow-cyan'
-                    : 'card hover:border-slate-600 hover:bg-white/[0.02]'
+                    ? 'border-accent-primary/40 bg-accent-primary/10 shadow-glow-cyan'
+                    : 'card hover:border-bg-border-hover hover:bg-white/[0.03]'
                 )}
               >
-                <div className="flex items-center gap-2 mb-1">
-                  <Icon size={13} className={mode === m.value ? 'text-accent-primary' : m.color} />
-                  <span className={clsx('text-xs font-semibold', mode === m.value ? 'text-accent-primary' : 'text-slate-200')}>{m.label}</span>
+                {mode === m.value && <div className="absolute left-0 top-0 bottom-0 w-1 bg-accent-primary" />}
+                <div className="flex items-center gap-3 mb-2">
+                  <div className={clsx(
+                    'p-2 rounded-lg transition-colors',
+                    mode === m.value ? 'bg-accent-primary/20 text-accent-primary' : 'bg-bg-elevated text-slate-400 group-hover:text-slate-200'
+                  )}>
+                    <Icon size={16} className="flex-shrink-0" />
+                  </div>
+                  <span className={clsx('text-xs font-bold tracking-tight', mode === m.value ? 'text-accent-primary' : 'text-slate-200')}>{m.label}</span>
                 </div>
-                <div className="text-[10px] text-slate-500 leading-relaxed">{m.desc}</div>
+                <div className="text-[10px] text-slate-500 leading-relaxed pl-11">{m.desc}</div>
               </button>
             )
           })}
         </div>
 
         {/* Config panel */}
-        <div className="col-span-2 card">
-          <div className="card-header">
-            <span className="card-title">
-              {React.createElement(selectedMode?.icon || FlaskConical, { size: 14, className: selectedMode?.color })}
-              {selectedMode?.label}
-            </span>
-          </div>
-          <div className="card-body flex flex-col gap-4">
-            <div>
-              <label className="label">Target Domain / URL</label>
-              <input className="input" placeholder="example.com" value={target} onChange={e => setTarget(e.target.value)} />
+        <div className="lg:col-span-8 flex flex-col gap-4">
+          <div className="card">
+            <div className="card-header bg-bg-card/50">
+              <span className="card-title">
+                {React.createElement(selectedMode?.icon || FlaskConical, { size: 14, className: clsx('flex-shrink-0', selectedMode?.color) })}
+                Configure {selectedMode?.label}
+              </span>
+              <div className="badge badge-info uppercase">Mode: {mode}</div>
             </div>
-
-            {selectedMode?.fields.includes('iterations') && (
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="label">Max Iterations</label>
-                  <input className="input" type="number" min={1} value={opts.iterations} onChange={e => setOpts(o => ({ ...o, iterations: +e.target.value }))} />
-                </div>
-                <div>
-                  <label className="label">Min Confidence</label>
-                  <input className="input" type="number" step={0.05} min={0} max={1} value={opts.min_confidence} onChange={e => setOpts(o => ({ ...o, min_confidence: +e.target.value }))} />
+            <div className="card-body flex flex-col gap-5">
+              <div className="space-y-1.5">
+                <label className="label">Target Domain / URL</label>
+                <div className="relative">
+                  <input className="input pl-9" placeholder="e.g. example.com or https://api.example.com" value={target} onChange={e => setTarget(e.target.value)} />
+                  <Telescope size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
                 </div>
               </div>
-            )}
 
-            {selectedMode?.fields.includes('oob') && (
-              <div>
-                <label className="label">OOB Callback URL <span className="text-slate-600">(optional)</span></label>
-                <input className="input" placeholder="https://your-oob.domain" value={opts.oob} onChange={e => setOpts(o => ({ ...o, oob: e.target.value }))} />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                {selectedMode?.fields.includes('iterations') && (
+                  <div className="space-y-1.5">
+                    <label className="label">Max Iterations</label>
+                    <input className="input" type="number" min={1} max={20} value={opts.iterations} onChange={e => setOpts(o => ({ ...o, iterations: +e.target.value }))} />
+                    <p className="text-[10px] text-slate-600">Depth of the autonomous loop.</p>
+                  </div>
+                )}
+                {selectedMode?.fields.includes('min_confidence') && (
+                  <div className="space-y-1.5">
+                    <label className="label">Min Confidence Score</label>
+                    <input className="input" type="number" step={0.05} min={0} max={1} value={opts.min_confidence} onChange={e => setOpts(o => ({ ...o, min_confidence: +e.target.value }))} />
+                    <p className="text-[10px] text-slate-600">Filter payloads by AI confidence.</p>
+                  </div>
+                )}
               </div>
-            )}
 
-            {selectedMode?.fields.includes('min_severity') && (
-              <div>
-                <label className="label">Minimum Severity</label>
-                <select className="select" value={opts.min_severity} onChange={e => setOpts(o => ({ ...o, min_severity: e.target.value }))}>
-                  {['critical','high','medium','low','info'].map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
+              {selectedMode?.fields.includes('oob') && (
+                <div className="space-y-1.5">
+                  <label className="label">OOB Callback URL <span className="text-slate-600 font-normal italic">(Interactsh / Burp Collaborator)</span></label>
+                  <input className="input" placeholder="e.g. c7p...oob.dnslog.cn" value={opts.oob} onChange={e => setOpts(o => ({ ...o, oob: e.target.value }))} />
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                {selectedMode?.fields.includes('min_severity') && (
+                  <div className="space-y-1.5">
+                    <label className="label">Minimum Severity</label>
+                    <select className="select capitalize" value={opts.min_severity} onChange={e => setOpts(o => ({ ...o, min_severity: e.target.value }))}>
+                      {['critical','high','medium','low','info'].map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </div>
+                )}
+                {selectedMode?.fields.includes('depth') && (
+                  <div className="space-y-1.5">
+                    <label className="label">Recon Depth</label>
+                    <select className="select capitalize" value={opts.depth} onChange={e => setOpts(o => ({ ...o, depth: e.target.value }))}>
+                      {['quick','standard','deep'].map(d => <option key={d} value={d}>{d}</option>)}
+                    </select>
+                  </div>
+                )}
+                {selectedMode?.fields.includes('rate') && (
+                  <div className="space-y-1.5">
+                    <label className="label">Request Rate <span className="text-slate-600">(delay in sec)</span></label>
+                    <input className="input" type="number" step={0.1} min={0} value={opts.rate} onChange={e => setOpts(o => ({ ...o, rate: +e.target.value }))} />
+                  </div>
+                )}
+                {selectedMode?.fields.includes('timeout') && (
+                  <div className="space-y-1.5">
+                    <label className="label">Global Timeout <span className="text-slate-600">(sec)</span></label>
+                    <input className="input" type="number" min={60} value={opts.timeout} onChange={e => setOpts(o => ({ ...o, timeout: +e.target.value }))} />
+                  </div>
+                )}
               </div>
-            )}
 
-            {selectedMode?.fields.includes('depth') && (
-              <div>
-                <label className="label">Recon Depth</label>
-                <select className="select" value={opts.depth} onChange={e => setOpts(o => ({ ...o, depth: e.target.value }))}>
-                  {['quick','standard','deep'].map(d => <option key={d} value={d}>{d}</option>)}
-                </select>
+              <div className="pt-2">
+                <button
+                  className={clsx(
+                    'btn-primary btn-lg w-full justify-center gap-2 font-bold uppercase tracking-wider transition-all active:scale-[0.98]',
+                    (!target.trim() || running) ? 'opacity-50 cursor-not-allowed' : 'glow-cyan'
+                  )}
+                  onClick={handleRun}
+                  disabled={!target.trim() || running}
+                >
+                  {running ? (
+                    <>
+                      <RefreshCw size={16} className="animate-spin" />
+                      Initializing Research Engine...
+                    </>
+                  ) : (
+                    <>
+                      <Play size={16} fill="currentColor" />
+                      Start {selectedMode?.label}
+                    </>
+                  )}
+                </button>
               </div>
-            )}
-
-            {selectedMode?.fields.includes('rate') && (
-              <div>
-                <label className="label">Request Rate (sec between req)</label>
-                <input className="input" type="number" step={0.1} value={opts.rate} onChange={e => setOpts(o => ({ ...o, rate: +e.target.value }))} />
-              </div>
-            )}
-
-            <button
-              className={clsx('btn-primary btn-lg justify-center', (!target.trim() || running) && 'opacity-50 cursor-not-allowed')}
-              onClick={handleRun}
-              disabled={!target.trim() || running}
-            >
-              <Play size={14} />
-              {running ? 'Running...' : `Start ${selectedMode?.label}`}
-            </button>
-
-            {result && (
-              <div className="terminal mt-2">
-                <div className="text-cyan-400 mb-2 text-xs">// Research job started</div>
-                <pre className="text-emerald-400 text-xs">{JSON.stringify(result, null, 2)}</pre>
-              </div>
-            )}
+            </div>
           </div>
+
+          {result && (
+            <div className="card border-accent-success/30 overflow-hidden">
+              <div className="card-header bg-emerald-950/20 py-2">
+                <div className="flex items-center gap-2 text-[10px] font-bold text-emerald-400 uppercase tracking-widest">
+                  <Zap size={10} /> Launch Success
+                </div>
+              </div>
+              <div className="terminal rounded-none border-0 max-h-64 scrollbar-thin">
+                <div className="text-cyan-400 mb-2 text-[10px] font-mono">// Job ID: {result.scan_id || result.id || 'N/A'} initialized successfully</div>
+                <pre className="text-emerald-400 text-[10px] leading-relaxed">{JSON.stringify(result, null, 2)}</pre>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
