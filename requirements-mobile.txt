@@ -1,5 +1,5 @@
 # Mobile analysis requirements
-mobsf-api-python
+mobsf>=3.9.7
 frida-tools
 objection
 apkid
