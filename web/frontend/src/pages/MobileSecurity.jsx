@@ -4,8 +4,8 @@ import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
 import { relativeTime } from '../utils/time'
 import clsx from 'clsx'
-import MobileXRayHUD from '../components/Mobile/MobileXRayHUD'
-import MobileReportViewer from '../components/Mobile/MobileReportViewer'
+import MobileXRayHUD from '../components/mobile/MobileXRayHUD'
+import MobileReportViewer from '../components/mobile/MobileReportViewer'
 import PackageList from '../components/mobile/PackageList'
 
 export default function MobileSecurity() {
