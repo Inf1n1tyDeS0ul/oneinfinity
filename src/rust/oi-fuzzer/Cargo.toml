@@ -1,0 +1,21 @@
+[package]
+name = "oi-fuzzer"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "oi-fuzzer"
+path = "src/main.rs"
+
+[dependencies]
+# LibAFL not yet available at 0.14; using 0.15 (latest stable on crates.io)
+libafl = { version = "0.15", features = ["std", "derive", "llmp_compression"] }
+libafl_bolts = "0.15"
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+sha2 = "0.10"
+
+[profile.release]
+panic = "unwind"
+opt-level = 3

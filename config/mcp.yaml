@@ -1,0 +1,248 @@
+# MCP (Model Context Protocol) Configuration
+# Controls AI-Driven mode when OneInfinity is used as MCP tool
+# ==================================================================
+
+mcp_mode:
+  # Enable MCP integration features
+  enabled: true
+
+  # Enable external orchestrator AI for UI scans (god-mode, chains, mobile, etc.)
+  # When true: UI scans use both orchestrator AI (Claude/Gemini) + OneInfinity AI
+  # When false: UI scans use only OneInfinity AI (default, faster, cheaper)
+  enable_for_ui_scans: true
+
+  # AI layering strategy
+  # KEEP_BOTH: Both orchestrator AI (Claude/Gemini) and OneInfinity AI active (default)
+  # ORCHESTRATOR_ONLY: Disable OneInfinity AI, use only external AI for payloads
+  # ONEINFINITY_ONLY: Disable external AI features (standard mode)
+  strategy: KEEP_BOTH
+
+  # When strategy=KEEP_BOTH, control which OneInfinity AI features remain active
+  oneinfinity_ai:
+    # Payload generation (uses 3-tier routing)
+    payload_generation: true
+
+    # Exploit chain detection (Neo4j graph analysis)
+    chain_detection: true
+
+    # Validation confidence scoring (rule-based)
+    validation_confidence: true
+
+    # Report formatting and synthesis
+    report_formatting: true
+
+    # Mobile app AI reverse engineering
+    mobile_analysis: true
+
+  # Override internal AI when orchestrator provides payloads
+  # true: Skip OneInfinity payload generation if Claude/Gemini provides payloads
+  # false: Always use OneInfinity payload generation (ignore external payloads)
+  skip_ai_when_payloads_provided: true
+
+  # Budget management in MCP mode
+  budget:
+    # Enforce budget limits even in MCP mode (default true)
+    enforce_limits: true
+
+    # Daily limit for nested AI calls (Claude + OneInfinity AI)
+    # Set to 0 for unlimited (not recommended)
+    daily_limit_usd: 10.0
+
+    # Per-scan limit (prevents runaway costs)
+    per_scan_limit_usd: 2.0
+
+    # Warn when approaching limits (80% threshold)
+    warn_at_percentage: 80
+
+# MCP Server Configuration
+server:
+  # HTTP server settings (for Claude CLI/Gemini CLI integration)
+  host: "127.0.0.1"
+  port: 5000
+
+  # Request timeout (seconds)
+  timeout: 1800
+
+  # Max concurrent tool calls
+  max_concurrent: 4
+
+  # Enable request logging
+  log_requests: true
+  log_file: "logs/mcp_server.log"
+
+# Tool-specific configuration
+tools:
+  oneinfinity_recon:
+    default_subdomain_limit: 500
+    default_crawl_depth: 3
+    max_subdomain_limit: 2000
+
+  oneinfinity_scan:
+    default_timeout: 1800
+    default_use_internal_ai: true  # Keep OneInfinity AI active by default
+    max_vuln_types: 15
+
+  oneinfinity_exploit:
+    default_generate_poc: true
+    poc_formats: ["bash", "python", "curl"]
+
+  oneinfinity_validate:
+    validation_methods:
+      - "canary_reflection"
+      - "time_based"
+      - "error_based"
+      - "oob_callback"
+
+  oneinfinity_report:
+    default_format: "hackerone"
+    supported_formats:
+      - "hackerone"
+      - "bugcrowd"
+      - "intigriti"
+      - "markdown"
+      - "json"
+    default_include_poc: true
+
+  oneinfinity_graph_query:
+    max_path_depth: 5
+    max_results: 100
+
+  oneinfinity_mobile_analyze:
+    default_deep_analysis: true
+    upload_dir: "/tmp/oneinfinity_apk_uploads"
+
+# Cost tracking for AI-Driven mode
+cost_tracking:
+  # Track costs separately for orchestrator AI vs OneInfinity AI
+  separate_tracking: true
+
+  # Cost categories
+  categories:
+    - "orchestrator_ai"      # Claude/Gemini costs
+    - "oneinfinity_ai"       # Internal AI costs
+    - "tools"                # Tool execution costs (nuclei, sqlmap, etc.)
+
+  # Export cost reports
+  export:
+    enabled: true
+    format: "json"
+    directory: "logs/cost_reports"
+    frequency: "daily"  # daily, weekly, monthly
+
+# Integration-specific settings
+integrations:
+  claude_cli:
+    # Claude CLI config file location
+    config_file: "~/.config/claude/mcp.json"
+
+    # Recommended models for orchestration
+    recommended_models:
+      - "claude-opus-4"
+      - "claude-sonnet-4"
+
+  gemini_cli:
+    # Gemini CLI config file location
+    config_file: "~/.config/gemini/mcp.json"
+
+    # Recommended models for orchestration
+    recommended_models:
+      - "gemini-2.0-flash-exp"
+      - "gemini-2.5-pro"
+
+  ollama:
+    # Ollama MCP config file location
+    config_file: "~/Tools/oneinfinity/mcp-config.json"
+
+    # Recommended models for orchestration
+    recommended_models:
+      - "deepseek-r1"
+      - "llama3.2"
+
+# External orchestrator configuration for UI scans
+ui_orchestrator:
+  # Which external AI to use for UI scans (when enable_for_ui_scans=true)
+  provider: "bedrock"  # bedrock uses AWS credentials (no ANTHROPIC_API_KEY required)
+
+  # Model selection
+  model: "eu.anthropic.claude-sonnet-4-6"  # Bedrock model ID
+
+  # When to use external orchestrator in UI scans
+  use_for:
+    - "god-mode"      # Full penetration test scans
+    - "chains"        # Exploit chain detection
+    - "mobile"        # Mobile security analysis
+    - "hunter"        # Autonomous bounty hunting
+
+  # API key environment variable names
+  env_vars:
+    anthropic: "ANTHROPIC_API_KEY"
+    openai: "OPENAI_API_KEY"
+    google: "GOOGLE_API_KEY"
+
+# Advanced: Division of labor between AIs
+ai_division:
+  # Orchestrator AI (Claude/Gemini/Ollama) responsibilities
+  orchestrator_ai:
+    - "High-level strategy and workflow decisions"
+    - "Task prioritization and sequencing"
+    - "Business logic reasoning"
+    - "Result synthesis and reporting"
+    - "Custom payload generation (optional)"
+    - "Target selection and filtering"
+
+  # OneInfinity AI responsibilities
+  oneinfinity_ai:
+    - "Security-specialized payload generation (47 SQLi variants)"
+    - "Encoding mutations and WAF bypass techniques"
+    - "Exploit chain detection (graph-based)"
+    - "Confidence scoring (rule-based)"
+    - "Technical PoC script generation"
+    - "Mobile app reverse engineering"
+    - "Attack graph path analysis"
+
+# Performance optimization
+performance:
+  # Cache reconnaissance results (reduces redundant API calls)
+  cache_recon_results: true
+  cache_ttl_hours: 24
+
+  # Parallel tool execution
+  parallel_tools: true
+  max_parallel_tools: 4
+
+  # Resource limits per tool call
+  memory_limit_mb: 4096
+  cpu_limit_cores: 4
+
+# Security settings
+security:
+  # Require authorization header for MCP server
+  require_auth: false
+  auth_token_env: "ONEINFINITY_MCP_TOKEN"
+
+  # Rate limiting (requests per minute)
+  rate_limit_rpm: 60
+
+  # Allowed IP addresses (empty = allow all)
+  allowed_ips: []
+
+  # Data retention (scan results, logs)
+  data_retention_days: 30
+
+# Monitoring and alerting
+monitoring:
+  # Enable cost monitoring
+  cost_alerts:
+    enabled: true
+    threshold_usd: 8.0
+    alert_method: "log"  # log, email, slack
+
+  # Performance monitoring
+  performance_alerts:
+    enabled: true
+    slow_tool_threshold_seconds: 300
+
+  # Error tracking
+  error_tracking:
+    enabled: true
+    log_level: "WARNING"

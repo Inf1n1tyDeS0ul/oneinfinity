@@ -1,0 +1,30 @@
+{
+  "mcpServers": {
+    "burp": {
+      "type": "sse",
+      "url": "http://127.0.0.1:9876/"
+    },
+    "code-review-graph": {
+      "command": "uvx",
+      "args": [
+        "code-review-graph",
+        "serve"
+      ],
+      "type": "stdio"
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "@playwright/mcp@latest"
+      ],
+      "type": "stdio"
+    },
+    "ruflo": {
+      "command": "/usr/bin/python3",
+      "args": [
+        "/Users/devendrayadav/.claude/ruflo-mcp-wrapper.py"
+      ],
+      "type": "stdio"
+    }
+  }
+}

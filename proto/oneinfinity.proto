@@ -1,0 +1,210 @@
+syntax = "proto3";
+package oneinfinity.v1;
+option go_package = "github.com/oneinfinity/proto/v1";
+
+// VERSIONING RULES:
+// - Never reuse field numbers. Reserve them instead.
+// - Never rename fields — change meaning breaks wire compat.
+// - Add only optional/repeated fields.
+// - Proto package version (v1) stays until breaking changes require v2.
+
+// ============================================================
+// Common messages
+// ============================================================
+
+message Finding {
+  string id = 1;
+  string url = 2;
+  string vuln_type = 3;
+  string severity = 4;  // critical|high|medium|low|info
+  string evidence = 5;
+  string source_tool = 6;
+  int64 discovered_at = 7;  // Unix timestamp
+  map<string, string> metadata = 8;
+  float confidence = 9;
+  string scan_id = 10;
+  // reserved 11 to 20;  // reserved for future finding fields
+}
+
+message RawResult {
+  string tool_name = 1;
+  string raw_output = 2;  // JSON string from tool
+  string scan_id = 3;
+  string target_url = 4;
+  int64 captured_at = 5;
+}
+
+message NormalizedFinding {
+  Finding finding = 1;
+  bool deduplicated = 2;
+  string dedup_key = 3;
+}
+
+message ScanRequest {
+  string target_url = 1;
+  string scan_id = 2;
+  map<string, string> options = 3;
+  repeated string headers = 4;  // "Key: Value" format
+  int32 timeout_seconds = 5;
+}
+
+message PhaseRequest {
+  string phase_name = 1;
+  string scan_id = 2;
+  string target_url = 3;
+  map<string, string> config = 4;
+  repeated string enabled_modules = 5;
+}
+
+message PhaseEvent {
+  enum EventType {
+    EVENT_TYPE_UNSPECIFIED = 0;
+    PHASE_STARTED = 1;
+    PHASE_PROGRESS = 2;
+    PHASE_COMPLETED = 3;
+    PHASE_FAILED = 4;
+    FINDING_DISCOVERED = 5;
+  }
+  EventType event_type = 1;
+  string scan_id = 2;
+  string phase_name = 3;
+  Finding finding = 4;  // only set when event_type == FINDING_DISCOVERED
+  int32 progress_pct = 5;
+  string message = 6;
+  int64 timestamp = 7;
+}
+
+message OOBStartRequest {
+  string scan_id = 1;
+  string target_hint = 2;
+}
+
+message OOBDomain {
+  string domain = 1;
+  string scan_id = 2;
+}
+
+message PollRequest {
+  string scan_id = 1;
+  int32 timeout_seconds = 2;
+}
+
+message Interaction {
+  string protocol = 1;  // dns|http|smtp|ftp
+  string source_ip = 2;
+  string payload = 3;
+  int64 received_at = 4;
+  string scan_id = 5;
+}
+
+message IDORRequest {
+  string target_url = 1;
+  string scan_id = 2;
+  repeated string session_tokens = 3;  // one per account
+  repeated string endpoint_patterns = 4;
+  int32 parallelism = 5;
+}
+
+message Asset {
+  string url = 1;
+  string asset_type = 2;  // endpoint|js|form|api
+  map<string, string> metadata = 3;
+}
+
+message DiscoverRequest {
+  string target_url = 1;
+  string scan_id = 2;
+  int32 depth = 3;
+  int32 parallelism = 4;
+}
+
+message CrawlRequest {
+  string start_url = 1;
+  string scan_id = 2;
+  int32 max_pages = 3;
+  int32 parallelism = 4;
+  repeated string excluded_patterns = 5;
+}
+
+message URL {
+  string url = 1;
+  string method = 2;
+  int32 status_code = 3;
+  repeated string forms = 4;
+  repeated string js_files = 5;
+}
+
+message CredentialSprayRequest {
+  string target_url = 1;
+  string scan_id = 2;
+  string login_endpoint = 3;
+  repeated string usernames = 4;
+  repeated string passwords = 5;
+  int32 delay_ms = 6;
+}
+
+message HealthCheckRequest { string service = 1; }
+message HealthCheckResponse {
+  enum ServingStatus {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+  }
+  ServingStatus status = 1;
+}
+
+// ============================================================
+// Services
+// ============================================================
+
+service PhaseRunner {
+  rpc RunPhase(PhaseRequest) returns (stream PhaseEvent);
+  rpc Health(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+service ReconProbe {
+  rpc ScanHTTP(ScanRequest) returns (stream Finding);
+  rpc Health(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+service SSRFScanner {
+  rpc Scan(ScanRequest) returns (stream Finding);
+  rpc Health(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+service OOBService {
+  rpc Start(OOBStartRequest) returns (OOBDomain);
+  rpc Poll(PollRequest) returns (stream Interaction);
+  rpc Health(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+service IDOREngine {
+  rpc Run(IDORRequest) returns (stream Finding);
+  rpc Health(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+service LiveSurface {
+  rpc Discover(DiscoverRequest) returns (stream Asset);
+  rpc Health(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+service ResultIngestion {
+  rpc Submit(RawResult) returns (NormalizedFinding);
+  rpc SubmitBatch(stream RawResult) returns (stream NormalizedFinding);
+  rpc Health(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+service CrawlerService {
+  rpc Crawl(CrawlRequest) returns (stream URL);
+  rpc Health(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+service CacheScanner {
+  rpc Scan(ScanRequest) returns (stream Finding);
+  rpc Health(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+service CredentialSpray {
+  rpc Run(CredentialSprayRequest) returns (stream Finding);
+  rpc Health(HealthCheckRequest) returns (HealthCheckResponse);
+}

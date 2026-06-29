@@ -1,0 +1,358 @@
+/* ── Enhanced Traffic Viewer ────────────────────────────────────────────── */
+
+.traffic-viewer-enhanced {
+  background: #050505;
+  border: 1px solid #111;
+  border-radius: 12px;
+  padding: 1rem;
+  height: 100%;
+}
+
+.traffic-viewer-enhanced .animate-spin-slow {
+  animation: spin 3s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.shadow-glow-cyan {
+  box-shadow: 0 0 15px rgba(0, 255, 136, 0.1);
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #222;
+  border-radius: 10px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: #333;
+}
+
+/* ── Entry Row ── */
+.traffic-entry {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.traffic-entry:last-child {
+  border-bottom: none;
+}
+
+/* ── Body Inspector ── */
+.json-viewer-container {
+  font-family: 'Fira Code', 'Courier New', monospace;
+  line-height: 1.5;
+}
+
+.traffic-viewer-enhanced h4 {
+  letter-spacing: 0.1em;
+}
+
+.traffic-viewer-enhanced button:active {
+  transform: scale(0.95);
+}
+
+/* ── Legacy Support (keep if needed by other components) ── */
+.traffic-viewer {
+  background: #16213e;
+  border: 1px solid #2a2a3e;
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin-top: 2rem;
+}
+
+.traffic-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #2a2a3e;
+}
+
+.traffic-header h3 {
+  color: #00ff88;
+  margin: 0;
+  font-size: 1.3rem;
+}
+
+.traffic-controls {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+}
+
+.filter-select {
+  background: #0f0f1e;
+  color: #fff;
+  border: 1px solid #2a2a3e;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.auto-refresh {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #ccc;
+  cursor: pointer;
+}
+
+.auto-refresh input {
+  cursor: pointer;
+}
+
+.clear-btn {
+  background: #ff4444;
+  color: #fff;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: all 0.2s;
+}
+
+.clear-btn:hover {
+  background: #cc0000;
+}
+
+.export-btn {
+  background: #00aaff;
+  color: #fff;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: all 0.2s;
+}
+
+.export-btn:hover {
+  background: #0088cc;
+}
+
+.traffic-content {
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+.traffic-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.empty-traffic {
+  text-align: center;
+  padding: 3rem;
+  color: #888;
+}
+
+.empty-traffic p {
+  margin: 0.5rem 0;
+}
+
+.empty-traffic .hint {
+  font-size: 0.9rem;
+  color: #666;
+}
+
+.traffic-entry {
+  background: #1a1a2e;
+  border: 1px solid #2a2a3e;
+  border-radius: 6px;
+  padding: 1rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.traffic-entry:hover {
+  background: #1e1e3e;
+  border-color: #00ff88;
+}
+
+.traffic-entry.selected {
+  background: #1e1e3e;
+  border-color: #00ff88;
+  box-shadow: 0 0 10px rgba(0, 255, 136, 0.2);
+}
+
+.entry-header {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  font-family: 'Courier New', monospace;
+  font-size: 0.9rem;
+}
+
+.entry-header .method {
+  font-weight: bold;
+  min-width: 60px;
+}
+
+.entry-header .url {
+  flex: 1;
+  color: #ccc;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entry-header .status {
+  font-weight: bold;
+  min-width: 40px;
+  text-align: right;
+}
+
+.entry-header .timestamp {
+  color: #888;
+  font-size: 0.85rem;
+  min-width: 100px;
+  text-align: right;
+}
+
+.view-code-btn {
+  background: rgba(0, 217, 255, 0.1);
+  border: 1px solid rgba(0, 217, 255, 0.3);
+  color: #00d9ff;
+  border-radius: 4px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.view-code-btn:hover {
+  background: #00d9ff;
+  color: #000;
+}
+
+.entry-details {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #2a2a3e;
+}
+
+.detail-section {
+  margin-bottom: 1.5rem;
+}
+
+.detail-section h4 {
+  color: #00ff88;
+  font-size: 1.1rem;
+  margin: 0 0 0.8rem 0;
+}
+
+.detail-section h5 {
+  color: #00aaff;
+  font-size: 0.95rem;
+  margin: 0.8rem 0 0.5rem 0;
+}
+
+.detail-headers,
+.detail-params {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.header-row,
+.param-row {
+  display: flex;
+  gap: 1rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.85rem;
+}
+
+.header-key,
+.param-key {
+  color: #00ff88;
+  min-width: 150px;
+}
+
+.header-value,
+.param-value {
+  color: #ccc;
+  flex: 1;
+  word-break: break-all;
+}
+
+.detail-body {
+  margin-top: 0.8rem;
+}
+
+.detail-body pre {
+  background: #0f0f1e;
+  border: 1px solid #2a2a3e;
+  border-radius: 4px;
+  padding: 1rem;
+  overflow-x: auto;
+  color: #ccc;
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.truncated {
+  color: #888;
+  font-style: italic;
+  margin-top: 0.5rem;
+}
+
+.detail-section.findings {
+  background: rgba(255, 68, 68, 0.1);
+  border: 1px solid #ff4444;
+  border-radius: 4px;
+  padding: 1rem;
+}
+
+.finding {
+  display: flex;
+  gap: 1rem;
+  padding: 0.5rem;
+  margin: 0.5rem 0;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.finding.severity-high {
+  border-left: 4px solid #ff4444;
+}
+
+.finding.severity-medium {
+  border-left: 4px solid #ff8800;
+}
+
+.finding.severity-low {
+  border-left: 4px solid #ffaa00;
+}
+
+.finding-type {
+  color: #ff4444;
+  font-weight: bold;
+  text-transform: uppercase;
+  min-width: 80px;
+}
+
+.finding-evidence {
+  color: #ccc;
+  flex: 1;
+}

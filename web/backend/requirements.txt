@@ -1,0 +1,62 @@
+# OneInfinity Web Backend — Complete Runtime Dependencies
+# Installed by install.sh: pip install -r web/backend/requirements.txt
+# Keep in sync with pyproject.toml [dependencies] + [web] extra.
+
+# ── Web framework ────────────────────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.24.0
+python-dotenv>=1.0.0
+python-multipart>=0.0.9
+websockets>=12.0
+pydantic>=2.5.0
+
+# ── Async I/O ────────────────────────────────────────────────────────────────
+aiofiles>=23.0
+aiohttp>=3.9.0
+aiosqlite>=0.20.0
+
+# ── HTTP clients ─────────────────────────────────────────────────────────────
+requests>=2.31.0
+httpx>=0.27.0
+
+# ── System utilities ─────────────────────────────────────────────────────────
+psutil>=5.9.0
+
+# ── Mobile companion (QR setup + mDNS) ──────────────────────────────────────
+qrcode[pil]>=8.0
+zeroconf>=0.131.0
+
+# ── Database / cache ─────────────────────────────────────────────────────────
+redis>=5.0.0
+psycopg[binary,pool]
+psycopg2-binary>=2.9.0
+neo4j>=5.14.0
+
+# ── AI / LLM clients ─────────────────────────────────────────────────────────
+openai>=1.35.0
+anthropic>=0.30.0
+google-generativeai>=0.7.0
+boto3>=1.34.0
+
+# ── Networking / security ────────────────────────────────────────────────────
+dnspython>=2.6.0
+cryptography>=42.0.0
+mitmproxy>=10.3.0
+
+# ── gRPC (inter-service: oi-ssrf, oi-oob-listener) ──────────────────────────
+grpcio>=1.64.0
+grpcio-tools>=1.64.0
+
+# ── Android device control ───────────────────────────────────────────────────
+adbutils>=2.7.0
+
+# ── Data / ML ────────────────────────────────────────────────────────────────
+numpy>=1.26.0
+pyyaml>=6.0.0
+
+# ── Auth / identity ──────────────────────────────────────────────────────────
+pyotp>=2.9.0
+msal>=1.29.0
+
+# ── WebSocket client (orchestration backends) ────────────────────────────────
+websocket-client>=1.8.0

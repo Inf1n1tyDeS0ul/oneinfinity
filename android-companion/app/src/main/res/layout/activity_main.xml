@@ -1,0 +1,326 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0f0f1e">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- Title -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="OneInfinity Companion"
+            android:textSize="20sp"
+            android:textColor="#00ff88"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:layout_marginBottom="4dp" />
+
+        <!-- Device ID + Backend -->
+        <TextView
+            android:id="@+id/tvDeviceId"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Device ID: …"
+            android:textSize="11sp"
+            android:textColor="#666666"
+            android:gravity="center"
+            android:layout_marginBottom="2dp" />
+
+        <TextView
+            android:id="@+id/tvBackendUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Backend: …"
+            android:textSize="11sp"
+            android:textColor="#666666"
+            android:gravity="center"
+            android:layout_marginBottom="12dp" />
+
+        <!-- Connection status -->
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="⚪ Connecting…"
+            android:textSize="16sp"
+            android:textColor="#ff8800"
+            android:gravity="center"
+            android:layout_marginBottom="16dp" />
+
+        <!-- QR button -->
+        <Button
+            android:id="@+id/btnScanQr"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="📷 Scan QR to Configure Backend"
+            android:backgroundTint="#1a1a2e"
+            android:textColor="#00ff88"
+            android:textSize="13sp"
+            android:layout_marginBottom="20dp" />
+
+        <!-- ─── Capture Layer Cards ────────────────────────────── -->
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="CAPTURE LAYERS"
+            android:textSize="10sp"
+            android:textColor="#444444"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+
+        <!-- VPN Capture card -->
+        <LinearLayout
+            android:id="@+id/cardVpn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:background="#111122"
+            android:padding="12dp"
+            android:layout_marginBottom="8dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="🔒 VPN Capture"
+                    android:textColor="#cccccc"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvVpnStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="⚪ Idle"
+                    android:textSize="11sp"
+                    android:textColor="#666666"
+                    android:layout_marginTop="2dp" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btnVpnToggle"
+                android:layout_width="80dp"
+                android:layout_height="36dp"
+                android:text="Start"
+                android:backgroundTint="#001a0d"
+                android:textColor="#00ff88"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <!-- Frida SSL Hook card -->
+        <LinearLayout
+            android:id="@+id/cardFrida"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:background="#111122"
+            android:padding="12dp"
+            android:layout_marginBottom="8dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="🪝 Frida SSL Hook"
+                    android:textColor="#cccccc"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvFridaStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="⚪ frida-server not started"
+                    android:textSize="11sp"
+                    android:textColor="#666666"
+                    android:layout_marginTop="2dp" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btnFridaToggle"
+                android:layout_width="80dp"
+                android:layout_height="36dp"
+                android:text="Start"
+                android:backgroundTint="#00113a"
+                android:textColor="#00aaff"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <!-- eBPF / ecapture card -->
+        <LinearLayout
+            android:id="@+id/cardEbpf"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:background="#111122"
+            android:padding="12dp"
+            android:layout_marginBottom="20dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="⚡ eBPF Capture"
+                    android:textColor="#cccccc"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvEbpfStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="⚪ ecapture not found"
+                    android:textSize="11sp"
+                    android:textColor="#666666"
+                    android:layout_marginTop="2dp" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btnEbpfToggle"
+                android:layout_width="80dp"
+                android:layout_height="36dp"
+                android:text="Start"
+                android:backgroundTint="#1a0033"
+                android:textColor="#aa44ff"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <!-- ─── Stats row ──────────────────────────────────────── -->
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="16dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:background="#111122"
+                android:padding="10dp"
+                android:gravity="center"
+                android:layout_marginEnd="4dp">
+
+                <TextView
+                    android:id="@+id/tvPacketCount"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0"
+                    android:textSize="18sp"
+                    android:textColor="#00ff88"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Packets"
+                    android:textSize="10sp"
+                    android:textColor="#555555" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:background="#111122"
+                android:padding="10dp"
+                android:gravity="center"
+                android:layout_marginStart="4dp"
+                android:layout_marginEnd="4dp">
+
+                <TextView
+                    android:id="@+id/tvRequestCount"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0"
+                    android:textSize="18sp"
+                    android:textColor="#00aaff"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Requests"
+                    android:textSize="10sp"
+                    android:textColor="#555555" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:background="#111122"
+                android:padding="10dp"
+                android:gravity="center"
+                android:layout_marginStart="4dp">
+
+                <TextView
+                    android:id="@+id/tvFindingCount"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0"
+                    android:textSize="18sp"
+                    android:textColor="#ff8800"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Findings"
+                    android:textSize="10sp"
+                    android:textColor="#555555" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- ─── Live log ───────────────────────────────────────── -->
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="LIVE LOG"
+            android:textSize="10sp"
+            android:textColor="#444444"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="6dp" />
+
+        <TextView
+            android:id="@+id/tvLog"
+            android:layout_width="match_parent"
+            android:layout_height="160dp"
+            android:background="#080810"
+            android:padding="8dp"
+            android:text=""
+            android:textSize="10sp"
+            android:textColor="#666688"
+            android:fontFamily="monospace"
+            android:gravity="bottom"
+            android:scrollbars="vertical" />
+
+    </LinearLayout>
+</ScrollView>

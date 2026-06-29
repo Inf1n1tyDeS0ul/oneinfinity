@@ -1,0 +1,507 @@
+.mobile-agent-page {
+  padding: 2rem;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.page-header {
+  margin-bottom: 2rem;
+}
+
+.page-header h1 {
+  font-size: 2.5rem;
+  color: #00ff88;
+  margin-bottom: 0.5rem;
+}
+
+.page-header p {
+  color: #888;
+  font-size: 1.1rem;
+}
+
+.setup-section {
+  background: #1a1a2e;
+  border: 1px solid #2a2a3e;
+  border-radius: 8px;
+  padding: 2rem;
+  margin-bottom: 2rem;
+}
+
+.setup-section h2 {
+  color: #00ff88;
+  margin-bottom: 1.5rem;
+  font-size: 1.8rem;
+}
+
+.setup-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.5rem;
+}
+
+.setup-card {
+  background: #16213e;
+  border: 1px solid #2a2a3e;
+  border-radius: 8px;
+  padding: 1.5rem;
+}
+
+.setup-card h3 {
+  color: #00ff88;
+  margin-bottom: 1rem;
+  font-size: 1.3rem;
+}
+
+.setup-card p {
+  color: #ccc;
+  margin-bottom: 0.8rem;
+  line-height: 1.6;
+}
+
+.qr-code {
+  width: 200px;
+  height: 200px;
+  background: white;
+  border-radius: 8px;
+  padding: 10px;
+  margin-top: 1rem;
+}
+
+.backend-url {
+  display: block;
+  background: #0f0f1e;
+  color: #00ff88;
+  padding: 0.8rem;
+  border-radius: 4px;
+  margin: 1rem 0;
+  font-family: 'Courier New', monospace;
+  font-size: 0.9rem;
+  word-break: break-all;
+}
+
+.copy-btn {
+  background: #00ff88;
+  color: #0f0f1e;
+  border: none;
+  padding: 0.6rem 1.2rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: all 0.2s;
+}
+
+.copy-btn:hover {
+  background: #00cc6a;
+  transform: translateY(-2px);
+}
+
+.devices-section {
+  margin-bottom: 2rem;
+}
+
+.devices-section h2 {
+  color: #00ff88;
+  margin-bottom: 1.5rem;
+  font-size: 1.8rem;
+}
+
+.empty-state {
+  background: #1a1a2e;
+  border: 2px dashed #2a2a3e;
+  border-radius: 8px;
+  padding: 3rem;
+  text-align: center;
+}
+
+.empty-state p {
+  color: #888;
+  font-size: 1.1rem;
+}
+
+.device-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 1.5rem;
+}
+
+.device-card {
+  background: #1a1a2e;
+  border: 2px solid #2a2a3e;
+  border-radius: 8px;
+  padding: 1.5rem;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.device-card.online {
+  border-color: #00ff88;
+}
+
+.device-card.offline {
+  border-color: #ff4444;
+  opacity: 0.6;
+}
+
+.device-card.selected {
+  background: #16213e;
+  border-color: #00ff88;
+  box-shadow: 0 0 20px rgba(0, 255, 136, 0.3);
+}
+
+.device-card:hover:not(.offline) {
+  transform: translateY(-4px);
+  box-shadow: 0 4px 20px rgba(0, 255, 136, 0.2);
+}
+
+.device-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #2a2a3e;
+}
+
+.device-header h3 {
+  color: #00ff88;
+  font-size: 1.2rem;
+  margin: 0;
+}
+
+.status-badge {
+  padding: 0.4rem 0.8rem;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  font-weight: bold;
+}
+
+.status-badge.online {
+  background: rgba(0, 255, 136, 0.2);
+  color: #00ff88;
+}
+
+.status-badge.offline {
+  background: rgba(255, 68, 68, 0.2);
+  color: #ff4444;
+}
+
+.device-info p {
+  color: #ccc;
+  margin: 0.5rem 0;
+  font-size: 0.95rem;
+}
+
+.device-info strong {
+  color: #00ff88;
+}
+
+.control-panel {
+  background: #1a1a2e;
+  border: 2px solid #00ff88;
+  border-radius: 8px;
+  padding: 2rem;
+}
+
+.control-panel h2 {
+  color: #00ff88;
+  margin-bottom: 1.5rem;
+  font-size: 1.8rem;
+}
+
+.action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.action-btn {
+  background: #2a2a3e;
+  color: #fff;
+  border: 2px solid #3a3a4e;
+  padding: 1rem 1.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: bold;
+  transition: all 0.2s;
+}
+
+.action-btn.primary {
+  background: #00ff88;
+  color: #0f0f1e;
+  border-color: #00ff88;
+}
+
+.action-btn.secondary {
+  background: #ff8800;
+  color: #0f0f1e;
+  border-color: #ff8800;
+}
+
+.action-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 255, 136, 0.3);
+}
+
+.action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.command-log {
+  background: #16213e;
+  border: 1px solid #2a2a3e;
+  border-radius: 6px;
+  padding: 1.5rem;
+}
+
+.command-log h3 {
+  color: #00ff88;
+  margin-bottom: 1rem;
+  font-size: 1.3rem;
+}
+
+.empty-log {
+  color: #888;
+  text-align: center;
+  padding: 2rem;
+}
+
+.log-entries {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.log-entry {
+  display: flex;
+  gap: 1rem;
+  padding: 0.8rem;
+  border-bottom: 1px solid #2a2a3e;
+  align-items: center;
+  font-size: 0.9rem;
+}
+
+.log-entry:last-child {
+  border-bottom: none;
+}
+
+.log-entry.sent {
+  background: rgba(0, 255, 136, 0.05);
+}
+
+.log-entry.error {
+  background: rgba(255, 68, 68, 0.1);
+}
+
+.log-entry .timestamp {
+  color: #888;
+  min-width: 80px;
+}
+
+.log-entry .command {
+  color: #00ff88;
+  font-weight: bold;
+  flex: 1;
+}
+
+.log-entry .status {
+  color: #00cc6a;
+  text-transform: uppercase;
+  font-size: 0.8rem;
+  font-weight: bold;
+}
+
+.log-entry.error .status {
+  color: #ff4444;
+}
+
+.log-entry .error {
+  color: #ff4444;
+  font-size: 0.85rem;
+  flex: 1;
+}
+
+/* Enhanced Mobile Agent Styles */
+.log-viewer-container {
+  background: #080808;
+  border: 1px solid #222;
+  border-radius: 6px;
+  padding: 12px;
+  margin-top: 1rem;
+}
+
+.log-list {
+  max-height: 500px;
+  overflow-y: auto;
+  font-family: 'Fira Code', 'Courier New', monospace;
+  font-size: 11px;
+  padding: 8px;
+}
+
+.log-row {
+  display: flex;
+  gap: 12px;
+  padding: 3px 0;
+  border-bottom: 1px solid #111;
+  align-items: flex-start;
+}
+
+.log-row:hover {
+  background: #111;
+}
+
+.log-timestamp {
+  color: #555;
+  min-width: 75px;
+}
+
+.log-tag {
+  color: #00aaff;
+  font-weight: 700;
+  min-width: 60px;
+  text-transform: uppercase;
+}
+
+.log-message {
+  color: #ddd;
+  flex: 1;
+  word-break: break-all;
+}
+
+.log-message.ERROR { color: #ff4444; }
+.log-message.WARN { color: #ffaa00; }
+
+.layer-status-container {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.layer-badge {
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #111;
+  color: #444;
+  border: 1px solid #222;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.layer-badge.active {
+  background: rgba(0, 255, 136, 0.1);
+  color: #00ff88;
+  border-color: rgba(0, 255, 136, 0.3);
+}
+
+.app-inspector-panel {
+  background: #0d0d0d;
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid #222;
+}
+
+.app-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.meta-item {
+  background: #111;
+  padding: 10px;
+  border-radius: 4px;
+  border: 1px solid #222;
+}
+
+.meta-label {
+  display: block;
+  font-size: 10px;
+  color: #555;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.meta-value {
+  font-size: 12px;
+  color: #fff;
+  font-weight: 600;
+}
+
+/* Correlation Chain Styles */
+.correlation-chain {
+  background: #0d0d0d;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 12px;
+  margin-top: 10px;
+}
+
+.correlation-chain h5 {
+  color: #a855f7;
+  margin: 0 0 10px 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.chain-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: relative;
+  padding-left: 14px;
+}
+
+.chain-timeline::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: #222;
+}
+
+.chain-node {
+  position: relative;
+  font-size: 11px;
+}
+
+.node-dot {
+  position: absolute;
+  left: -14px;
+  top: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #333;
+}
+
+.node-ui .node-dot { background: #00aaff; box-shadow: 0 0 5px #00aaff; }
+.node-frida .node-dot { background: #ff2244; box-shadow: 0 0 5px #ff2244; }
+
+.node-type {
+  font-weight: 700;
+  margin-right: 6px;
+  text-transform: uppercase;
+  font-size: 9px;
+}
+
+.node-ui .node-type { color: #00aaff; }
+.node-frida .node-type { color: #ff2244; }
+
+.node-data {
+  color: #aaa;
+}
+
+.node-tag {
+  background: #1a1a1a;
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: #fff;
+  margin-right: 4px;
+}

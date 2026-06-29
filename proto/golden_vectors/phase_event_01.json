@@ -1,0 +1,1 @@
+{"event_type": "FINDING_DISCOVERED", "scan_id": "scan-test-001", "phase_name": "recon", "progress_pct": 45, "message": "test event", "timestamp": 1751000000}

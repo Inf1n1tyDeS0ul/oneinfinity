@@ -1,0 +1,32 @@
+{
+  "oi-shell-gen": {
+    "sha256": "29232094ea300d17292f3915dffebabbc38e88f3ab3a3591412844a13efbd97f",
+    "built_at": "2026-06-27T11:17:50.259354+00:00",
+    "path": "src/nim/bin/oi-shell-gen"
+  },
+  "oi-bypass-gen": {
+    "sha256": "dbdbf4c67a053427dc50dfa8c5a85b8aee59d231d16c71dde2954f0584c8693c",
+    "built_at": "2026-06-27T11:17:50.259354+00:00",
+    "path": "src/nim/bin/oi-bypass-gen"
+  },
+  "oi-fuzzer": {
+    "sha256": "198a738e9cfa425f24a2cbf1ea9f3745615aab32a422a9591e18713a00458049",
+    "built_at": "2026-06-27T11:17:50.259354+00:00",
+    "path": "src/nim/bin/oi-fuzzer"
+  },
+  "oi-privesc-gen": {
+    "sha256": "6389b817237ab05383d0ee18b241388bda05be694b2e6263dca274a6fa373153",
+    "built_at": "2026-06-27T11:17:50.259354+00:00",
+    "path": "src/nim/bin/oi-privesc-gen"
+  },
+  "oi-payloads": {
+    "sha256": "042f07cb0d8a88d1d66509e6263295336b5b29e2d63c2e6c9d474223c94df3bb",
+    "built_at": "2026-06-27T11:17:50.259354+00:00",
+    "path": "src/nim/bin/oi-payloads"
+  },
+  "oi-post-exploit": {
+    "sha256": "cfc2d4f9397e975dadfbb241e8715ed4b7c4a83606903e101435956993a74927",
+    "built_at": "2026-06-27T11:17:50.259354+00:00",
+    "path": "src/nim/bin/oi-post-exploit"
+  }
+}

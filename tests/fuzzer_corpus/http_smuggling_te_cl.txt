@@ -1,0 +1,8 @@
+POST /api/findings HTTP/1.1
+Host: target.example.com
+Content-Length: 6
+Transfer-Encoding: chunked
+
+0
+
+X-Ignore: X

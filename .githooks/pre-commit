@@ -1,0 +1,25 @@
+#!/bin/bash
+# Pre-commit hook: validate frontend imports before commit
+
+# Check if any .jsx/.tsx files changed
+FRONTEND_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(jsx|tsx)$')
+
+if [ -n "$FRONTEND_FILES" ]; then
+  echo "Validating frontend icon imports..."
+
+  # Check for non-existent lucide-react icons
+  INVALID_ICONS=$(echo "$FRONTEND_FILES" | xargs grep -h "from 'lucide-react'" | grep -oE '\b(CloudDone|CloudCheck)\b' || true)
+
+  if [ -n "$INVALID_ICONS" ]; then
+    echo "❌ ERROR: Invalid lucide-react icons found:"
+    echo "$INVALID_ICONS" | sort -u | sed 's/^/  - /'
+    echo ""
+    echo "Valid alternatives:"
+    echo "  CloudDone → Cloud"
+    echo "  CloudCheck → CloudCheck (doesn't exist, use CheckCircle2)"
+    echo ""
+    exit 1
+  fi
+fi
+
+exit 0

@@ -1,0 +1,11 @@
+POST /api/scan HTTP/1.1
+Host: target.example.com
+Transfer-Encoding: chunked
+Content-Type: application/json
+
+7
+{"url":
+19
+"https://example.com/"}
+0
+

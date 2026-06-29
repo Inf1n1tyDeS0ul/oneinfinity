@@ -1,0 +1,7 @@
+[workspace]
+members = ["oi-fuzzer", "oi-jwt-crack"]
+resolver = "2"
+
+[profile.release]
+panic = "unwind"
+opt-level = 3

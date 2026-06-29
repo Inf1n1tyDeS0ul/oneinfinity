@@ -1,0 +1,20 @@
+{
+  "name": "oneinfinity-frida-hooks",
+  "version": "1.0.0",
+  "scripts": {
+    "build:ssl":       "node scripts/frida-build.mjs src/ssl_hook.ts dist/ssl_hook.js",
+    "build:anti_debug":"node scripts/frida-build.mjs src/anti_debug.ts dist/anti_debug.js",
+    "build:storage":   "node scripts/frida-build.mjs src/storage_hook.ts dist/storage_hook.js",
+    "build:root_bypass":"node scripts/frida-build.mjs src/root_bypass.ts dist/root_bypass.js",
+    "build:crypto":    "node scripts/frida-build.mjs src/crypto_extract.ts dist/crypto_extract.js",
+    "build:memory":    "node scripts/frida-build.mjs src/memory_search.ts dist/memory_search.js",
+    "build:http":      "node scripts/frida-build.mjs src/http_intercept.ts dist/http_intercept.js",
+    "build:jni":       "node scripts/frida-build.mjs src/jni_trace.ts dist/jni_trace.js",
+    "build:all": "npm run build:ssl && npm run build:anti_debug && npm run build:storage && npm run build:root_bypass && npm run build:crypto && npm run build:memory && npm run build:http && npm run build:jni",
+    "build": "npm run build:all"
+  },
+  "devDependencies": {
+    "@types/frida-gum": "^18.0.0",
+    "frida-compile": "^17.0.0"
+  }
+}

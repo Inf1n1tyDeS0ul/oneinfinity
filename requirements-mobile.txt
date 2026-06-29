@@ -1,0 +1,9 @@
+# Mobile analysis requirements
+mobsf-api-python
+frida-tools
+objection
+apkid
+# cryptography is usually needed by objection/frida
+cryptography
+adbutils>=2.12.0
+zeroconf>=0.131.0

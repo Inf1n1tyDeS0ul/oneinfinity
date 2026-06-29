@@ -1,0 +1,14 @@
+{
+  "oi-phase-runner": 50051,
+  "oi-recon-probe": 50052,
+  "oi-ssrf": 50053,
+  "oi-oob-listener": 50054,
+  "oi-idor-engine": 50055,
+  "oi-crawler": 50056,
+  "oi-live-surface": 50057,
+  "oi-ingest": 50058,
+  "oi-target-disc": 50059,
+  "oi-credential-spray": 50060,
+  "oi-service-cve-mapper": 50061,
+  "oi-lateral-portscan": 50062
+}

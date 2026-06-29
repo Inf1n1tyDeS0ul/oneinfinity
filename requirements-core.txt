@@ -1,0 +1,8 @@
+# Core requirements (pydantic, requests, pyyaml)
+requests
+pydantic
+pyyaml
+psycopg2-binary
+redis
+neo4j
+psutil

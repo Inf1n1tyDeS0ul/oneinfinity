@@ -1,0 +1,1 @@
+{"id": "test-001", "url": "https://example.com/api/v1/users", "vuln_type": "idor", "severity": "high", "evidence": "user_id=1 returned user_id=2 data", "source_tool": "idor_engine", "discovered_at": 1751000000, "metadata": {}, "confidence": 0.9, "scan_id": "scan-test-001"}

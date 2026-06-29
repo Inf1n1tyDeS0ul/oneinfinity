@@ -1,0 +1,15 @@
+go 1.25.0
+
+use (
+	./oi-crawler
+	./oi-credential-spray
+	./oi-ebpf-trace
+	./oi-idor-engine
+	./oi-oob-listener
+	./oi-recon-probe
+	./oi-sdk
+	./oi-service-cve-mapper
+	./oi-ssrf
+	./oi-lateral-portscan
+	./oi-target-disc
+)

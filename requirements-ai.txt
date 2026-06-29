@@ -1,0 +1,5 @@
+# AI/Red-team requirements
+openai
+google-generativeai
+anthropic
+boto3>=1.34.0
