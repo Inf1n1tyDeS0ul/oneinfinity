@@ -188,12 +188,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         dnsutils \
         procps \
         libssl3 \
+        libffi8 \
         libpcap0.8 \
-        masscan \
         cron \
         less \
         bash \
-        # Playwright/Chromium system dependencies
         libnss3 \
         libnspr4 \
         libatk1.0-0 \
@@ -212,12 +211,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgbm1 \
         libpango-1.0-0 \
         libcairo2 \
-        libasound2t64 \
+        libasound2 \
         fonts-liberation \
         xdg-utils \
         unzip \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
+# masscan — separate RUN so build continues if unavailable on the runner's mirror
+RUN apt-get update -qq && apt-get install -y --no-install-recommends masscan \
+    && rm -rf /var/lib/apt/lists/* || true
 
 # ── nikto (Perl web scanner — not in Debian Bookworm repos) ───
 RUN git clone --depth=1 https://github.com/sullo/nikto /opt/nikto \
