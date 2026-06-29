@@ -569,7 +569,6 @@ async def get_stats(repo: TargetRepository = Depends(get_target_repo)):
         except Exception:
             total_vulns = len(VULNERABILITIES)
         
-        total_vulns = total_vulns or len(_demo_findings())
         
         # Severity distribution — use ingestion engine findings first
         sev_dist = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
@@ -956,30 +955,25 @@ async def bulk_delete_scans(req: BulkDeleteScansRequest):
 @app.get("/api/findings")
 async def list_findings(target: Optional[str] = None, scan_id: Optional[str] = None,
                         severity: Optional[str] = None):
-    """Return findings — merges db_manager with in-memory cache and falls back to demo data."""
+    """Return findings — merges db_manager with in-memory cache."""
     mgr = await get_mgr()
-    # Primary: db_manager
     db_results = await mgr.get_findings(scan_id=scan_id, target=target, severity=severity)
-    
+
     # Merge with in-memory VULNERABILITIES
     results = {f.get("finding_id", f.get("id", "")): f for f in db_results}
     for fid, fdata in VULNERABILITIES.items():
         if fid and fid not in results:
             results[fid] = fdata
-    
+
     findings = list(results.values())
-    
-    # Fallback to demo data if empty
-    if not findings:
-        findings = _demo_findings()
-    
+
     if scan_id:
         findings = [f for f in findings if f.get("scan_id") == scan_id]
     if target:
         findings = [f for f in findings if f.get("target") == target]
     if severity:
         findings = [f for f in findings if f.get("severity", "").lower() == severity.lower()]
-        
+
     return findings
 
 @app.get("/api/vulnerabilities")
