@@ -188,7 +188,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         dnsutils \
         procps \
         libssl3 \
-        libasound2t64 \
         libpcap0.8 \
         masscan \
         cron \
@@ -213,7 +212,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgbm1 \
         libpango-1.0-0 \
         libcairo2 \
-        libasound2 \
+        libasound2t64 \
         fonts-liberation \
         xdg-utils \
         unzip \
