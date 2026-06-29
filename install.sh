@@ -154,6 +154,8 @@ PKG_MGR=""
 PKG_UPDATE=""
 PKG_INSTALL=""
 DISTRO=""
+OS_TYPE=""
+DISTRO_FAMILY=""
 INSTALL_MODE=""
 REPO_DIR=""
 
@@ -339,7 +341,20 @@ detect_os() {
             ;;
     esac
 
-    _log_to_file "OS=${OS} ARCH=${ARCH} DISTRO=${DISTRO} PKG_MGR=${PKG_MGR}"
+    # Set OS_TYPE and DISTRO_FAMILY used by install_system_deps and downstream sections
+    if $IS_MAC; then
+        OS_TYPE="macos"
+        DISTRO_FAMILY="macos"
+    else
+        OS_TYPE="$DISTRO"  # ubuntu | debian | kali | fedora | rhel | arch
+        case "$DISTRO" in
+            ubuntu|debian|kali) DISTRO_FAMILY="debian" ;;
+            fedora|rhel|centos) DISTRO_FAMILY="redhat" ;;
+            arch)               DISTRO_FAMILY="arch"   ;;
+            *)                  DISTRO_FAMILY="$DISTRO" ;;
+        esac
+    fi
+    _log_to_file "OS=${OS} ARCH=${ARCH} DISTRO=${DISTRO} OS_TYPE=${OS_TYPE} DISTRO_FAMILY=${DISTRO_FAMILY} PKG_MGR=${PKG_MGR}"
 }
 
 # ============================================================================
