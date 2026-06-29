@@ -22,7 +22,7 @@ try:
     from dotenv import load_dotenv as _load_dotenv
     _env_file = Path(__file__).parent.parent.parent / ".env"
     if _env_file.exists():
-        _load_dotenv(_env_file, override=False)
+        _load_dotenv(_env_file, override=True)
 except ImportError:
     pass
 

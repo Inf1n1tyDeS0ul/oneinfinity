@@ -780,6 +780,13 @@ _fallback_pyenv() {
 
 _setup_venv() {
     local VENV_DIR="$REPO_DIR/.venv"
+    # Ubuntu 24.04 (PEP 668) requires python3-venv to be installed separately
+    # when the system Python is already at the required version and _do_install_python was skipped
+    if [[ "${DISTRO_FAMILY:-}" == "debian" ]] && ! python3 -m venv --help &>/dev/null 2>&1; then
+        step "Installing python3-venv (required for Ubuntu 24.04+ / PEP 668)…"
+        sudo apt-get install -y python3-venv python3-pip >>"$ONEINFINITY_LOG" 2>&1 \
+            && ok "python3-venv installed" || warn "python3-venv install failed — venv may not work"
+    fi
     if [[ ! -d "$VENV_DIR" ]]; then
         step "Creating venv at $VENV_DIR"
         python3 -m venv "$VENV_DIR" >>"$ONEINFINITY_LOG" 2>&1 \
@@ -3302,7 +3309,9 @@ setup_env_and_alias() {
     _env_set_key "POSTGRES_DB"       "$PG_DB"                                          "$env_file"
     _env_set_key "POSTGRES_USER"     "$PG_USER"                                        "$env_file"
     _env_set_key "POSTGRES_PASSWORD" "$PG_PASS"                                        "$env_file"
-    _env_set_key "POSTGRES_URL"      "postgresql://${PG_USER}:${PG_PASS}@localhost:${PG_PORT}/${PG_DB}" "$env_file"
+    _env_set_key "POSTGRES_URL"           "postgresql://${PG_USER}:${PG_PASS}@localhost:${PG_PORT}/${PG_DB}" "$env_file"
+    _env_set_key "DATABASE_URL"           "postgresql://${PG_USER}:${PG_PASS}@localhost:${PG_PORT}/${PG_DB}" "$env_file"
+    _env_set_key "ONEINFINITY_STORAGE_MODE" "postgres"                                "$env_file"
     _env_set_key "REDIS_HOST"        "localhost"                                        "$env_file"
     _env_set_key "REDIS_PORT"        "$REDIS_PORT"                                      "$env_file"
     _env_set_key "REDIS_PASSWORD"    "$REDIS_PASS"                                      "$env_file"
