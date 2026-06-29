@@ -1282,6 +1282,21 @@ install_python_tools() {
     fi
 
     # -------------------------------------------------------------------------
+    # 1c. Install AI/model dependencies (anthropic, boto3, openai, etc.)
+    # -------------------------------------------------------------------------
+    local AI_REQS="$REPO_DIR/requirements-ai.txt"
+    if [[ -f "$AI_REQS" ]]; then
+        step "Installing requirements-ai.txt (anthropic, boto3, openai…)"
+        if (pip install -r "$AI_REQS" 2>&1 | tee -a "$ONEINFINITY_LOG"); then
+            ok "AI dependencies installed"
+        else
+            warn "requirements-ai.txt reported errors — check $ONEINFINITY_LOG"
+        fi
+    else
+        warn "requirements-ai.txt not found — skipping"
+    fi
+
+    # -------------------------------------------------------------------------
     # 2. Web / API pentesting
     # -------------------------------------------------------------------------
     section "Python Tools — Web/API Pentesting"

@@ -27,10 +27,6 @@ trap cleanup INT TERM
 # Backend
 echo "[*] Starting FastAPI backend..."
 cd "$ROOT/backend"
-pip install -r requirements.txt -q
-# Install AI/model deps from repo root if present
-ROOT_REQ="$(dirname "$ROOT")/requirements-ai.txt"
-[ -f "$ROOT_REQ" ] && pip install -r "$ROOT_REQ" -q && echo "[+] AI requirements installed"
 API_PORT="$BACKEND_PORT" python3 main.py &
 BACKEND_PID=$!
 echo "[+] Backend PID: $BACKEND_PID"
