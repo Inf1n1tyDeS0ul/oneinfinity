@@ -1525,7 +1525,7 @@ _brew_install() {
 # _apt_install <pkg> [<pkg2>...]
 _apt_install() {
     step "apt install $*"
-    if DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" 2>&1 | tee -a "$ONEINFINITY_LOG"; then
+    if DEBIAN_FRONTEND=noninteractive sudo apt-get install -y "$@" 2>&1 | tee -a "$ONEINFINITY_LOG"; then
         ok "apt: $* installed"
     else
         warn "apt install $* failed — skipping"
@@ -1535,7 +1535,7 @@ _apt_install() {
 # _dnf_install <pkg> [<pkg2>...]
 _dnf_install() {
     step "dnf install $*"
-    if dnf install -y "$@" 2>&1 | tee -a "$ONEINFINITY_LOG"; then
+    if sudo dnf install -y "$@" 2>&1 | tee -a "$ONEINFINITY_LOG"; then
         ok "dnf: $* installed"
     else
         warn "dnf install $* failed — skipping"
@@ -1545,7 +1545,7 @@ _dnf_install() {
 # _pacman_install <pkg> [<pkg2>...]
 _pacman_install() {
     step "pacman -S $*"
-    if pacman -S --noconfirm "$@" 2>&1 | tee -a "$ONEINFINITY_LOG"; then
+    if sudo pacman -S --noconfirm "$@" 2>&1 | tee -a "$ONEINFINITY_LOG"; then
         ok "pacman: $* installed"
     else
         warn "pacman install $* failed — skipping"
