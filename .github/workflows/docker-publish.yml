@@ -44,10 +44,10 @@ jobs:
   build-core:
     name: Build core image
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
-      # Needed for SBOM attestation (optional but recommended)
       id-token: write
 
     outputs:
@@ -107,8 +107,8 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          # Build both AMD64 and ARM64 for Apple Silicon / cloud ARM
-          platforms: linux/amd64,linux/arm64
+          # amd64 only — arm64 Go cross-compilation adds 30+ min to CI
+          platforms: linux/amd64
           # Only push on non-PR events
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
