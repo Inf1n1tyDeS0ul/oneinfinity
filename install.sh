@@ -4647,21 +4647,6 @@ init_all_databases() {
 
 # ORCHESTRATION — do_fresh_install / do_update / main / entry-point
 # ============================================================================
-setup_databases()           { : ; }
-init_all_databases()        { : ; }
-init_postgres_schema()      { : ; }
-init_neo4j_schema()         { : ; }
-init_redis_config()         { : ; }
-init_sqlite_databases()     { : ; }
-setup_mobsf()               { : ; }
-build_rust_core()           { : ; }
-build_rust_fuzzer()         { : ; }
-build_rust_jwt_crack()      { : ; }
-setup_env_and_alias()       { : ; }
-run_verification()          { : ; }
-print_summary()             { : ; }
-update_docker_images()      { : ; }
-install_ai_providers()      { : ; }
 
 do_fresh_install() {
     install_system_deps
