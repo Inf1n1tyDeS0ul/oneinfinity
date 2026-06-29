@@ -188,7 +188,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         dnsutils \
         procps \
         libssl3 \
-        libffi8 \
+        libasound2t64 \
         libpcap0.8 \
         masscan \
         cron \
@@ -282,11 +282,9 @@ COPY --from=go-tools /go-bins/ /go-bins/
 
 # ── Python wheels ─────────────────────────────────────────────
 COPY --from=py-builder /wheels /wheels
-RUN pip install --no-cache-dir --no-index --find-links /wheels \
-        $(ls /wheels/*.whl | xargs -I{} basename {} | sed 's/-[0-9].*//' | tr '\n' ' ') \
-    2>/dev/null || \
-    # Fallback: install wheel files directly
-    pip install --no-cache-dir --no-index --find-links /wheels /wheels/*.whl \
+# Install pre-built wheels then the package itself in editable mode
+RUN pip install --no-cache-dir --no-index --find-links /wheels /wheels/*.whl 2>/dev/null || true \
+    && pip install --no-cache-dir -e /app/. 2>/dev/null || true \
     && rm -rf /wheels
 
 # ── Playwright browser install ────────────────────────────────
@@ -301,16 +299,17 @@ RUN pip install --no-cache-dir playwright 2>/dev/null || true \
 WORKDIR /app
 COPY . /app/
 
-# Remove the .venv bundled in the repo (web/backend/.venv is huge)
+# Install the oneinfinity package so `oneinfinity` CLI is available
 RUN rm -rf /app/web/backend/.venv /app/__pycache__ \
-    && find /app -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+    && find /app -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
+    && pip install --no-cache-dir -e /app/. 2>/dev/null || true
 
 # ── Entrypoint & permissions ──────────────────────────────────
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
-    && chmod +x /app/oneinfinity.py \
-    # Symlink so `oneinfinity` resolves inside the container
-    && ln -sf /app/oneinfinity.py /usr/local/bin/oneinfinity
+    && chmod +x /app/oneinfinity \
+    # Symlink shell launcher so `oneinfinity` resolves even without pip install
+    && ln -sf /app/oneinfinity /usr/local/bin/oi-launcher
 
 # ── Non-root user (drop privileges for safer operation) ───────
 # Security tools that need raw sockets must be run as root
@@ -348,7 +347,7 @@ USER oi
 
 # ── Health check ──────────────────────────────────────────────
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=1 \
-    CMD python /app/oneinfinity.py --help > /dev/null 2>&1 || exit 1
+    CMD oneinfinity --help > /dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["--help"]
