@@ -100,7 +100,17 @@ def _build_settings_ack() -> bytes:
 def _encode_hpack_literal(name: bytes, value: bytes) -> bytes:
     """Minimal HPACK literal header encoding (no indexing, no Huffman)."""
     def _encode_string(s: bytes) -> bytes:
-        return bytes([len(s)]) + s if len(s) < 128 else b"\x7f" + bytes([len(s) - 127]) + s
+        n = len(s)
+        if n < 128:
+            return bytes([n]) + s
+        # HPACK integer encoding (RFC 7541 §5.1) with prefix=7
+        result = b"\x7f"  # prefix all-ones → continuation follows
+        n -= 127
+        while n >= 128:
+            result += bytes([n % 128 + 128])
+            n //= 128
+        result += bytes([n])
+        return result + s
 
     return bytes([0x00]) + _encode_string(name) + _encode_string(value)
 
@@ -292,7 +302,7 @@ class H2CScanner:
 
                 resp_text = response.decode("utf-8", errors="replace")
                 # If server returns 200 instead of 400/RST_STREAM, it accepted the injection
-                if b"\x00\x00\x00\x04" not in response and b"RST_STREAM" not in resp_text:
+                if b"\x00\x00\x00\x04" not in response and "RST_STREAM" not in resp_text:
                     if len(response) > 9:  # Got a real frame back
                         return _make_finding(
                             vuln_type="h2_header_injection",

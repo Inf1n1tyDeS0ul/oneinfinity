@@ -1632,6 +1632,27 @@ class AdaptiveReconEngine:
             for s in self._js_secrets:
                 _warn(f"POSSIBLE SECRET: {s}")
 
+        # ── JSSecretScanner: deep secret scan across all JS URLs ──────────────
+        try:
+            from oneinfinity.scan.js_secret_scanner import JSSecretScanner as _JSSecretScanner
+            _js_urls = [u for u in self._all_urls if isinstance(u, str) and
+                        (u.endswith(".js") or ".js?" in u)]
+            if _js_urls:
+                _jss = _JSSecretScanner()
+                _jss_findings = _jss.scan_urls(self.target, _js_urls)
+                for _f in _jss_findings:
+                    _secret = _f.get("secret_value") or _f.get("value") or _f.get("title", "")
+                    if _secret and _secret not in self._js_secrets:
+                        self._js_secrets.append(_secret)
+                if _jss_findings:
+                    _warn(f"JSSecretScanner: {len(_jss_findings)} additional secret findings")
+        except ImportError:
+            pass
+        except Exception as _jss_exc:
+            import logging as _log_jss
+            _log_jss.getLogger("oneinfinity.recon").debug(
+                "JSSecretScanner failed (non-fatal): %s", _jss_exc)
+
         (self.output_dir / "js_endpoints.json").write_text(
             json.dumps({
                 "endpoints": self._hidden_endpoints,

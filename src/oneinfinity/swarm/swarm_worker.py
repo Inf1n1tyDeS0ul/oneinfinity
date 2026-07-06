@@ -250,17 +250,114 @@ class SwarmWorker:
                  self.worker_id, task.task_id, task.target, task.module)
 
         dispatch = {
-            "recon":         self._run_recon,
-            "vuln_scan":     self._run_vuln_scan,
-            "exploit":       self._run_exploit,
-            "ai_security":   self._run_ai_security,
-            "mobile":        self._run_mobile,
-            "full_pipeline": self._run_full_pipeline,
+            "recon":           self._run_recon,
+            "vuln_scan":       self._run_vuln_scan,
+            "exploit":         self._run_exploit,
+            "ai_security":     self._run_ai_security,
+            "mobile":          self._run_mobile,
+            "full_pipeline":   self._run_full_pipeline,
+            "traffic_fuzzer":  self._handle_traffic_fuzzer,
         }
         fn = dispatch.get(task.module, self._run_full_pipeline)
         return fn(task)
 
     # ── Module Runners ─────────────────────────────────────────────────────────
+
+    def _handle_traffic_fuzzer(self, task) -> dict:
+        """
+        Handle a traffic_fuzzer task dispatched by SwarmWatcher.
+        Loads the captured request by ID, fuzzes every interesting parameter
+        using TrafficReplayEngine, and emits findings for anomalous responses.
+        """
+        target = task.target
+        request_id = task.config.get("request_id", "")
+        log.info("[worker:%s] TrafficFuzzer: target=%s request_id=%s",
+                 self.worker_id, target, request_id)
+
+        if not request_id:
+            log.warning("[worker:%s] TrafficFuzzer: no request_id in task config, skipping", self.worker_id)
+            return {"phase": "traffic_fuzzer", "target": target, "findings": [],
+                    "status": "skipped", "reason": "no request_id"}
+
+        try:
+            from oneinfinity.scan.traffic_replay_engine import traffic_replay_engine
+            from oneinfinity.scan.traffic_capture_engine import traffic_capture_engine
+            import urllib.parse
+
+            original = traffic_capture_engine.get(request_id)
+            if not original:
+                log.warning("[worker:%s] TrafficFuzzer: request %s not found in DB", self.worker_id, request_id)
+                return {"phase": "traffic_fuzzer", "target": target, "findings": [],
+                        "status": "skipped", "reason": "request_not_found"}
+
+            # Collect parameters to fuzz from URL query string and JSON body
+            params_to_fuzz = set()
+            parsed = urllib.parse.urlparse(original.url)
+            qs = urllib.parse.parse_qs(parsed.query)
+            params_to_fuzz.update(qs.keys())
+            if original.body:
+                try:
+                    import json as _json
+                    bd = _json.loads(original.body)
+                    if isinstance(bd, dict):
+                        params_to_fuzz.update(bd.keys())
+                except Exception:
+                    pass
+
+            if not params_to_fuzz:
+                log.debug("[worker:%s] TrafficFuzzer: no parameters found to fuzz for %s",
+                          self.worker_id, request_id)
+                return {"phase": "traffic_fuzzer", "target": target, "findings": [],
+                        "status": "complete", "fuzzed_params": 0}
+
+            findings = []
+            for param in params_to_fuzz:
+                try:
+                    results = traffic_replay_engine.fuzz_param(
+                        request_id, param, use_proxy=False, timeout=20
+                    )
+                    for r in results:
+                        if r.suspicious:
+                            finding = {
+                                "type": "traffic_fuzz_anomaly",
+                                "target": original.url,
+                                "param": param,
+                                "fuzz_value": r.fuzz_value,
+                                "original_status": r.original_status,
+                                "replayed_status": r.replayed_status,
+                                "flags": r.flags,
+                                "reflections": r.reflections_found,
+                                "errors": [e[0] for e in r.errors_found],
+                                "sensitive_data": [s[0] for s in r.sensitive_data],
+                                "status_changed": r.status_changed,
+                                "size_changed": r.size_changed,
+                                "request_id": request_id,
+                                "severity": "medium",
+                                "confidence": 0.6,
+                            }
+                            findings.append(finding)
+                            log.info("[worker:%s] TrafficFuzzer: anomaly on param=%s flags=%s",
+                                     self.worker_id, param, r.flags)
+                except Exception as exc:
+                    log.debug("[worker:%s] TrafficFuzzer: fuzz_param(%s) error: %s",
+                              self.worker_id, param, exc)
+
+            return {
+                "phase": "traffic_fuzzer",
+                "target": target,
+                "findings": findings,
+                "fuzzed_params": len(params_to_fuzz),
+                "status": "complete",
+            }
+
+        except ImportError as exc:
+            log.warning("[worker:%s] TrafficFuzzer: required module not available: %s", self.worker_id, exc)
+            return {"phase": "traffic_fuzzer", "target": target, "findings": [],
+                    "status": "skipped", "reason": str(exc)}
+        except Exception as exc:
+            log.error("[worker:%s] TrafficFuzzer error for %s: %s", self.worker_id, target, exc)
+            return {"phase": "traffic_fuzzer", "target": target, "findings": [],
+                    "error": str(exc), "status": "failed"}
 
     def _run_recon(self, task) -> dict:
         """Run recon phase via UnifiedScanEngine."""

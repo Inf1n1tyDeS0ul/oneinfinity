@@ -144,3 +144,5 @@ web/frontend/build/
 
 # Claude agent session data
 .claude-flow/
+oi-sync
+/.oneinfinity/sync*.log

@@ -449,155 +449,162 @@ class FoundationMission(Mission):
             log.warning("[GOD MODE] TargetDiscoveryEngine failed (non-fatal): %s", exc, exc_info=True)
 
         # ── Step 3b: GitHub Secrets Scanner ──────────────────────────────
-        log.info("[GOD MODE] Foundation Step 3b: GitHubSecretsScanner")
-        try:
-            from oneinfinity.recon.github_secrets_scanner import GitHubSecretsScanner
-            import os as _os
-            _gh_token = _os.environ.get("GITHUB_TOKEN") or _os.environ.get("GITHUB_TOKENS", "").split(",")[0].strip() or None
-            _org = session.target.split(".")[0]  # best-effort org name from domain prefix
-            _gss = GitHubSecretsScanner(github_token=_gh_token)
-            _secrets_result = _gss.scan_org(_org, max_repos=30, commits_per_repo=5, timeout=120)
-            log.info("[GOD MODE] GitHubSecretsScanner: %d findings for org %s",
-                     len(_secrets_result.findings), _org)
-            if _secrets_result.findings:
-                # Persist to PostgreSQL
-                try:
-                    import asyncio as _asyncio
-                    from oneinfinity.core.pg_client import store_recon_findings
-                    _asyncio.get_event_loop().run_until_complete(
-                        store_recon_findings(
-                            session.scan_id, session.target,
-                            "github_secret", _secrets_result.findings,
+        # Skip entirely when no real GitHub token is configured — running without
+        # a token consumes the 60 req/hr anonymous quota instantly and produces noise.
+        import os as _os
+        _gh_token = _os.environ.get("GITHUB_TOKEN") or _os.environ.get("GITHUB_TOKENS", "").split(",")[0].strip() or None
+        _gh_token_placeholder = _gh_token and (_gh_token.startswith("ghp_REPLACE") or len(_gh_token) < 10)
+        if not _gh_token or _gh_token_placeholder:
+            log.info("[GOD MODE] Foundation Step 3b: GitHubSecretsScanner — SKIPPED (no GitHub token configured)")
+        else:
+            log.info("[GOD MODE] Foundation Step 3b: GitHubSecretsScanner")
+            try:
+                from oneinfinity.recon.github_secrets_scanner import GitHubSecretsScanner
+                _org = session.target.split(".")[0]  # best-effort org name from domain prefix
+                _gss = GitHubSecretsScanner(github_token=_gh_token)
+                _secrets_result = _gss.scan_org(_org, max_repos=30, commits_per_repo=5, timeout=120)
+                log.info("[GOD MODE] GitHubSecretsScanner: %d findings for org %s",
+                         len(_secrets_result.findings), _org)
+                if _secrets_result.findings:
+                    # Persist to PostgreSQL
+                    try:
+                        import asyncio as _asyncio
+                        from oneinfinity.core.pg_client import store_recon_findings
+                        _asyncio.get_event_loop().run_until_complete(
+                            store_recon_findings(
+                                session.scan_id, session.target,
+                                "github_secret", _secrets_result.findings,
+                            )
                         )
-                    )
-                except Exception as _pg_exc:
-                    log.debug("[GOD MODE] PG persist secrets failed: %s", _pg_exc)
-                # Emit CREDENTIAL_ACQUIRED for each secret
-                try:
-                    from oneinfinity.orchestration.event_bus import get_bus, EventType
-                    for _sf in _secrets_result.findings:
-                        get_bus().publish(EventType.CREDENTIAL_ACQUIRED, {
-                            "scan_id": session.scan_id,
-                            "target": session.target,
-                            "service": "github",
-                            "secret_type": _sf.get("secret_type", "unknown"),
-                            "repo": _sf.get("repo", ""),
-                            "severity": _sf.get("severity", "medium"),
-                            "source": "github_secrets_scanner",
-                        }, source="github_secrets_scanner")
-                except Exception:
-                    pass
-        except Exception as exc:
-            log.warning("[GOD MODE] GitHubSecretsScanner failed (non-fatal): %s", exc, exc_info=True)
+                    except Exception as _pg_exc:
+                        log.debug("[GOD MODE] PG persist secrets failed: %s", _pg_exc)
+                    # Emit CREDENTIAL_ACQUIRED for each secret
+                    try:
+                        from oneinfinity.orchestration.event_bus import get_bus, EventType
+                        for _sf in _secrets_result.findings:
+                            get_bus().publish(EventType.CREDENTIAL_ACQUIRED, {
+                                "scan_id": session.scan_id,
+                                "target": session.target,
+                                "service": "github",
+                                "secret_type": _sf.get("secret_type", "unknown"),
+                                "repo": _sf.get("repo", ""),
+                                "severity": _sf.get("severity", "medium"),
+                                "source": "github_secrets_scanner",
+                            }, source="github_secrets_scanner")
+                    except Exception:
+                        pass
+            except Exception as exc:
+                log.warning("[GOD MODE] GitHubSecretsScanner failed (non-fatal): %s", exc, exc_info=True)
 
         # ── Step 3c: GitHub Deep Intel ────────────────────────────────────
         log.info("[GOD MODE] Foundation Step 3c: GitHubDeepIntel")
         try:
-            from oneinfinity.recon.github_deep_intel import GitHubDeepIntel
-            import os as _os
-            _gh_token2 = _os.environ.get("GITHUB_TOKEN") or _os.environ.get("GITHUB_TOKENS", "").split(",")[0].strip() or None
-            _org2 = session.target.split(".")[0]
-            _gdi = GitHubDeepIntel(github_token=_gh_token2)
-            _deep_intel = _gdi.scan_org(_org2, max_repos=100, deep_scan=True, timeout=300)
-            log.info("[GOD MODE] GitHubDeepIntel: %d contributors, %d secrets, org=%s",
-                     len(_deep_intel.contributors), len(_deep_intel.findings), _org2)
-            # Save employee names for credential spray (Phase 7)
-            # employees.json schema: { target, org, scan_id, employees: [{name,email,username,source,repos}] }
-            if _deep_intel.contributors or _deep_intel.emails:
-                try:
-                    import json as _json
-                    from pathlib import Path as _Path
-                    _recon_dir = _Path(GOD_MODE_DIR / session.scan_id / "recon")
-                    _recon_dir.mkdir(parents=True, exist_ok=True)
-                    _employees_file = _recon_dir / "employees.json"
-                    # Build structured employee records — email dicts first (richer),
-                    # then any contributor logins not already captured by email records.
-                    _seen_logins: set = set()
-                    _employees: list = []
-                    for _ei in (_deep_intel.emails or []):
-                        # EmailIntel serialised as dict: email, name, github_username, commit_count, repos
-                        _login = (_ei.get("github_username") or "") if isinstance(_ei, dict) else ""
-                        _email_addr = (_ei.get("email") or "") if isinstance(_ei, dict) else ""
-                        _display = (_ei.get("name") or _login) if isinstance(_ei, dict) else ""
-                        _repos = (_ei.get("repos") or []) if isinstance(_ei, dict) else []
-                        if _login:
-                            _seen_logins.add(_login)
-                        _employees.append({
-                            "name":     _display,
-                            "email":    _email_addr,
-                            "username": _login,
-                            "source":   "github_deep_intel",
-                            "repos":    _repos,
-                        })
-                    for _login in sorted(_deep_intel.contributors or []):
-                        if _login in _seen_logins:
-                            continue
-                        _employees.append({
-                            "name":     _login,
-                            "email":    "",
-                            "username": _login,
-                            "source":   "github_deep_intel",
-                            "repos":    [],
-                        })
-                    _employees_file.write_text(_json.dumps({
-                        "target":    session.target,
-                        "org":       _org2,
-                        "scan_id":   session.scan_id,
-                        "employees": _employees,
-                    }, indent=2))
-                    log.info("[GOD MODE] Employees saved to %s (%d records)", _employees_file, len(_employees))
-                except Exception as _ef:
-                    log.warning("[GOD MODE] Failed to save employees file: %s", _ef)
-            # Persist deep intel findings
-            if _deep_intel.findings:
-                try:
-                    import asyncio as _asyncio
-                    from oneinfinity.core.pg_client import store_recon_findings
-                    _asyncio.get_event_loop().run_until_complete(
-                        store_recon_findings(
-                            session.scan_id, session.target,
-                            "github_deep_intel", _deep_intel.findings,
+            if not _gh_token or _gh_token_placeholder:
+                log.info("[GOD MODE] Step 3c: skipping GitHubDeepIntel — no valid GitHub token")
+            else:
+                from oneinfinity.recon.github_deep_intel import GitHubDeepIntel
+                _org2 = session.target.split(".")[0]
+                _gdi = GitHubDeepIntel(github_token=_gh_token)
+                _deep_intel = _gdi.scan_org(_org2, max_repos=100, deep_scan=True, timeout=300)
+                log.info("[GOD MODE] GitHubDeepIntel: %d contributors, %d api_endpoints, org=%s",
+                         len(_deep_intel.contributors), len(_deep_intel.api_endpoints), _org2)
+                # Save employee names for credential spray (Phase 7)
+                # employees.json schema: { target, org, scan_id, employees: [{name,email,username,source,repos}] }
+                if _deep_intel.contributors or _deep_intel.emails:
+                    try:
+                        import json as _json
+                        from pathlib import Path as _Path
+                        _recon_dir = _Path(GOD_MODE_DIR / session.scan_id / "recon")
+                        _recon_dir.mkdir(parents=True, exist_ok=True)
+                        _employees_file = _recon_dir / "employees.json"
+                        # Build structured employee records — email dicts first (richer),
+                        # then any contributor logins not already captured by email records.
+                        _seen_logins: set = set()
+                        _employees: list = []
+                        for _ei in (_deep_intel.emails or []):
+                            # EmailIntel serialised as dict: email, name, github_username, commit_count, repos
+                            _login = (_ei.get("github_username") or "") if isinstance(_ei, dict) else ""
+                            _email_addr = (_ei.get("email") or "") if isinstance(_ei, dict) else ""
+                            _display = (_ei.get("name") or _login) if isinstance(_ei, dict) else ""
+                            _repos = (_ei.get("repos") or []) if isinstance(_ei, dict) else []
+                            if _login:
+                                _seen_logins.add(_login)
+                            _employees.append({
+                                "name":     _display,
+                                "email":    _email_addr,
+                                "username": _login,
+                                "source":   "github_deep_intel",
+                                "repos":    _repos,
+                            })
+                        for _login in sorted(_deep_intel.contributors or []):
+                            if _login in _seen_logins:
+                                continue
+                            _employees.append({
+                                "name":     _login,
+                                "email":    "",
+                                "username": _login,
+                                "source":   "github_deep_intel",
+                                "repos":    [],
+                            })
+                        _employees_file.write_text(_json.dumps({
+                            "target":    session.target,
+                            "org":       _org2,
+                            "scan_id":   session.scan_id,
+                            "employees": _employees,
+                        }, indent=2))
+                        log.info("[GOD MODE] Employees saved to %s (%d records)", _employees_file, len(_employees))
+                    except Exception as _ef:
+                        log.warning("[GOD MODE] Failed to save employees file: %s", _ef)
+                # Persist deep intel findings
+                if _deep_intel.findings:
+                    try:
+                        import asyncio as _asyncio
+                        from oneinfinity.core.pg_client import store_recon_findings
+                        _asyncio.get_event_loop().run_until_complete(
+                            store_recon_findings(
+                                session.scan_id, session.target,
+                                "github_deep_intel", _deep_intel.findings,
+                            )
                         )
-                    )
-                except Exception as _pg_exc:
-                    log.debug("[GOD MODE] PG persist deep-intel failed: %s", _pg_exc)
-                # Emit CREDENTIAL_ACQUIRED for each deep-intel finding
-                try:
-                    from oneinfinity.orchestration.event_bus import get_bus, EventType
-                    for _df in _deep_intel.findings:
-                        get_bus().publish(EventType.CREDENTIAL_ACQUIRED, {
-                            "scan_id": session.scan_id,
-                            "target": session.target,
-                            "service": "github",
-                            "secret_type": _df.get("secret_type", "unknown") if isinstance(_df, dict) else "unknown",
-                            "source": "github_deep_intel",
-                        }, source="github_deep_intel")
-                except Exception:
-                    pass
-            # Persist discovered API endpoints from deep intel
-            if getattr(_deep_intel, "api_endpoints", None):
-                try:
-                    import asyncio as _asyncio
-                    from oneinfinity.core.pg_client import store_recon_findings
-                    _asyncio.get_event_loop().run_until_complete(
-                        store_recon_findings(
-                            session.scan_id, session.target,
-                            "api_endpoint",
-                            [{"url": u, "source": "github_deep_intel"} for u in _deep_intel.api_endpoints],
+                    except Exception as _pg_exc:
+                        log.debug("[GOD MODE] PG persist deep-intel failed: %s", _pg_exc)
+                    # Emit CREDENTIAL_ACQUIRED for each deep-intel finding
+                    try:
+                        from oneinfinity.orchestration.event_bus import get_bus, EventType
+                        for _df in _deep_intel.findings:
+                            get_bus().publish(EventType.CREDENTIAL_ACQUIRED, {
+                                "scan_id": session.scan_id,
+                                "target": session.target,
+                                "service": "github",
+                                "secret_type": _df.get("secret_type", "unknown") if isinstance(_df, dict) else "unknown",
+                                "source": "github_deep_intel",
+                            }, source="github_deep_intel")
+                    except Exception:
+                        pass
+                # Persist discovered API endpoints from deep intel
+                if _deep_intel.api_endpoints:
+                    try:
+                        import asyncio as _asyncio
+                        from oneinfinity.core.pg_client import store_recon_findings
+                        _asyncio.get_event_loop().run_until_complete(
+                            store_recon_findings(
+                                session.scan_id, session.target,
+                                "api_endpoint",
+                                [{"url": u, "source": "github_deep_intel"} for u in _deep_intel.api_endpoints],
+                            )
                         )
-                    )
-                except Exception:
-                    pass
-                try:
-                    from oneinfinity.orchestration.event_bus import get_bus, EventType
-                    for _ep_url in _deep_intel.api_endpoints:
-                        get_bus().publish(EventType.NEW_ENDPOINT, {
-                            "url": _ep_url,
-                            "source": "github_deep_intel",
-                            "target": session.target,
-                        }, source="github_deep_intel")
-                except Exception:
-                    pass
+                    except Exception:
+                        pass
+                    try:
+                        from oneinfinity.orchestration.event_bus import get_bus, EventType
+                        for _ep_url in _deep_intel.api_endpoints:
+                            get_bus().publish(EventType.NEW_ENDPOINT, {
+                                "url": _ep_url,
+                                "source": "github_deep_intel",
+                                "target": session.target,
+                            }, source="github_deep_intel")
+                    except Exception:
+                        pass
         except Exception as exc:
             log.warning("[GOD MODE] GitHubDeepIntel failed (non-fatal): %s", exc, exc_info=True)
 
@@ -656,50 +663,57 @@ class FoundationMission(Mission):
             log.warning("[GOD MODE] OSINTCollector failed (non-fatal): %s", exc, exc_info=True)
 
         # ── Step 3e: SecretIntelAgent (GitHub + dork-based) ───────────────
-        log.info("[GOD MODE] Foundation Step 3e: SecretIntelAgent")
-        try:
-            from oneinfinity.agents.secret_intel import SecretIntelAgent
-            import os as _os
-            _gh_token3 = _os.environ.get("GITHUB_TOKEN") or _os.environ.get("GITHUB_TOKENS", "").split(",")[0].strip() or None
-            _sia = SecretIntelAgent(token=_gh_token3)
-            _intel_result = _sia.run(
-                session.target,
-                stop_on_critical=False,
-                max_dorks=15,
-                concurrency=3,
-            )
-            _intel_findings = _intel_result.get("findings", []) if isinstance(_intel_result, dict) else []
-            log.info("[GOD MODE] SecretIntelAgent: %d findings", len(_intel_findings))
-            if _intel_findings:
-                try:
-                    import asyncio as _asyncio
-                    from oneinfinity.core.pg_client import store_recon_findings
-                    _asyncio.get_event_loop().run_until_complete(
-                        store_recon_findings(
-                            session.scan_id, session.target,
-                            "secret_intel", _intel_findings,
+        # Skip entirely when no real GitHub token is configured — running without
+        # a token consumes the 60 req/hr anonymous quota instantly and spins in
+        # a 60s sleep loop for every dork batch, stalling the whole pipeline.
+        import os as _os3
+        _gh_token3 = _os3.environ.get("GITHUB_TOKEN") or _os3.environ.get("GITHUB_TOKENS", "").split(",")[0].strip() or None
+        _is_placeholder = _gh_token3 and (_gh_token3.startswith("ghp_REPLACE") or len(_gh_token3) < 10)
+        if not _gh_token3 or _is_placeholder:
+            log.info("[GOD MODE] Foundation Step 3e: SecretIntelAgent — SKIPPED (no GitHub token configured)")
+        else:
+            log.info("[GOD MODE] Foundation Step 3e: SecretIntelAgent")
+            try:
+                from oneinfinity.agents.secret_intel import SecretIntelAgent
+                _sia = SecretIntelAgent(token=_gh_token3)
+                _intel_result = _sia.run(
+                    session.target,
+                    stop_on_critical=False,
+                    max_dorks=15,
+                    concurrency=3,
+                )
+                _intel_findings = _intel_result.get("findings", []) if isinstance(_intel_result, dict) else []
+                log.info("[GOD MODE] SecretIntelAgent: %d findings", len(_intel_findings))
+                if _intel_findings:
+                    try:
+                        import asyncio as _asyncio
+                        from oneinfinity.core.pg_client import store_recon_findings
+                        _asyncio.get_event_loop().run_until_complete(
+                            store_recon_findings(
+                                session.scan_id, session.target,
+                                "secret_intel", _intel_findings,
+                            )
                         )
-                    )
-                except Exception:
-                    pass
-                try:
-                    from oneinfinity.orchestration.event_bus import get_bus, EventType
-                    for _if in _intel_findings:
-                        if not isinstance(_if, dict):
-                            continue
-                        get_bus().publish(EventType.CREDENTIAL_ACQUIRED, {
-                            "scan_id": session.scan_id,
-                            "target": session.target,
-                            "service": "github",
-                            "secret_type": _if.get("secret_type", "unknown"),
-                            "severity": _if.get("severity", "medium"),
-                            "source": "secret_intel_agent",
-                            "repo": _if.get("repo_url", ""),
-                        }, source="secret_intel_agent")
-                except Exception:
-                    pass
-        except Exception as exc:
-            log.warning("[GOD MODE] SecretIntelAgent failed (non-fatal): %s", exc, exc_info=True)
+                    except Exception:
+                        pass
+                    try:
+                        from oneinfinity.orchestration.event_bus import get_bus, EventType
+                        for _if in _intel_findings:
+                            if not isinstance(_if, dict):
+                                continue
+                            get_bus().publish(EventType.CREDENTIAL_ACQUIRED, {
+                                "scan_id": session.scan_id,
+                                "target": session.target,
+                                "service": "github",
+                                "secret_type": _if.get("secret_type", "unknown"),
+                                "severity": _if.get("severity", "medium"),
+                                "source": "secret_intel_agent",
+                                "repo": _if.get("repo_url", ""),
+                            }, source="secret_intel_agent")
+                    except Exception:
+                        pass
+            except Exception as exc:
+                log.warning("[GOD MODE] SecretIntelAgent failed (non-fatal): %s", exc, exc_info=True)
 
         # ── Step 4: WAF detection + bypass payload pre-generation ────────
         # Runs AFTER recon so we know the tech_profile (waf field).
@@ -1055,6 +1069,14 @@ class SwarmMission(Mission):
         else:
             log.warning("[GOD MODE] SwarmMission: no recon endpoints found — agents will probe root URL only")
 
+        # Partial output file so the coordinator can flush findings after each agent;
+        # used for recovery when the 20-minute hard timeout fires.
+        _partial_file = GOD_MODE_DIR / session.scan_id / "swarm_partial.json"
+        try:
+            _partial_file.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
         # Run with a hard timeout (default 20 min) so a hung agent can't block the pipeline
         SWARM_TIMEOUT = 1200  # 20 minutes
         try:
@@ -1065,6 +1087,7 @@ class SwarmMission(Mission):
                         context=ctx,
                         concurrency=4,
                         agent_types=None,
+                        output_file=str(_partial_file),
                     ),
                     timeout=SWARM_TIMEOUT,
                 )
@@ -1072,6 +1095,19 @@ class SwarmMission(Mission):
         except _asyncio.TimeoutError:
             log.warning("[GOD MODE] SwarmMission timed out after %ds — continuing with partial results", SWARM_TIMEOUT)
             result = None
+            # Recover findings flushed to disk by the coordinator before the timeout
+            try:
+                if _partial_file.exists():
+                    _pdata = _json.loads(_partial_file.read_text())
+                    _pfds = _pdata.get("findings", [])
+                    if _pfds:
+                        log.warning(
+                            "[GOD MODE] SwarmMission timeout recovery: ingesting %d partial findings from %s",
+                            len(_pfds), _partial_file,
+                        )
+                        result = type("_PartialResult", (), {"findings": _pfds})()
+            except Exception as _pe:
+                log.debug("[GOD MODE] SwarmMission partial recovery failed: %s", _pe)
         except Exception as _exc:
             log.warning("[GOD MODE] SwarmMission run_swarm error (non-fatal): %s", _exc)
             result = None
@@ -1691,20 +1727,74 @@ class AdvancedScanMission(Mission):
     """
     Runs UnifiedAdvancedScanner as a parallel 'second opinion' mission
     alongside FullScanMission. Always-on — starts immediately with FullScan.
+
+    Deduplication: if FullScanMission's executor already wrote
+    advanced_findings.json (via _inline_advanced_scan), we ingest from that
+    file instead of re-running the 32-scanner battery (~40 min saved).
     """
 
-    def __init__(self, foundation: "FoundationMission", auth_config: dict = None) -> None:
+    def __init__(self, foundation: "FoundationMission", auth_config: dict = None,
+                 full_scan_mission: "FullScanMission" = None) -> None:
         super().__init__("advanced_scan_mission")
         self._foundation = foundation
         self._auth_config = auth_config or {}
+        self._full_scan_mission = full_scan_mission
+
+    @staticmethod
+    def _advanced_findings_exist(session: "GodModeSession") -> bool:
+        """Return True if executor already wrote a non-empty advanced_findings.json."""
+        p = GOD_MODE_DIR / session.scan_id / "full_scan" / "advanced_findings.json"
+        try:
+            if p.exists() and p.stat().st_size > 2:
+                data = json.loads(p.read_text())
+                return bool(data.get("findings") or data.get("count", 0))
+        except Exception:
+            pass
+        return False
 
     def _run(self, session: GodModeSession) -> None:
-        import asyncio as _asyncio
+        import json as _json
 
-        log.info("[GOD MODE] AdvancedScanMission: starting 17-phase scanner for %s", session.target)
+        log.info("[GOD MODE] AdvancedScanMission: starting for %s", session.target)
         out_dir = str(GOD_MODE_DIR / session.scan_id / "advanced_mission")
         Path(out_dir).mkdir(parents=True, exist_ok=True)
 
+        # Wait for FullScanMission to complete before deciding whether to re-run
+        if self._full_scan_mission is not None:
+            log.info("[GOD MODE] AdvancedScanMission: waiting for FullScanMission to complete…")
+            while not self._full_scan_mission.is_done():
+                if self._stop_event.wait(timeout=5.0):
+                    log.info("[GOD MODE] AdvancedScanMission: stop requested while waiting")
+                    self._result = {"findings": 0, "output_dir": out_dir, "skipped": "stopped"}
+                    return
+
+        # Check if executor already produced advanced_findings.json
+        if self._advanced_findings_exist(session):
+            adv_path = GOD_MODE_DIR / session.scan_id / "full_scan" / "advanced_findings.json"
+            log.info("[GOD MODE] AdvancedScanMission: executor already produced advanced_findings.json — ingesting, skip re-run")
+            new_count = 0
+            try:
+                data = _json.loads(adv_path.read_text())
+                findings = data.get("findings", [])
+                new_count = data.get("total_findings", len(findings))
+                session.add_findings(new_count)
+                if findings:
+                    from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
+                    bus = get_ingestion_engine()
+                    for f in findings:
+                        if isinstance(f, dict):
+                            bus.ingest(RawResult(scan_id=session.scan_id,
+                                                 source="god-mode-advanced-mission", raw=f))
+            except Exception as exc:
+                log.warning("[GOD MODE] AdvancedScanMission ingest from existing file failed: %s", exc)
+            session.phases_complete.append("advanced_scan_mission")
+            log.info("[GOD MODE] AdvancedScanMission complete (from executor cache) — %d findings", new_count)
+            self._result = {"findings": new_count, "output_dir": out_dir, "source": "executor_cache"}
+            return
+
+        # Full scan didn't run the advanced phase — run it now
+        import asyncio as _asyncio
+        log.info("[GOD MODE] AdvancedScanMission: running 17-phase UnifiedAdvancedScanner for %s", session.target)
         result = None
         try:
             from oneinfinity.scan.unified_advanced_scanner import UnifiedAdvancedScanner
@@ -2614,7 +2704,8 @@ class GodModeConductor:
         # ZeroHypothesisMission: polls until FullScan done
         zero_hypothesis = ZeroHypothesisMission(full_scan, foundation)
         # AdvancedScanMission: parallel cross-validation scanner (always-on)
-        advanced_scan_mission = AdvancedScanMission(foundation, auth_config=session.auth_config)
+        advanced_scan_mission = AdvancedScanMission(foundation, auth_config=session.auth_config,
+                                                    full_scan_mission=full_scan)
 
         self._missions = [m for m in [
             full_scan, advanced_scan_mission, zero_hypothesis, ai_red_team,

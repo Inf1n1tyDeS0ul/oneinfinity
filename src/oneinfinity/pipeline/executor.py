@@ -1515,24 +1515,48 @@ class CanonicalExecutor:
                         _em3 = _emp3.get("email", "")
                         if not _em3:
                             continue
-                        # k-anonymity: only SHA1 prefix leaves the host
-                        # Check a representative common password for breach correlation
-                        _breach_count = _hibp.breach_count("Password1!")
+                        # HIBP v3 API: check actual breaches for this email
+                        import os as _os_hibp
+                        import urllib.request as _ur
+                        _hibp_key = _os_hibp.environ.get("HIBP_API_KEY", "")
+                        if not _hibp_key:
+                            log.debug("auth_session HIBP: no HIBP_API_KEY set, skipping breach check for %s", _em3)
+                            continue
+                        _breach_count = 0
+                        _breach_names: list = []
+                        try:
+                            import urllib.parse as _ulp
+                            _hibp_url = f"https://haveibeenpwned.com/api/v3/breachedaccount/{_ulp.quote(_em3, safe='')}?truncateResponse=false"
+                            _req = _ur.Request(_hibp_url, headers={"hibp-api-key": _hibp_key, "User-Agent": "oneinfinity-scanner/1.0"})
+                            with _ur.urlopen(_req, timeout=8) as _resp:
+                                import json as _json_hibp
+                                _breaches = _json_hibp.loads(_resp.read())
+                                _breach_count = len(_breaches)
+                                _breach_names = [b.get("Name", "") for b in _breaches if isinstance(b, dict)]
+                        except Exception as _hibp_err:
+                            _status = getattr(getattr(_hibp_err, "code", None), "__str__", lambda: str(_hibp_err))()
+                            if hasattr(_hibp_err, "code") and _hibp_err.code == 404:
+                                _breach_count = 0  # 404 = not found in any breach
+                            else:
+                                log.debug("auth_session HIBP API call failed for %s: %s", _em3, _hibp_err)
+                                continue
                         _is_breached = _breach_count > 0
                         _breach_finding = {
-                            "vuln_type": "employee_email_exposed",
+                            "vuln_type": "employee_email_breached",
                             "severity": "high" if _is_breached else "info",
                             "url": probe_target_cred,
                             "endpoint": probe_target_cred,
                             "evidence": (
-                                f"Employee email {_em3} found via OSINT. "
-                                f"Common password 'Password1!' appears in {_breach_count} known breaches."
+                                f"Employee email {_em3} found in {_breach_count} known data breaches"
+                                + (f": {', '.join(_breach_names[:5])}" if _breach_names else "")
+                                + "."
                             ),
-                            "confidence": 0.85 if _is_breached else 0.5,
+                            "confidence": 0.90 if _is_breached else 0.5,
                             "source_type": "breach_checker",
-                            "validation_status": "confirmed" if _is_breached else "suspected",
+                            "validation_status": "confirmed" if _is_breached else "not_found",
                             "email": _em3,
                             "breach_count": _breach_count,
+                            "breach_names": _breach_names,
                         }
                         if _is_breached:
                             findings.append(_breach_finding)
@@ -1786,25 +1810,26 @@ class CanonicalExecutor:
 
     def _inline_business_logic(self, target: str, out: Path, waf: dict) -> List[dict]:
         # Seed-first: load existing attack_simulation.json if present (prior scan context).
+        findings: List[dict] = []
         sim_file = out / "attack_simulation.json"
         if sim_file.exists():
             try:
                 raw = json.loads(sim_file.read_text())
-                items = []
+                seeded: List[dict] = []
                 if isinstance(raw, list) and raw:
-                    items = raw
+                    seeded = raw
                 elif isinstance(raw, dict):
-                    items = raw.get("findings", raw.get("simulations", raw.get("attacks", [])))
-                if items:
-                    for item in items:
+                    seeded = raw.get("findings", raw.get("simulations", raw.get("attacks", [])))
+                if seeded:
+                    for item in seeded:
                         if isinstance(item, dict) and not item.get("vuln_type") and item.get("attack_type"):
                             item["vuln_type"] = item["attack_type"]
-                    log.info("business_logic inline: loaded %d seeded findings from %s", len(items), sim_file)
-                    return items
+                    log.info("business_logic inline: loaded %d seeded findings from %s", len(seeded), sim_file)
+                    findings = list(seeded)  # baseline — sub-engines extend this
             except Exception:
                 pass
 
-        findings = []
+        # findings already seeded above if sim_file existed; otherwise starts empty
         auth_headers = self._build_auth_headers()
         probe_target = target if target.startswith("http") else f"https://{target}"
 
@@ -2582,6 +2607,46 @@ class CanonicalExecutor:
             except Exception as _ece_exc:
                 log.debug("advanced_scan ExploitChainEngine failed (non-fatal): %s", _ece_exc)
 
+            # ── NetworkServiceScanner: probe infra services ────────────────
+            try:
+                from oneinfinity.scan.network_service_scanner import NetworkServiceScanner as _NSS
+                _nss = _NSS()
+                _nss_findings = _asyncio_adv.run(_nss.scan(probe_url))
+                for _nf in (_nss_findings or []):
+                    _nf.setdefault("source_type", "tool")
+                    _nf.setdefault("vuln_class", "network_service")
+                    findings.append(_nf)
+                if _nss_findings:
+                    log.info(
+                        "advanced_scan NetworkServiceScanner: %d findings for %s",
+                        len(_nss_findings), target,
+                    )
+            except ImportError:
+                log.debug("advanced_scan NetworkServiceScanner not available")
+            except Exception as _nss_exc:
+                log.debug("advanced_scan NetworkServiceScanner failed (non-fatal): %s", _nss_exc)
+
+            # ── LiveAttackSurfaceEngine: recursive surface expansion ───────
+            try:
+                from oneinfinity.scan.live_attack_surface_engine import LiveAttackSurfaceEngine as _LASE
+                _lase = _LASE([probe_url])
+                _lase_result = _asyncio_adv.run(_lase.expand_attack_surface())
+                _lase_findings = _lase_result.get("findings", [])
+                for _lf in (_lase_findings or []):
+                    if isinstance(_lf, dict):
+                        _lf.setdefault("source_type", "tool")
+                        _lf.setdefault("vuln_class", "live_attack_surface")
+                        findings.append(_lf)
+                if _lase_findings:
+                    log.info(
+                        "advanced_scan LiveAttackSurfaceEngine: %d findings, %d assets for %s",
+                        len(_lase_findings), _lase_result.get("total_assets", 0), target,
+                    )
+            except ImportError:
+                log.debug("advanced_scan LiveAttackSurfaceEngine not available")
+            except Exception as _lase_exc:
+                log.debug("advanced_scan LiveAttackSurfaceEngine failed (non-fatal): %s", _lase_exc)
+
             # Write structured output file
             (out / "advanced_findings.json").write_text(
                 json.dumps({
@@ -2624,10 +2689,37 @@ class CanonicalExecutor:
             if not _org_guess:
                 log.debug("cicd_scan: cannot derive org name from target %s — skipping", target)
                 return findings
-            # Try org-level scan — assumes _org_guess is a GitHub org or owner
-            _scanner = CICDVulnerabilityScanner(github_token=_gh_token)
-            # Use org as repo prefix — scanner normalises "owner/repo" or full URL
-            # Scanning the org itself requires iterating repos; scan the most likely top-level repo
+            # Refine org_guess via GitHub Search API when token is available
+            if _gh_token:
+                try:
+                    import urllib.request as _ur_cicd
+                    import urllib.parse as _ulp_cicd
+                    import json as _json_cicd
+                    _search_q = _ulp_cicd.quote(_host, safe="")
+                    _gh_search_url = f"https://api.github.com/search/repositories?q={_search_q}"
+                    _gh_req = _ur_cicd.Request(
+                        _gh_search_url,
+                        headers={
+                            "Authorization": f"token {_gh_token}",
+                            "Accept": "application/vnd.github+json",
+                            "User-Agent": "oneinfinity-scanner/1.0",
+                        },
+                    )
+                    with _ur_cicd.urlopen(_gh_req, timeout=8) as _gh_resp:
+                        _gh_data = _json_cicd.loads(_gh_resp.read())
+                    _gh_items = _gh_data.get("items", [])
+                    if _gh_items:
+                        _top_full_name = _gh_items[0].get("full_name", "")
+                        if "/" in _top_full_name:
+                            _api_org = _top_full_name.split("/")[0]
+                            if _api_org:
+                                log.debug("cicd_scan: GitHub API resolved org=%s for %s", _api_org, _host)
+                                _org_guess = _api_org
+                except Exception as _gh_exc:
+                    log.debug("cicd_scan: GitHub org lookup failed (%s), using DNS label '%s'", _gh_exc, _org_guess)
+            else:
+                log.debug("cicd_scan: no GITHUB_TOKEN, skipping GitHub API org lookup, using DNS label '%s'", _org_guess)
+            # _org_guess is now either API-resolved or DNS-label fallback
             _repo_guess = _org_guess  # scan_github_repo will try "<org>/<org>" pattern
             try:
                 report = _scanner.scan_github_repo(_repo_guess)
@@ -2714,13 +2806,14 @@ class CanonicalExecutor:
                 findings.append(_fd)
             if _raw_findings:
                 log.info("grpc_scan: %d findings for %s", len(_raw_findings), target)
-            (out / "grpc_findings.json").write_text(
-                json.dumps({"findings": findings, "count": len(findings)}, indent=2, default=str)
-            )
         except ImportError:
             log.debug("grpc_scan: GRPCScanner not available")
         except Exception as exc:
             log.warning("grpc_scan inline failed (non-mandatory): %s", exc)
+        finally:
+            (out / "grpc_findings.json").write_text(
+                json.dumps({"findings": findings, "count": len(findings)}, indent=2, default=str)
+            )
         return findings
 
     def _inline_browser_analysis(self, target: str, out: Path) -> List[dict]:
@@ -2754,6 +2847,28 @@ class CanonicalExecutor:
                             if isinstance(u, str) and ".js" in u]
             except Exception:
                 pass
+
+        # ── JSChunkEnumerator: discover additional JS chunks ───────────────
+        try:
+            from oneinfinity.scan.js_chunk_enumerator import JSChunkEnumerator as _JSChunkEnum
+            _parsed_tgt = target if not target.startswith("http") else target.split("://", 1)[-1].split("/")[0]
+            _scheme = "https" if probe_url.startswith("https") else "http"
+            _chunk_enum = _JSChunkEnum()
+            _new_chunks = _chunk_enum.enumerate(
+                _parsed_tgt,
+                scheme=_scheme,
+                known_urls=js_urls,
+            )
+            if _new_chunks:
+                js_urls = list(dict.fromkeys(js_urls + _new_chunks))
+                log.info(
+                    "browser_analysis JSChunkEnumerator: %d new chunk URLs for %s",
+                    len(_new_chunks), target,
+                )
+        except ImportError:
+            log.debug("browser_analysis JSChunkEnumerator not available")
+        except Exception as _jce_exc:
+            log.debug("browser_analysis JSChunkEnumerator failed (non-fatal): %s", _jce_exc)
 
         # ── Source Map Scanner ─────────────────────────────────────────────
         try:
@@ -2840,7 +2955,7 @@ class CanonicalExecutor:
             log.debug("smuggling_test engine unavailable: %s — using Python fallback", exc)
 
         # Fallback: pure-Python raw socket implementation (always runs if engine unavailable)
-        if not engine_succeeded:
+        if not engine_succeeded or not findings:
             try:
                 from oneinfinity.modules.tool_wrappers import run_smuggling_python
                 result = run_smuggling_python(probe_url, timeout=10)

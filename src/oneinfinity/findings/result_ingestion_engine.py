@@ -460,8 +460,26 @@ class ResultIngestionEngine:
             finding.url = normalized_url
 
         # 2. Check-then-store (dedup by scan_id+vuln_type+normalized_url)
+        # Falls back to a local JSONL file when PostgreSQL is unavailable.
+        stored = False
+        _pg_err: Optional[Exception] = None
         try:
             stored = self._check_and_store(finding)
+        except RuntimeError as exc:
+            _pg_err = exc
+            log.warning("ingest: PG unavailable (%s) — writing to local fallback", exc)
+            try:
+                from pathlib import Path as _Path
+                fallback_dir = _Path.home() / ".oneinfinity" / finding.scan_id
+                fallback_dir.mkdir(parents=True, exist_ok=True)
+                fallback_path = fallback_dir / "findings_fallback.jsonl"
+                with fallback_path.open("a", encoding="utf-8") as _fh:
+                    _fh.write(json.dumps(finding.to_dict()) + "\n")
+                log.info("ingest: finding written to fallback [%s]", fallback_path)
+                stored = True
+            except Exception as fb_exc:
+                log.error("ingest: fallback write failed: %s", fb_exc)
+                return None
         except Exception as exc:
             log.error("ingest: DB write failed: %s", exc)
             return None
@@ -560,6 +578,7 @@ class ResultIngestionEngine:
         for d in scan_dirs:
             if not d.is_dir():
                 continue
+            # --- unified_findings.json (JSON array / dict) ---
             for fname in ("unified_findings.json", "full_scan/unified_findings.json"):
                 fpath = d / fname
                 if not fpath.exists():
@@ -568,6 +587,27 @@ class ResultIngestionEngine:
                     data = json.loads(fpath.read_text())
                     items = data if isinstance(data, list) else data.get("findings", [])
                     for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        if target and item.get("target", "") != target:
+                            continue
+                        if severity and item.get("severity", "").lower() != severity.lower():
+                            continue
+                        results.append(item)
+                except Exception:
+                    pass
+            # --- findings_fallback.jsonl (one JSON object per line) ---
+            fallback_path = d / "findings_fallback.jsonl"
+            if fallback_path.exists():
+                try:
+                    for line in fallback_path.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            item = json.loads(line)
+                        except Exception:
+                            continue
                         if not isinstance(item, dict):
                             continue
                         if target and item.get("target", "") != target:

@@ -209,6 +209,8 @@ class TrafficCaptureEngine:
         source: Optional[str] = None,
         method: Optional[str] = None,
         status_code: Optional[int] = None,
+        status_min: Optional[int] = None,
+        status_max: Optional[int] = None,
         flagged: Optional[bool] = None,
         vuln_id: Optional[str] = None,
         attack_type: Optional[str] = None,
@@ -230,6 +232,12 @@ class TrafficCaptureEngine:
         if status_code is not None:
             clauses.append("response_status = %s")
             params.append(status_code)
+        if status_min is not None:
+            clauses.append("response_status >= %s")
+            params.append(status_min)
+        if status_max is not None:
+            clauses.append("response_status <= %s")
+            params.append(status_max)
         if flagged is not None:
             clauses.append("flagged = %s")
             params.append(flagged)

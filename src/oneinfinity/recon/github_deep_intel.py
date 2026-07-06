@@ -133,6 +133,9 @@ class DeepIntelResult:
     public_repos: int = 0
     private_repos: int = 0
 
+    # Collected secret / sensitive findings (mirrors GitHubSecretsScanner schema)
+    findings: List[Dict] = field(default_factory=list)
+
     # Metadata
     error: str = ""
     scan_duration: float = 0.0
@@ -276,7 +279,7 @@ class GitHubDeepIntel:
                     self._scan_repo_files(repo_name, hdrs, _tmp_fw, _tmp_infra, _tmp_result)
                     partial["frameworks"] = _tmp_fw
                     partial["infra"] = _tmp_infra
-                    partial["findings"].extend(_tmp_result.findings if hasattr(_tmp_result, "findings") else [])
+                    partial["findings"].extend(_tmp_result.findings)
 
                     # Contributors
                     contributors = self._fetch_json(
@@ -321,6 +324,8 @@ class GitHubDeepIntel:
                             infra.s3_buckets.update(_pi.s3_buckets)
                             infra.internal_domains.update(_pi.internal_domains)
                             infra.api_endpoints.update(_pi.api_endpoints)
+                        if partial.get("findings"):
+                            result.findings.extend(partial["findings"])
 
             # Aggregate results
             result.languages = dict(languages_counter.most_common(20))
@@ -415,14 +420,24 @@ class GitHubDeepIntel:
             for pattern, secret_type, severity in _COMPILED_ADDITIONAL:
                 matches = pattern.findall(content)
                 for match in matches:
+                    value = match if isinstance(match, str) else match[0]
                     if "s3" in secret_type:
-                        infra.s3_buckets.add(match if isinstance(match, str) else match[0])
+                        infra.s3_buckets.add(value)
                     elif "staging" in secret_type or "internal" in secret_type:
-                        infra.internal_domains.add(match if isinstance(match, str) else match[0])
+                        infra.internal_domains.add(value)
                     elif "api_endpoint" in secret_type:
-                        infra.api_endpoints.add(match if isinstance(match, str) else match[0])
+                        infra.api_endpoints.add(value)
                     elif "database" in secret_type:
-                        infra.database_hosts.add(match if isinstance(match, str) else match[0])
+                        infra.database_hosts.add(value)
+                    else:
+                        # Sensitive finding (secrets, tokens, credentials, etc.)
+                        result.findings.append({
+                            "secret_type": secret_type,
+                            "severity": severity,
+                            "value": value[:200],  # cap length
+                            "source_file": filename,
+                            "repo": repo_name,
+                        })
 
     @staticmethod
     def _extract_domain(url: str) -> str:

@@ -807,6 +807,57 @@ class UnifiedAdvancedScanner:
             len(result.dns_security_findings)
         )
 
+        # ── BaselineValidator: FP discrimination pass ─────────────────────────
+        # Runs after all scans complete, before writing output. Marks/removes FPs.
+        try:
+            _all_mutable = []
+            for _attr in [
+                "idor_findings", "race_findings", "bypass_findings",
+                "graphql_findings", "browser_findings", "smuggling_findings",
+                "business_logic_findings", "jwt_findings", "nosql_findings",
+                "ssti_findings", "deserialization_findings", "ldap_findings",
+                "saml_findings", "prototype_pollution_findings", "grpc_findings",
+                "sqli_findings", "ssrf_findings", "path_traversal_findings",
+                "cors_findings", "xxe_findings", "subdomain_takeover_findings",
+                "hpp_findings", "client_side_findings", "oauth_leak_findings",
+                "pdf_ssrf_findings", "unicode_norm_findings", "redis_injection_findings",
+                "rate_limiting_findings", "cache_poisoning_findings", "dns_rebinding_findings",
+                "mass_assignment_findings", "cache_deception_findings",
+                "h2c_findings", "http2_attack_findings", "dns_security_findings",
+            ]:
+                lst = getattr(result, _attr, [])
+                _validated = []
+                for _f in lst:
+                    _fd = _f.to_dict() if hasattr(_f, "to_dict") else _f
+                    if isinstance(_fd, dict):
+                        _fd = baseline_validator.validate_finding_enhanced(_fd)
+                        if _fd.get("validation_status") != "false_positive":
+                            _validated.append(_f)
+                    else:
+                        _validated.append(_f)
+                setattr(result, _attr, _validated)
+            log.info("BaselineValidator: FP pass complete for %s", self.target)
+        except Exception as _bv_exc:
+            log.debug("BaselineValidator pass failed (non-fatal, keeping all findings): %s", _bv_exc)
+
+        # Recalculate totals after FP pass
+        result.total_findings = sum(
+            len(getattr(result, _k, []))
+            for _k in [
+                "idor_findings", "race_findings", "bypass_findings",
+                "graphql_findings", "browser_findings", "smuggling_findings",
+                "business_logic_findings", "jwt_findings", "nosql_findings",
+                "ssti_findings", "deserialization_findings", "ldap_findings",
+                "saml_findings", "prototype_pollution_findings", "grpc_findings",
+                "sqli_findings", "ssrf_findings", "path_traversal_findings",
+                "cors_findings", "xxe_findings", "subdomain_takeover_findings",
+                "hpp_findings", "client_side_findings", "oauth_leak_findings",
+                "pdf_ssrf_findings", "unicode_norm_findings", "redis_injection_findings",
+                "rate_limiting_findings", "cache_poisoning_findings", "dns_rebinding_findings",
+                "mass_assignment_findings", "cache_deception_findings",
+                "h2c_findings", "http2_attack_findings", "dns_security_findings",
+            ]
+        )
         # NEW: Chain validation
         if enable_chain_validation:
             result.validated_chains = await self._run_chain_validation(
@@ -897,6 +948,65 @@ class UnifiedAdvancedScanner:
 
         # Generate executive summary
         result.executive_summary = self._generate_summary(result)
+
+        # ── advanced_integrations: chain suggestions + payload mutations ───────
+        try:
+            from oneinfinity.scan.advanced_integrations import (
+                integrate_chain_suggestions as _ics,
+                integrate_payload_mutation as _ipm,
+            )
+            # Flatten current findings for chain suggestion engine
+            _flat_for_chains = []
+            for _attr in [
+                "idor_findings", "race_findings", "bypass_findings",
+                "graphql_findings", "browser_findings", "smuggling_findings",
+                "business_logic_findings", "jwt_findings", "nosql_findings",
+                "ssti_findings", "deserialization_findings", "ldap_findings",
+                "saml_findings", "prototype_pollution_findings", "grpc_findings",
+                "sqli_findings", "ssrf_findings", "path_traversal_findings",
+                "cors_findings", "xxe_findings", "subdomain_takeover_findings",
+                "hpp_findings", "client_side_findings", "oauth_leak_findings",
+                "pdf_ssrf_findings", "unicode_norm_findings", "redis_injection_findings",
+                "rate_limiting_findings", "cache_poisoning_findings", "dns_rebinding_findings",
+                "mass_assignment_findings", "cache_deception_findings",
+                "h2c_findings", "http2_attack_findings", "dns_security_findings",
+            ]:
+                for _f in getattr(result, _attr, []):
+                    _flat_for_chains.append(_f.to_dict() if hasattr(_f, "to_dict") else _f)
+
+            # Chain suggestions
+            _chain_result = _ics(_flat_for_chains)
+            _chain_findings = _chain_result.get("suggestions", [])
+            if _chain_findings:
+                for _cf in _chain_findings:
+                    result.validated_chains.append({
+                        "source": "chain_suggestion",
+                        "chain_name": _cf.get("chain_name", ""),
+                        "severity": _cf.get("severity", "medium"),
+                        "confidence": _cf.get("confidence", 0.7),
+                        "missing_vuln_types": _cf.get("missing_vuln_types", []),
+                        "exploitation_impact": _cf.get("exploitation_impact", ""),
+                    })
+                log.info(
+                    "advanced_integrations: %d chain suggestions for %s",
+                    len(_chain_findings), self.target,
+                )
+
+            # Payload mutation findings
+            _mutation_result = await _ipm(self.target)
+            _mutation_findings = _mutation_result.get("mutation_findings", [])
+            if _mutation_findings:
+                for _mf in _mutation_findings:
+                    if isinstance(_mf, dict):
+                        _mf.setdefault("source_type", "mutation")
+                        _mf.setdefault("confidence", 0.65)
+                        result.validated_chains.append(_mf)
+                log.info(
+                    "advanced_integrations: %d mutation findings for %s",
+                    len(_mutation_findings), self.target,
+                )
+        except Exception as _ai_exc:
+            log.debug("advanced_integrations pass failed (non-fatal): %s", _ai_exc)
 
         # ── Phase 4: ExploitChainEngine (attack_graph_core) — Neo4j chain storage ──
         try:

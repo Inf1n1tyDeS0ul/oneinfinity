@@ -3136,11 +3136,22 @@ class BusinessLogicAgent(SwarmAgent):
         hypotheses: List[Hypothesis] = []
         endpoints  = context.get("endpoints", [target])
 
-        biz_eps = [ep for ep in endpoints if any(
-            k in ep.lower() for k in
-            ["cart", "checkout", "order", "payment", "coupon", "discount",
-             "transfer", "price", "quantity", "redeem", "vote"]
-        )]
+        biz_keywords = [
+            "cart", "checkout", "order", "payment", "coupon", "discount",
+            "transfer", "price", "quantity", "redeem", "vote", "pay",
+            "purchase", "claim", "reward", "balance", "credit", "refund",
+            "apply", "activate", "promo",
+        ]
+        biz_eps = [ep for ep in endpoints if any(k in ep.lower() for k in biz_keywords)]
+        # Fallback: if no keyword-matched endpoints found, test all POST-style API endpoints
+        if not biz_eps:
+            biz_eps = [ep for ep in endpoints if any(
+                seg in ep.lower() for seg in ["/api/", "/transfer", "/pay", "/redeem",
+                                               "/vote", "/claim", "/purchase"]
+            )]
+        # Last resort: any POST endpoint discovered in context
+        if not biz_eps:
+            biz_eps = [ep for ep in endpoints if ep != target][:15]
 
         for ep in biz_eps[:15]:
             hypotheses += [
@@ -3294,7 +3305,43 @@ class MobileSecurityAgent(SwarmAgent):
     async def generate_hypotheses(self, target, graph_nodes, context) -> List[Hypothesis]:
         apk_id = context.get("apk_id")
         if not apk_id:
-            return []
+            # Web target: generate mobile-API-focused hypotheses instead of returning empty
+            _WEB_MOBILE_CHECKS = [
+                ("mobile_api_endpoint_probe",
+                 "Mobile API paths (/api/v*/mobile/*, /m/*, /app/*) may expose unauthenticated endpoints",
+                 0.55),
+                ("mobile_device_id_header",
+                 "X-Device-ID header may bypass rate limits or unlock privileged mobile paths",
+                 0.50),
+                ("mobile_app_version_header",
+                 "X-App-Version with outdated value may access deprecated insecure API versions",
+                 0.48),
+                ("mobile_deeplink_open_redirect",
+                 "Deep-link handler may accept untrusted URLs leading to open redirect or XSS",
+                 0.45),
+                ("mobile_api_auth_bypass",
+                 "Mobile API endpoints may skip CSRF/origin checks expecting native client",
+                 0.52),
+            ]
+            _mobile_targets = [
+                ep for ep in context.get("endpoints", [target])[:10]
+                if any(seg in ep.lower() for seg in ["/api/", "/m/", "/app/", "/mobile/"])
+            ] or [target]
+            return [
+                Hypothesis(
+                    hypothesis_id = uuid.uuid4().hex[:8],
+                    agent_type    = self.agent_type,
+                    target_node   = _mt,
+                    attack_vector = av,
+                    confidence    = self.memory.rate(av, conf),
+                    payload       = av,
+                    context       = {"target": _mt, "check": av},
+                    reasoning     = reasoning,
+                    priority      = conf,
+                )
+                for _mt in _mobile_targets
+                for av, reasoning, conf in _WEB_MOBILE_CHECKS
+            ]
         return [
             Hypothesis(
                 hypothesis_id = uuid.uuid4().hex[:8],
