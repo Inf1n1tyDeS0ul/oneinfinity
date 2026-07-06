@@ -75,6 +75,7 @@ _safe_wildcard_import("oneinfinity.cli.commands.chains")
 _safe_wildcard_import("oneinfinity.cli.commands.research")
 _safe_wildcard_import("oneinfinity.cli.commands.misc")
 _safe_wildcard_import("oneinfinity.cli.commands.internal")
+_safe_wildcard_import("oneinfinity.cli.commands.council")
 
 
 # ── Argument parser (will be refactored to register() calls in a follow-up) ──
@@ -781,7 +782,8 @@ def build_parser():
         help="Multi-agent swarm intelligence scan (14 specialized agents)")
     si_scan.add_argument("target", help="Target domain or URL")
     si_scan.add_argument("--agents", nargs="+",
-        choices=["xss", "sqli", "ssrf", "idor", "auth", "business_logic", "mobile", "api",
+        choices=["xss", "sqli", "ssrf", "idor", "auth", "cors", "jwt",
+                 "business_logic", "mobile", "api",
                  "deserialization", "race_condition", "file_upload", "oauth",
                  "prototype_pollution", "clickjacking"],
         default=None, help="Agent types to deploy (default: all 14)")
@@ -912,6 +914,39 @@ def build_parser():
                     help="Name of saved login session to use")
     gm.add_argument("--no-auth", action="store_true", default=False,
                     help="Skip login detection entirely")
+
+    # ── COUNCIL ───────────────────────────────────────────────────────────────
+    council = sub.add_parser(
+        "council",
+        help="Autonomous Vulnerability Discovery Council: sensor → exploit → validate",
+    )
+    council_sub = council.add_subparsers(dest="council_subcommand", metavar="<subcommand>")
+
+    council_run = council_sub.add_parser(
+        "run",
+        help="Run council vulnerability scan against a target",
+    )
+    council_run.add_argument(
+        "--target", required=True, metavar="URL",
+        help="Target URL or domain to scan",
+    )
+    council_run.add_argument(
+        "--scan-id", dest="scan_id", default="", metavar="ID",
+        help="Reuse or label a scan session (default: auto-generated UUID)",
+    )
+    council_run.add_argument(
+        "--max-rounds", dest="max_rounds", type=int, default=3, metavar="N",
+        help="Maximum exploit refinement rounds (default: 3)",
+    )
+
+    council_status = council_sub.add_parser(
+        "status",
+        help="Show status of a previous council scan",
+    )
+    council_status.add_argument(
+        "--scan-id", dest="scan_id", required=True, metavar="ID",
+        help="Scan session ID to query",
+    )
 
     return p
 
@@ -1054,6 +1089,7 @@ def main():
         "_internal_register": _h("cmd__internal_register"),
         "_internal_deep_recon": _h("cmd__internal_deep_recon"),
         "_internal_auth_session": _h("cmd__internal_auth_session"),
+        "council":            _h("cmd_council"),
     }
 
     handler = handlers.get(args.command)

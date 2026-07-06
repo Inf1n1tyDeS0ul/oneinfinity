@@ -27,6 +27,7 @@ const MISSION_LABELS = {
   graph_risk_analyzer: 'Graph Risk',
   ai_validation:     'AI Validation',
   poc_generator:     'PoC Gen',
+  ai_council:        'AI Council',
 }
 
 const STATUS_CONFIG = {

@@ -572,6 +572,7 @@ class ResearchModeController:
                     self.target,
                     depth="quick",
                     output_dir=str(self.output_dir),
+                    auth_context=self.auth_config if self.auth_config else None,
                 ).run()
                 _seed_urls  = _recon.all_urls or None
                 _seed_hosts = _recon.alive_hosts or None
@@ -642,6 +643,7 @@ class ResearchModeController:
             tool_registry=self.tool_registry,
             rate_limit=self.rate_limit,
             oob_url=self.oob_url,
+            auth_config=self.auth_config,   # P1.1: forward auth context to enable authenticated testing
         )
 
         all_tests = []

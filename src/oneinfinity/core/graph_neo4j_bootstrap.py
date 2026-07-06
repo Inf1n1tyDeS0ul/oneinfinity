@@ -27,9 +27,8 @@ def get_neo4j_sync_backend():
 def _backfill_nodes_to_neo4j(store, backend) -> None:
     """Push any nodes already in the local store into Neo4j (one-time catch-up on startup)."""
     try:
-        # Ensure SQLite store is initialized before backfill
-        if store._sqlite._conn is None:
-            store._sqlite.initialize()
+        # initialize is a no-op for PG mode; safe to call unconditionally
+        store._sqlite.initialize()
         # Load from SQLite directly (memory not yet initialized at this point)
         all_nodes = store._sqlite.load_all_nodes()
         if not all_nodes:

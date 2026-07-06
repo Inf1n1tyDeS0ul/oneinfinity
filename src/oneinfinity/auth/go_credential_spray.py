@@ -260,6 +260,51 @@ class GoCredentialSpray:
                         "go_credential_spray: valid credential found — %s:%s @ %s",
                         finding.username, finding.password, finding.service,
                     )
+                    # Phase C: emit CREDENTIAL_ACQUIRED immediately per credential.
+                    # Fire inside the loop (not after) so scoped recon starts
+                    # without waiting for the full spray to complete.
+                    # DA2 schema: session_id ref only — no raw password on the bus.
+                    try:
+                        from oneinfinity.orchestration.event_bus import get_bus, EventType, Priority
+                        from oneinfinity.auth.session_manager import SessionManager, LoginSession
+                        import time as _time, uuid as _uuid
+                        # Build a minimal LoginSession from the credential finding
+                        _ls = LoginSession(
+                            session_id=str(_uuid.uuid4())[:12],
+                            target=target_url,
+                            login_url=login_endpoint if login_endpoint.startswith("http")
+                                      else target_url.rstrip("/") + "/" + login_endpoint.lstrip("/"),
+                            cookies=[],
+                            auth_headers={"Authorization": f"Basic {finding.username}:{finding.password}"}
+                                         if finding.service != "web" else {},
+                            local_storage={},
+                            session_storage={},
+                            indexeddb_snapshot={},
+                            har_path="",
+                            recorder="credential_spray",
+                            name=f"spray_{finding.username}_{scan_id[:8]}",
+                        )
+                        # Save BEFORE emitting — receiver resolves via session_id
+                        SessionManager().save(_ls, name=_ls.name)
+                        get_bus().publish(
+                            EventType.CREDENTIAL_ACQUIRED,
+                            {
+                                "session_id": _ls.session_id,
+                                "target": target_url,
+                                "service": finding.service or "web",
+                                "username": finding.username,
+                                "auth_tier": 1,
+                                "login_endpoint": login_endpoint,
+                                "scan_id": scan_id,
+                                "role_hint": finding.role if hasattr(finding, "role") else None,
+                                "spray_finding_id": finding.finding_id,
+                            },
+                            source="go_credential_spray",
+                            priority=Priority.HIGH,
+                        )
+                        log.info("go_credential_spray: CREDENTIAL_ACQUIRED event fired for %s", finding.username)
+                    except Exception as _evt_exc:
+                        log.warning("go_credential_spray: CREDENTIAL_ACQUIRED event failed (non-fatal): %s", _evt_exc)
         except Exception as exc:
             log.error("go_credential_spray: RPC error during Run: %s", exc)
 
@@ -277,9 +322,12 @@ class GoCredentialSpray:
         scan_id: Optional[str] = None,
         delay_ms: int = 300,
     ) -> List[CredentialFinding]:
-        """Synchronous wrapper around run() for non-async callers."""
+        """Synchronous wrapper around run() for non-async callers.
+        PE2 fix: use asyncio.run() instead of get_event_loop().run_until_complete()
+        to prevent deadlock when called from EventBus worker threads.
+        """
         import asyncio
-        return asyncio.get_event_loop().run_until_complete(
+        return asyncio.run(
             self.run(
                 target_url=target_url,
                 login_endpoint=login_endpoint,

@@ -1435,11 +1435,13 @@ async def api_health():
 
 
 @app.get("/api/auth-token", include_in_schema=False)
-async def get_auth_token():
-    """Return the session API key for local-dev only. Disabled when auth is configured."""
-    if _API_KEY:
+async def get_auth_token(request: Request):
+    """Return the session API key for local/internal requests (Vite dev proxy).
+    Restricted to 127.0.0.1 so external callers cannot harvest the key."""
+    is_local = request.client and request.client.host in ("127.0.0.1", "::1", "localhost")
+    if _API_KEY and not is_local:
         raise HTTPException(status_code=403, detail="API key must be configured externally")
-    return {"token": ""}
+    return {"token": _API_KEY}
 
 # ---------------------------------------------------------------------------
 # WI-4 + WI-6: Prometheus metrics endpoint — comprehensive observability
@@ -1993,15 +1995,26 @@ async def list_scans():
                 sid = s.get("scan_id")
                 if not sid:
                     continue
-                # Merge: PG data wins except for live phase/status from engine session
+                # Merge: PG data wins except for live in-memory state when scan is running
                 cached = SCANS.get(sid, {})
+                live_keys = ("phase", "progress", "findings_count", "log_lines")
+                # Also keep live status/error when in-memory says the scan is still running
+                if cached.get("status") == "running":
+                    live_keys = live_keys + ("status",)
+                    # Explicitly clear stale DB error so UI doesn't show old failure message
+                    s["error"] = cached.get("error") or None
                 merged = {**s, **{k: v for k, v in cached.items()
-                                  if k in ("phase", "progress") and v}}
+                                  if k in live_keys and v is not None}}
                 SCANS[sid] = merged
                 with _scan_state_lock:
                     _scan_db_refresh[sid] = now
     except Exception as exc:
         log.debug("list_scans: DB refresh failed (using cache): %s", exc)
+
+    # Sync live god-mode state for all running scans
+    for sid, entry in list(SCANS.items()):
+        if entry.get("status") == "running":
+            _sync_scan_from_session(sid)
 
     return sorted(
         (_scan_response(s) for s in SCANS.values()),
@@ -2036,10 +2049,10 @@ def _sync_scan_from_session(scan_id: str) -> None:
     except Exception:
         pass
 
-    # For god_mode scans: if in-memory status is still "running" but the on-disk state
-    # file records a terminal state, reconcile now so the UI reflects completion.
+    # For god_mode scans — sync live state from on-disk state file while running
     try:
-        if SCANS.get(scan_id, {}).get("status") != "running":
+        entry = SCANS.get(scan_id, {})
+        if entry.get("status") != "running":
             return
         _gm_file = Path.home() / ".oneinfinity" / f"god-mode-{scan_id}.json"
         if not _gm_file.exists():
@@ -2047,24 +2060,34 @@ def _sync_scan_from_session(scan_id: str) -> None:
         import json as _j, datetime as _dt
         _state = _j.loads(_gm_file.read_text())
         _terminated_by = _state.get("terminated_by") or ""
-        if not _terminated_by:
-            return  # still running on disk too — nothing to reconcile
-        _entry = SCANS[scan_id]
-        _entry["status"]        = "stopped" if _terminated_by == "stop" else "completed"
-        _entry["findings_count"] = _state.get("finding_count", 0)
-        _entry["progress"]       = 100
-        _entry["completed_at"]   = _dt.datetime.utcnow().isoformat()
-        _entry["phase"]          = (_state.get("phases_complete") or [""])[-1]
-        _entry["terminated_by"]  = _terminated_by
-        log.info("_sync_scan_from_session: reconciled god_mode scan %s → %s "
-                 "(%d findings, terminated_by=%s)",
-                 scan_id, _entry["status"], _entry["findings_count"], _terminated_by)
-        # Persist the corrected status to DB asynchronously via background thread
-        try:
-            from oneinfinity.core.db_manager import get_db_manager_sync as _get_dbm_s
-            _get_dbm_s().sync_save_scan(_entry)
-        except Exception as _dbe:
-            log.debug("_sync_scan_from_session: DB persist failed: %s", _dbe)
+        if _terminated_by:
+            # Terminal: mark completed/stopped
+            entry["status"]        = "stopped" if _terminated_by == "stop" else "completed"
+            entry["findings_count"] = _state.get("finding_count", 0)
+            entry["progress"]       = 100
+            entry["completed_at"]   = _dt.datetime.utcnow().isoformat()
+            entry["phase"]          = (_state.get("phases_complete") or [""])[-1]
+            entry["terminated_by"]  = _terminated_by
+            entry["error"]          = None
+            log.info("_sync_scan_from_session: reconciled god_mode scan %s → %s (%d findings)",
+                     scan_id, entry["status"], entry["findings_count"])
+            try:
+                from oneinfinity.core.db_manager import get_db_manager_sync as _get_dbm_s
+                _get_dbm_s().sync_save_scan(entry)
+            except Exception as _dbe:
+                log.debug("_sync_scan_from_session: DB persist failed: %s", _dbe)
+        else:
+            # Still running — sync live finding_count and phases_complete from state file
+            phases = _state.get("phases_complete") or []
+            fc = _state.get("finding_count", 0)
+            if fc:
+                entry["findings_count"] = fc
+            if phases:
+                entry["phase"] = phases[-1]
+                # Estimate progress: foundation=10, full_scan=50, swarm=70, research=85, chains=90
+                _phase_prog = {"foundation": 15, "full_scan": 50, "swarm": 70, "research": 85, "chains": 92}
+                entry["progress"] = _phase_prog.get(phases[-1], 10)
+            entry["error"] = None
     except Exception:
         pass
 
@@ -10075,3 +10098,379 @@ async def validate_findings_autonomous(body: Dict[str, Any]):
     except Exception as exc:
         raise HTTPException(400, str(exc))
 
+
+
+# ── Council API ───────────────────────────────────────────────────────────────
+
+@app.get("/api/council/{scan_id}", dependencies=[Depends(_require_auth)])
+async def get_council_run(scan_id: str):
+    """Return council run results for a scan."""
+    try:
+        from oneinfinity.core.pg_client import get_async_pool
+        pool = await get_async_pool()
+        if pool is None:
+            # Fallback: read from filesystem
+            import json as _json
+            profile_path = Path.home() / ".oneinfinity" / scan_id / "sensor" / "profile.json"
+            if profile_path.exists():
+                profile = _json.loads(profile_path.read_text())
+                return {"scan_id": scan_id, "source": "filesystem", "surface_profile": profile}
+            raise HTTPException(status_code=404, detail="Council run not found")
+        async with pool.connection() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM council_runs WHERE scan_id = %s", (scan_id,)
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="Council run not found")
+            import json as _json
+            return {
+                "scan_id": row["scan_id"],
+                "target": row["target"],
+                "surface_profile": _json.loads(row["surface_profile"] or "{}"),
+                "exploit_plan": _json.loads(row["exploit_plan"] or "{}"),
+                "exploit_trace": _json.loads(row["exploit_trace"] or "{}"),
+                "overall_success": row["overall_success"],
+                "findings_count": row["findings_count"],
+                "created_at": str(row["created_at"]),
+            }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("get_council_run error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/council/run", dependencies=[Depends(_require_auth)])
+async def run_council(body: dict):
+    """Launch an AICouncilMission for a target in a background thread."""
+    target = _validate_target(body.get("target", ""))
+    scan_id = body.get("scan_id") or str(uuid.uuid4())
+    import threading
+    def _run():
+        try:
+            from oneinfinity.orchestration.god_mode_engine import AICouncilMission, GodModeSession
+            import time as _t
+            session = GodModeSession(
+                scan_id=scan_id, target=target,
+                start_time=_t.time(), app_context="",
+            )
+            class _MinimalFoundation:
+                recon = None; app_model = None; auth_context = None
+            mission = AICouncilMission(foundation=_MinimalFoundation(), auth_config={})
+            mission.run_sync(session)
+        except Exception as exc:
+            log.warning("council background run failed: %s", exc)
+    threading.Thread(target=_run, name=f"council-{scan_id[:8]}", daemon=True).start()
+    return {"scan_id": scan_id, "target": target, "status": "started"}
+
+
+# ── Phase 10/11: Canonical scan endpoints  ────────────────────────────────────
+# POST /api/scan/god-mode — uniform interface: {target, auth_config, max_time}
+# GET  /api/scan/{id}/findings — PG findings enriched with Neo4j chain links
+# GET  /api/scan/{id}/chains  — force-graph data (nodes + links)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _GodModeCanonicalRequest(BaseModel):
+    target: str
+    auth_config: Dict[str, Any] = {}
+    max_time: int = 0
+    max_findings: int = 0
+    modules: List[str] = []
+    intensities: Dict[str, Any] = {}
+    app_context: str = ""
+
+    @field_validator("target")
+    @classmethod
+    def _validate_tgt(cls, v: str) -> str:
+        return _validate_target(v.strip())
+
+
+@app.post("/api/scan/god-mode", dependencies=[Depends(_require_auth)])
+async def scan_god_mode(req: _GodModeCanonicalRequest, background_tasks: BackgroundTasks):
+    """Canonical GOD MODE launch endpoint.
+
+    Accepts ``{target, auth_config, max_time}``; calls GodModeConductor.run()
+    in a background task and returns the new scan_id immediately.
+    ``auth_config`` may contain: session_cookie, bearer_token, auth_header.
+    """
+    auth_flat = req.auth_config or {}
+    auth_config_full = {
+        "session_cookie": str(auth_flat.get("session_cookie", "") or ""),
+        "bearer_token":   str(auth_flat.get("bearer_token",   "") or ""),
+        "auth_header":    str(auth_flat.get("auth_header",    "") or ""),
+    }
+    has_auth = any(auth_config_full.values())
+
+    modules = [str(m) for m in (req.modules or []) if m]
+    no_swarm    = ("active_testing" not in modules) if modules else False
+    no_research = ("ai_hypothesis"  not in modules) if modules else False
+
+    import threading as _threading
+    scan_id = str(uuid.uuid4())
+    _entry: dict = {
+        "id": scan_id, "target": req.target, "scan_type": "god_mode",
+        "profile": "custom" if modules else "god_mode", "status": "running",
+        "started_at": datetime.utcnow().isoformat(),
+        "completed_at": None, "progress": 0, "findings_count": 0,
+        "log_lines": [], "pid": None, "phase": "starting",
+        "modules": modules, "intensities": req.intensities,
+        "_cancel_event": _threading.Event(),
+    }
+    SCANS[scan_id] = _entry
+    try:
+        await (await get_mgr()).save_scan(_entry)
+    except Exception as _se:
+        log.debug("scan/god-mode: save_scan failed (non-fatal): %s", _se)
+
+    def _run() -> None:
+        import sys as _s, os as _o
+        _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)) + "/../..")
+        try:
+            from oneinfinity.orchestration.god_mode_engine import get_god_mode_conductor
+            conductor = get_god_mode_conductor()
+            conductor.run(
+                target=req.target,
+                background=False,
+                no_swarm=no_swarm,
+                no_research=no_research,
+                auth_config=auth_config_full if has_auth else None,
+                app_context=req.app_context,
+                _override_scan_id=scan_id,
+                max_time=req.max_time,
+                max_findings=req.max_findings,
+            )
+            state = conductor.status(scan_id)
+            if state and scan_id in SCANS:
+                tby = state.get("terminated_by") or ""
+                SCANS[scan_id]["status"]         = "stopped" if tby == "stop" else "completed"
+                SCANS[scan_id]["findings_count"] = state.get("finding_count", 0)
+                SCANS[scan_id]["completed_at"]   = datetime.utcnow().isoformat()
+                SCANS[scan_id]["progress"]       = 100
+                from oneinfinity.core.db_manager import get_db_manager_sync as _dbms
+                _dbms().sync_save_scan(SCANS[scan_id])
+        except Exception as _exc:
+            log.exception("[scan/god-mode] scan %s failed: %s", scan_id, _exc)
+            if scan_id in SCANS:
+                SCANS[scan_id]["status"]       = "failed"
+                SCANS[scan_id]["error"]        = str(_exc)
+                SCANS[scan_id]["completed_at"] = datetime.utcnow().isoformat()
+                try:
+                    from oneinfinity.core.db_manager import get_db_manager_sync as _dbms2
+                    _dbms2().sync_save_scan(SCANS[scan_id])
+                except Exception:
+                    pass
+
+    background_tasks.add_task(_run)
+    return {
+        "scan_id": scan_id,
+        "status": "started",
+        "target": req.target,
+        "authenticated": has_auth,
+        "max_time": req.max_time,
+    }
+
+
+@app.get("/api/scan/{scan_id}/findings", dependencies=[Depends(_require_auth)])
+async def get_scan_findings_with_chains(scan_id: str):
+    """Return findings for a scan from PostgreSQL, enriched with chain_id from Neo4j.
+
+    Falls back to the in-memory VULNERABILITIES cache if Postgres is unavailable.
+    Results are sorted critical → info.
+    """
+    findings: list = []
+
+    # --- Primary source: PostgreSQL via db_manager --------------------------
+    try:
+        mgr = await get_mgr()
+        db_rows = await mgr.get_findings(scan_id=scan_id)
+        if db_rows:
+            findings = [_finding_to_api(r) if not isinstance(r, dict) else r for r in db_rows]
+    except Exception as _dbe:
+        log.debug("scan/%s/findings: pg lookup failed: %s", scan_id, _dbe)
+
+    # --- Fallback: in-memory VULNERABILITIES cache --------------------------
+    if not findings:
+        findings = [v for v in VULNERABILITIES.values() if v.get("scan_id") == scan_id]
+
+    # --- Enrich with chain_id from Neo4j (best-effort) ----------------------
+    try:
+        from oneinfinity.core.neo4j_engine import get_neo4j_engine as _get_n4j
+        _n4j = _get_n4j()
+        if hasattr(_n4j, "get_finding_chains"):
+            _chain_map: dict = _n4j.get_finding_chains(scan_id)
+            for _f in findings:
+                _fid = _f.get("id") or _f.get("finding_id") or ""
+                if _fid and _fid in _chain_map and not _f.get("chain_id"):
+                    _f["chain_id"] = _chain_map[_fid]
+    except Exception:
+        pass
+
+    _sev = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    return sorted(findings, key=lambda v: _sev.get((v.get("severity") or "info").lower(), 5))
+
+
+@app.get("/api/scan/{scan_id}/chains", dependencies=[Depends(_require_auth)])
+async def get_scan_chain_graph(scan_id: str):
+    """Return exploit chain graph data (nodes + links) for react-force-graph-2d.
+
+    Combines findings from Postgres/memory with swarm chain candidates from the
+    on-disk state file produced by GodModeConductor.  Findings are grouped by
+    their chain_id into cluster nodes; unchained findings link directly to the
+    target root node.
+    """
+    import json as _j
+    from pathlib import Path as _P
+
+    nodes: list = []
+    links: list = []
+    seen:  set  = set()
+
+    _SEV_COLOR = {
+        "critical": "#ff4444", "high": "#ff8800",
+        "medium": "#ffcc00",   "low": "#44aaff", "info": "#555555",
+    }
+
+    # ── 1. Load findings ─────────────────────────────────────────────────────
+    findings: list = []
+    try:
+        mgr = await get_mgr()
+        rows = await mgr.get_findings(scan_id=scan_id)
+        if rows:
+            findings = [r if isinstance(r, dict) else _finding_to_api(r) for r in rows]
+    except Exception:
+        pass
+    if not findings:
+        findings = [v for v in VULNERABILITIES.values() if v.get("scan_id") == scan_id]
+
+    # ── 2. Load chain candidates from swarm state file ────────────────────────
+    chain_candidates: list = []
+    _state_dir = _P.home() / ".oneinfinity" / scan_id / "full_scan"
+    _swarm_file = _state_dir / "swarm_findings.json"
+    if _swarm_file.exists():
+        try:
+            _sd = _j.loads(_swarm_file.read_text())
+            chain_candidates = _sd.get("chain_candidates", [])
+        except Exception:
+            pass
+
+    # ── 3. Determine target label ─────────────────────────────────────────────
+    scan_entry = SCANS.get(scan_id) or {}
+    _state_f   = _P.home() / ".oneinfinity" / f"god-mode-{scan_id}.json"
+    _state     = {}
+    if _state_f.exists():
+        try:
+            _state = _j.loads(_state_f.read_text())
+        except Exception:
+            pass
+    target_label = (
+        scan_entry.get("target")
+        or _state.get("target")
+        or (findings[0].get("target") if findings else None)
+        or scan_id
+    )
+
+    # ── 4. Root (target) node ─────────────────────────────────────────────────
+    root_id = f"target_{scan_id}"
+    nodes.append({"id": root_id, "label": target_label[:40], "type": "target", "color": "#00d4ff", "val": 8})
+    seen.add(root_id)
+
+    # ── 5. Group findings by chain_id ─────────────────────────────────────────
+    chain_groups: dict = {}
+    unchained:    list = []
+    for _f in findings:
+        _cid = (
+            _f.get("chain_id")
+            or ((_f.get("data") or {}).get("chain_id") if isinstance(_f.get("data"), dict) else None)
+            or ""
+        )
+        if _cid:
+            chain_groups.setdefault(_cid, []).append(_f)
+        else:
+            unchained.append(_f)
+
+    _sev_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+    # ── 6. Chain cluster nodes ────────────────────────────────────────────────
+    for _cid, _cfinds in chain_groups.items():
+        _chain_nid  = f"chain_{_cid}"
+        _worst      = min(_cfinds, key=lambda x: _sev_rank.get((x.get("severity") or "info").lower(), 5))
+        _chain_sev  = (_worst.get("severity") or "medium").lower()
+        nodes.append({
+            "id":    _chain_nid,
+            "label": f"Chain {_cid[:10]}",
+            "type":  "chain",
+            "color": _SEV_COLOR.get(_chain_sev, "#888"),
+            "val":   6,
+            "data":  {"finding_count": len(_cfinds), "severity": _chain_sev},
+        })
+        seen.add(_chain_nid)
+        links.append({"source": root_id, "target": _chain_nid, "label": "contains", "color": "#444"})
+
+        _prev = _chain_nid
+        for _f in _cfinds:
+            _fid  = f"vuln_{(_f.get('id') or _f.get('finding_id') or str(uuid.uuid4())[:8])}"
+            _fsev = (_f.get("severity") or "info").lower()
+            if _fid not in seen:
+                nodes.append({
+                    "id":       _fid,
+                    "label":    (_f.get("vuln_type") or _f.get("title") or "vuln")[:24],
+                    "type":     "vulnerability",
+                    "severity": _fsev,
+                    "color":    _SEV_COLOR.get(_fsev, "#555"),
+                    "val":      4,
+                    "data":     {
+                        "url":      _f.get("url", ""),
+                        "evidence": _f.get("evidence") or (_f.get("data") or {}).get("evidence", ""),
+                    },
+                })
+                seen.add(_fid)
+            links.append({
+                "source": _prev, "target": _fid,
+                "label":  _f.get("vuln_type", ""),
+                "color":  _SEV_COLOR.get(_fsev, "#444"),
+            })
+            _prev = _fid
+
+    # ── 7. Unchained findings ─────────────────────────────────────────────────
+    for _f in unchained:
+        _fid  = f"vuln_{(_f.get('id') or _f.get('finding_id') or str(uuid.uuid4())[:8])}"
+        _fsev = (_f.get("severity") or "info").lower()
+        if _fid in seen:
+            continue
+        nodes.append({
+            "id":       _fid,
+            "label":    (_f.get("vuln_type") or _f.get("title") or "vuln")[:24],
+            "type":     "vulnerability",
+            "severity": _fsev,
+            "color":    _SEV_COLOR.get(_fsev, "#555"),
+            "val":      3,
+            "data":     {
+                "url":      _f.get("url", ""),
+                "evidence": _f.get("evidence") or ((_f.get("data") or {}).get("evidence", "")),
+            },
+        })
+        seen.add(_fid)
+        links.append({"source": root_id, "target": _fid, "label": "", "color": "#333"})
+
+    # ── 8. Swarm step nodes (chain candidates) ────────────────────────────────
+    for _i, _c in enumerate(chain_candidates[:20]):
+        _step_id = f"step_{scan_id[:6]}_{_i}"
+        if _step_id in seen:
+            continue
+        nodes.append({
+            "id":    _step_id,
+            "label": ((_c.get("action") or _c.get("step") or "step")[:20]),
+            "type":  "step",
+            "color": "#6644aa",
+            "val":   2,
+        })
+        seen.add(_step_id)
+        links.append({"source": root_id, "target": _step_id, "label": "step", "color": "#333"})
+
+    return {
+        "scan_id":       scan_id,
+        "nodes":         nodes,
+        "links":         links,
+        "finding_count": len(findings),
+        "chain_count":   len(chain_groups),
+    }

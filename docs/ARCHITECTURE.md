@@ -1622,6 +1622,78 @@ All MCP tool calls that interact with external platforms require an explicit hum
 
 ---
 
+## 22.0 Phase 0 Hardening — Council-Approved Fixes (v2.2.0)
+
+The following changes were made based on a 5-council review and are now active in all god mode runs:
+
+| Component | Change | Impact |
+|-----------|--------|--------|
+| `canonical.py` active_testing | Added `cors`, `jwt` to `--agents` swarm-scan CLI args | CORSAgent + JWTAgent now fire in pipeline mode |
+| `cli/main.py` + `cli/commands/swarm.py` | Added `cors`, `jwt` to `--agents` choices | Both agent types now reachable via CLI |
+| `GodModeConductor._setup_logging()` | Added `_TokenRedactFilter` — redacts `Bearer <token>` patterns | Bearer tokens no longer written to DEBUG log files |
+| `JWTAgent` (swarm_intelligence_engine.py) | Stripped `original_token` from hypothesis contexts; aligned 4 vuln_type strings to canonical scanner names | No raw JWT credentials in findings; dedup fingerprint collapses near-duplicates |
+| `unified_scan_engine._AGENT_TO_TOOL` | `xssstrike` → `xss_strike_agent`, `commix` → `commix_agent` | XSSStrike + Commix route correctly; no dict-key collision with existing `cmdi_agent: nuclei` |
+| `Bypass403Engine` | Added `max_requests=100` cap, `ScopeValidator` guard, `_request_count` counter in `test()` | Request budget capped; scope enforcement added; findings actually collected (`.test()` was previously uncalled) |
+| `FullScanMission._run()` | Calls `_bypass_engine.test(session.target)`, stores `BypassReport` in `waf_profile` | 403-bypass results flow into pipeline when WAF is detected |
+| `AISecurityEngine._load_wrappers()` | Added `AIRTWrapper` with guarded `try/except ImportError` import | AIR-T autonomous red-teamer registered; startup does not fail if `ai_red_teamer` absent |
+| `AIRTWrapper.run()` | Added `allow_data_exfil_objective=False` gate, `asyncio.wait_for(120s)` per objective, evidence sanitization | Data exfiltration requires explicit opt-in; hung Ollama can no longer block indefinitely; raw exfiltrated data not stored in findings |
+
+---
+
+
+## 22.1 Phases 1–5 Wiring Summary (v2.2.0)
+
+### Active Canonical Pipeline (18 phases as of v2.2.0)
+
+```
+target_registration → deep_recon → vuln_scan → advanced_scan* → active_testing
+→ auth_session → business_logic → exploit_validation → exploit_chains
+→ attack_graph → ai_theory → graphql_scan → cicd_scan* → container_scan*
+→ grpc_scan* → browser_analysis → smuggling_test → oob_check
+```
+`*` = new phases added in v2.2.0 (all non-mandatory)
+
+### Engine Wirings Added in Existing Phases
+
+| Phase | Added Engine | Condition |
+|-------|-------------|-----------|
+| `deep_recon` | `DNSSecurityScanner` | Always (async bridge via asyncio.run) |
+| `active_testing` | `CORSScanner` + `JWTVulnerabilityScanner` + `BlindXSSEngine` | Always (gathered async) |
+| `business_logic` | `LLMBusinessLogicAnalyzer` | LLM API key present (silent skip if absent) |
+| `exploit_validation` | `DifferentialScanner` | Auth headers present only (mandatory guard) |
+| `browser_analysis` | `BrowserReasoningAgent` | Always (triple fallback: Playwright→BS4→empty) |
+
+### God Mode Missions (as of v2.2.0)
+
+| Mission | Trigger | Engine |
+|---------|---------|--------|
+| `full_scan` | Always | `run_canonical_pipeline` (18 phases) |
+| `advanced_scan_mission` | Always (parallel) | `UnifiedAdvancedScanner.run_full_scan()` |
+| `zero_hypothesis` | Post-FullScan | `ZeroDayHypothesisEngine.generate()` |
+| `ai_red_team` | AI target detected OR AI endpoint event | MultiTurnChainer + RAGPoison + LLMDoS + LLMSupplyChain + AgentHijack |
+| `research` | ≥1 vuln found | `ResearchModeController` (now authenticated via P1.1) |
+| `swarm` | ≥5 endpoints | `run_swarm` (16 agents incl. cors + jwt added in P0) |
+| `auth_test` | Credential acquired | `AuthenticatedTestSuite` |
+| `chains` | findings > 0 | `ExploitChainEngine` |
+| `report` | Always | `Reporter` |
+
+### Foundation Mission Steps (as of v2.2.0)
+
+```
+Step 1: DoctorOrchestrator --quick
+Step 2: AdaptiveReconEngine --depth deep
+Step 3: ApplicationIntelligenceEngine.analyze_application_structure()
+Step 4: WAF detection + AdversarialWAFEngine bypass payload generation (6 vuln types)
+         + Bypass403Engine.test() [active if WAF detected, gated + capped]
+```
+Note: GitHub OSINT is a UI-feature with a dedicated page — not part of god mode automated scan.
+
+### Security Controls Added (v2.2.0)
+
+- `_TokenRedactFilter` on god mode file log handler — Bearer tokens redacted before disk write
+- `JWTAgent` strips `original_token` from hypothesis contexts — no raw credentials in findings
+- `Bypass403Engine.test()` has scope validation (ScopeValidator) + max_requests=100 cap
+- `AIRTWrapper.run()` gates data-exfiltration objective behind `allow_data_exfil_objective=False`
 ## 22. God Mode Architecture
 
 ### 22.1 Overview
@@ -2196,7 +2268,118 @@ Adaptive recon persists subdomains, URLs, and technologies into the findings dat
 **Vulnerability types covered:** SQLi, XSS, SSRF, LFI/RFI, XXE, SSTI, CMDi, RCE, IDOR, Auth Bypass, CORS, Open Redirect, Deserialization, JWT attacks, GraphQL injection, BOLA, Mass Assignment, Rate Limit bypass, Cloud misconfig, AI prompt injection, Jailbreak, RAG poisoning, Tool abuse, Model extraction, Data exfiltration, HTTP/2 attacks, Request Smuggling, WebSocket injection, Race Conditions, Prototype Pollution, NoSQL injection, Cache Deception, DNS Rebinding, Container Escape, Supply Chain, Web3 (14 EVM classes + Solana), Mobile M1-M10, Business Logic
 
 ---
+---
 
-*Architecture v2.0.0 — 2026-06-29*
+## 31. Auth-Tiered Surface Expansion
+
+### Overview
+
+Auth-tiered surface expansion is an event-driven feedback loop that converts each discovered credential into a new recon pass scoped to the authenticated surface. The loop runs concurrently with the credential spray rather than waiting for spray completion.
+
+### Event Flow
+
+```
+GoCredentialSpray.run()
+  │  (per valid credential, inside streaming loop)
+  ├─ builds LoginSession → saves to SessionManager
+  └─ emits CREDENTIAL_ACQUIRED {session_id, target, service, username, auth_tier, login_endpoint, scan_id}
+           │
+           ▼
+GodModeConductor._on_credential_acquired()
+  ├─ dedup guard (_spawned_auth_tiers)
+  ├─ copies tier-0 artifacts (subdomains, alive_hosts, gau URLs)
+  ├─ feeds MultiAccountIDOREngine.add_account_from_session()
+  └─ spawns _run_scoped_auth_recon() in daemon thread
+           │
+           ▼
+AdaptiveReconEngine(auth_context=AuthSessionContext)
+  ├─ HeadlessBrowserEngine: injects session into Playwright BrowserContext + requests.Session
+  ├─ SPA pushState/replaceState route interception
+  ├─ XHR response body scanning (JWT/API key patterns in JSON responses)
+  └─ emits RECON_CONFIDENCE every 30s {score, subdomains, apis, urls, authenticated}
+           │
+           ▼
+GodModeConductor._run_scoped_auth_recon()
+  ├─ computes delta URLs (new_urls = auth_urls - tier0_surface)
+  ├─ emits SURFACE_ENRICHED {target, auth_tier, new_urls, scan_id, auth_context_id, source_session_id}
+  └─ emits AUTH_TIER_UNLOCKED
+           │
+           ▼
+GodModeConductor._run_auth_test_suite()
+  ├─ runs AuthenticatedTestSuite on SURFACE_ENRICHED endpoints
+  └─ anti-retesting via _tested_endpoints {session_id → set[endpoint]}
+```
+
+### New GodModeConductor State Fields (v2.1.0)
+
+| Field | Type | Purpose |
+|---|---|---|
+| `_auth_ctx_registry` | `dict[str, AuthSessionContext]` | session_id → context, for replay and IDOR |
+| `_spawned_auth_tiers` | `set[str]` | dedup guard — prevents double-spawn per credential |
+| `_tested_endpoints` | `dict[str, set[str]]` | anti-retesting per session |
+| `_idor_engine` | `MultiAccountIDOREngine` | accumulates accounts across all credentials |
+| `_idor_accounts` | `list` | account list for cross-account IDOR |
+
+### New Event Types (event_bus.py)
+
+| EventType | Payload Fields | Emitter |
+|---|---|---|
+| `CREDENTIAL_ACQUIRED` | `session_id, target, service, username, auth_tier, login_endpoint, scan_id` | `GoCredentialSpray.run()` |
+| `SURFACE_ENRICHED` | `target, auth_tier, new_urls, scan_id, auth_context_id, source_session_id` | `GodModeConductor._run_scoped_auth_recon()` |
+| `RECON_CONFIDENCE` | `score, subdomains, apis, urls, authenticated, scan_duration_s` | `AdaptiveReconEngine.run()` |
+| `AUTH_TIER_UNLOCKED` | `auth_tier, scan_id` | `GodModeConductor._run_scoped_auth_recon()` |
+
+### Parallel Foundation (Phase D)
+
+`AdaptiveReconEngine.run()` executes phases in dependency-ordered waves using `ThreadPoolExecutor`:
+
+```
+Wave 1 (parallel):  subdomain_enum  ||  gau
+Wave 2 (sequential): http_probe          (needs wave-1 subdomains)
+Wave 3 (parallel):  katana  ||  tech_detection  ||  cloud_intel    (need alive_hosts)
+Wave 4 (parallel):  api_intelligence  ||  js_intelligence          (need _all_urls)
+Wave 5 (sequential): strategy + scoring + attack_graph             (fast, needs all above)
+```
+
+`_phase_url_discovery` reuses pre-fetched gau URLs from wave 1 to avoid double-running gau.
+
+### Validation Pipeline (Phase E)
+
+`ResultIngestionEngine.ingest()` applies a two-tier validation strategy:
+
+| Tier | Types | Mechanism | Blocking? |
+|---|---|---|---|
+| Synchronous pre-filter | xss, sqli, ssti, lfi, open_redirect, xxe | `FindingValidationEngine.validate()` called inline | Yes — confirmed FPs suppressed before storage |
+| Async fire-and-forget | ssrf, cmdi, rce, auth_bypass, idor | Background task updates status after validation | No — finding stored immediately |
+
+URL normalization: `_normalize_url_for_dedup()` strips numeric, UUID, and hex path segments before dedup hashing. `/users/123/orders/abc-def-456` → `/users/{id}/orders/{uuid}`. Fail-open: a validation exception lets the finding through to preserve true positives.
+
+---
+
+## 32. Multi-Language Architecture
+
+One&Infinity uses the best language for each job. The rule is: use Python for orchestration, ML, and AI; reach for other languages when Python's runtime model is a constraint.
+
+| Language | Role | Components |
+|---|---|---|
+| **Python** | Orchestration, ML/AI, recon logic, pipeline, event bus | All of `src/oneinfinity/`; `adaptive_recon_engine`, `god_mode_engine`, `result_ingestion_engine`, `event_bus` |
+| **Go** | Performance-critical network tools, gRPC sidecars | `go_credential_spray.py` (wraps `oi-credential-spray` gRPC sidecar), `go_ssrf_engine.py`, `go_idor_engine.py`, `go_oob_listener.py`, `go_service_cve_mapper.py` |
+| **Rust** | CPU-intensive scanners, JWT cracking, payload mutation | `rust_jwt_crack.py` (wraps Rust binary), future payload mutation engine |
+| **Nim** | Payload generation, compiled offensive binaries | `src/nim/` — 6 binaries: oi-shell-gen, oi-bypass-gen, oi-payloads, oi-post-exploit, oi-fuzzer, oi-privesc-gen |
+| **eBPF** | Kernel-level traffic capture, syscall monitoring | `mobile_ebpf_capture.py` |
+| **TypeScript** | Web frontend (React + Vite) | `web/frontend/` — 43-page React dashboard |
+| **Kotlin** | Android VPN capture companion | `android-companion/` |
+| **Swift** | iOS Network Extension companion | `ios-companion/` |
+
+### Adding a New Language Component
+
+1. Implement the binary/sidecar with its native build system.
+2. Add a thin Python wrapper in the appropriate `src/oneinfinity/` subpackage (pattern: `subprocess.run` or gRPC stub; return `list[dict]` or dataclass).
+3. Add install steps to `install.sh` under the appropriate platform guard.
+4. Add the component to the table above in this section and to Section 30 Module Summary.
+5. SHA-256 integrity verification is required for compiled binaries placed in `bin/` — update `checksums.json`.
+
+
+*Architecture v2.1.0 — 2026-06-30*
 *GitHub: https://github.com/Inf1n1tyDeS0ul/oneinfinity*
 *Contact: infosec.dev.367@gmail.com*

@@ -1,19 +1,19 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/One%26Infinity-v2.0.0-blueviolet?style=for-the-badge&logo=shield&logoColor=white" alt="Version">
+  <img src="https://img.shields.io/badge/One%26Infinity-v2.1.0-blueviolet?style=for-the-badge&logo=shield&logoColor=white" alt="Version">
 </p>
 
 <h1 align="center">⚡ One&Infinity</h1>
 
 <p align="center">
   <b>Autonomous Offensive Security Research Platform</b><br>
-  <sub>Graph-driven attack orchestration · Multi-agent exploit chaining · AI red teaming · Mobile security · Web3 · Nim payload arsenal</sub>
+  <sub>Graph-driven attack orchestration · Multi-agent exploit chaining · AI red teaming · Mobile security · Web3 · Nim payload arsenal · Auth-tiered surface expansion · Multi-language (Python · Go · Rust · Nim · eBPF · TypeScript)</sub>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/github/stars/Inf1n1tyDeS0ul/oneinfinity?style=flat-square&color=yellow" alt="Stars">
   <img src="https://img.shields.io/github/forks/Inf1n1tyDeS0ul/oneinfinity?style=flat-square&color=blue" alt="Forks">
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/Version-2.0.0-blueviolet?style=flat-square" alt="v2">
+  <img src="https://img.shields.io/badge/Version-2.1.0-blueviolet?style=flat-square" alt="v2">
   <img src="https://img.shields.io/badge/Python-3.11%2B-blue?style=flat-square&logo=python" alt="Python">
   <img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker" alt="Docker">
   <img src="https://img.shields.io/badge/Distributed-Workers-purple?style=flat-square" alt="Distributed">
@@ -104,6 +104,8 @@ That sequence runs **autonomously**. No manual pivoting. No copy-pasting between
 | Distributed scanning | ❌ | ✅ Redis-backed worker swarm, horizontally scalable |
 | Containerized deployment | Partial | ✅ Multi-stage Docker image, 15-service distributed stack |
 | MCP integration | ❌ | ✅ HackerOne MCP tools for Claude Code / Gemini CLI |
+| Auth-tiered surface expansion | ❌ | ✅ CREDENTIAL_ACQUIRED → parallel scoped recon per credential, SPA route interception, XHR secret scanning |
+| Multi-language stack | Single language | ✅ Python + Go + Rust + Nim + eBPF + TypeScript — best language per job |
 
 ---
 
@@ -392,6 +394,9 @@ oneinfinity swarm targets.txt
 - **Adaptive recon engine** — tech-stack-aware recon that skips irrelevant modules and deepens coverage on high-yield patterns
 - **OpenAPI crawler** — auto-discovers and parses OpenAPI / Swagger specs to build an endpoint inventory
 - **GitHub advanced dorking** — GitDorker-style comprehensive dork set with org-aware rate limiting and token rotation
+- **Auth-tiered recon** — each discovered credential spawns a parallel scoped recon pass; authenticated-only URLs fed directly into `AuthenticatedTestSuite`
+- **SPA route interception** — Playwright-based pushState/replaceState hook captures lazy-loaded routes never seen in static crawl
+- **XHR secret scanning** — JSON responses from XHR/fetch intercepted and scanned for JWT/API key patterns during authenticated crawl
 
 ### 🔍 Vulnerability Detection
 
@@ -670,9 +675,10 @@ oneinfinity simulate-workflow example.com --cookie "session=..." --token "Bearer
 | `auth_session_context.py` | Session context manager for all scan phases |
 | `session_manager.py` | Multi-session store with role-based labeling |
 | `session_replay.py` | Authenticated request replay with token refresh |
-| `multi_account_idor_engine.py` | Cross-account IDOR testing: victim vs attacker role matrix |
-| `go_credential_spray.py` | Go-accelerated credential spraying |
-| `authenticated_test_suite.py` | Full authenticated OWASP test suite |
+| `multi_account_idor_engine.py` | Cross-account IDOR; anonymous baseline added when only 1 credential found |
+| `go_credential_spray.py` | Go-accelerated credential spraying; emits `CREDENTIAL_ACQUIRED` per valid credential inside streaming loop |
+| `authenticated_test_suite.py` | Full authenticated OWASP test suite; dispatched automatically on `SURFACE_ENRICHED` |
+| `headless_browser_engine.py` | Auth-injected Playwright crawl; SPA route + XHR secret interception |
 
 ### 📡 Traffic Capture & Replay
 
@@ -743,12 +749,12 @@ oneinfinity god-mode logs <scan_id> --follow      # tail logs
 oneinfinity god-mode stop <scan_id>               # stop session
 ```
 
-God Mode is the full adaptive cascade — every capability runs in optimal sequence, nothing skipped:
+God Mode is the full adaptive cascade — **18 canonical phases + 4 parallel missions** — every capability runs in optimal sequence, nothing skipped:
 
-1. **Stage 1 (Foundation)** — recon, port scan, web crawl, JS extraction, secret hunt
-2. **Stage 2 (Attack Surface)** — attack graph construction, AI decision engine boot, swarm dispatch
-3. **Stage 3 (Exploitation)** — all 8 agents run in parallel with cross-agent collaboration
-4. **Stage 4 (Deep Research)** — zero-day theory generation, custom test execution, app model building
+1. **Stage 1 (Foundation)** — 5 steps: recon + wave-based parallelism, app model, WAF detection + bypass payload generation (6 vuln types), Bypass403Engine (active when WAF detected), GitHub OSINT (requires `GITHUB_TOKEN`)
+2. **Stage 2 (Pipeline)** — 18 canonical phases including `advanced_scan` (32-scanner parallel), `cicd_scan`, `container_scan`, `grpc_scan`; CORS/JWT agents active in `active_testing`; DifferentialScanner in `exploit_validation`; LLMBusinessLogicAnalyzer in `business_logic`; DNS security scanner in `deep_recon`
+3. **Stage 3 (Parallel Missions)** — `AdvancedScanMission` (parallel cross-validation), `ZeroHypothesisMission` (post-scan zero-day hypotheses), `AIRedTeamMission` (when AI target detected: MultiTurnChainer 6 strategies, RAG poisoning, LLM DoS, supply chain scan, agent hijacking); plus `SwarmMission` (16 agents) when threshold reached
+4. **Stage 4 (Research)** — authenticated `ResearchModeController` (auth_config now properly forwarded), zero-day theory generation, custom test execution
 5. **Stage 5 (Chaining)** — exploit chain detection, PoC generation, multi-finding validation
 6. **Stage 6 (Reporting)** — CVSS scoring, bug bounty report generation, bounty ROI estimate
 
@@ -814,7 +820,7 @@ oneinfinity <command> [options]
 | `browser-scan` | Headless browser-driven crawl + attack surface scan |
 | `smuggling-scan` | HTTP request smuggling (CL-TE, TE-CL, TE-TE) |
 | `parity-check` | Compare tool outputs for coverage gaps |
-| `swarm-scan` | Full swarm intelligence scan with all 8 agents |
+| `swarm-scan` | Full swarm intelligence scan with all 16 agents (sqli, xss, ssrf, idor, auth, cors, jwt, api, deserialization, race_condition, file_upload, oauth, prototype_pollution, clickjacking, business_logic, mobile) |
 
 ### Attack & Exploit
 
@@ -1336,6 +1342,10 @@ Full reference: [docs/DOCKER.md](docs/DOCKER.md)
 - [x] **Authenticated testing suite** — login recorder, session replay, multi-account IDOR (v2.0.0)
 - [x] **iOS companion app** — Network Extension + Frida integration (v2.0.0)
 - [x] **MCP integration** — HackerOne/Bugcrowd MCP tools for Claude Code / Gemini CLI (v2.0.0)
+- [x] **Auth-tiered surface expansion** — CREDENTIAL_ACQUIRED event loop, parallel scoped recon per credential, SPA route interception, XHR secret scanning (v2.1.0)
+- [x] **Parallel Foundation recon** — wave-based ThreadPoolExecutor in AdaptiveReconEngine (v2.1.0)
+- [x] **Validation pipeline** — sync pre-filter for fast vuln types, async fire-and-forget for slow types, path-template dedup normalization (v2.1.0)
+- [x] **Multi-language architecture codified** — Python, Go, Rust, Nim, eBPF, TypeScript per-job language selection (v2.1.0)
 
 ---
 

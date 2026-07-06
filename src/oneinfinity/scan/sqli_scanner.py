@@ -272,14 +272,20 @@ class SQLiScanner:
         if validator and validator(resp):
             return resp, final_payload
 
-        # Innovation: Adaptive Mutation on Block
-        if resp.status_code in (403, 406) and param_name and original_payload:
-            from oneinfinity.scan.adaptive_mutation_helper import mutate_on_block
+        # Adaptive Mutation on Block
+        # Triggers on: 403/406 (standard WAF block) OR 200 with WAF challenge body
+        # (Cloudflare returns 200+JS challenge, not 403, when it silently blocks payloads)
+        from oneinfinity.scan.adaptive_mutation_helper import mutate_on_block, is_waf_blocked
+        should_mutate = (
+            resp.status_code in (403, 406, 429, 503)
+            or (resp.status_code == 200 and is_waf_blocked(resp))
+        )
+        if should_mutate and param_name and original_payload:
             mutations = mutate_on_block(resp, original_payload, vuln_type, param_type, param_name)
-            
+
             # Base URL for GET mutations
             base_url = url.split("?")[0] if method == "GET" else url
-            
+
             for mutated in mutations:
                 try:
                     start_time = time.time()
@@ -291,8 +297,8 @@ class SQLiScanner:
                         m_data[param_name] = mutated
                         m_resp = await self.http_client.post(base_url, data=m_data)
                     m_resp.custom_elapsed = time.time() - start_time
-                    
-                    if m_resp.status_code == 200:
+
+                    if m_resp.status_code == 200 and not is_waf_blocked(m_resp):
                         if validator:
                             if validator(m_resp):
                                 return m_resp, mutated

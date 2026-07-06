@@ -333,6 +333,36 @@ def _score_response(response: str) -> Tuple[float, bool, List[str]]:
 
 # ── HTTP transport ────────────────────────────────────────────────────────────
 
+
+def _maybe_evolve_prompt(prompt: str) -> str:
+    """
+    Mutate a WAF/rate-limit blocked prompt using AdversarialPromptEvolution's
+    genetic algorithm mutation operator.  Returns the mutated text, or the
+    original if mutation is unavailable.
+    """
+    try:
+        import hashlib as _hashlib
+        from oneinfinity.ai_security.adversarial_prompt_evolution import (
+            AdversarialPromptEvolution,
+            PromptGene,
+        )
+        _gene = PromptGene(
+            prompt_id=_hashlib.sha256(prompt.encode()).hexdigest()[:16],
+            text=prompt,
+            attack_type="jailbreak",
+            source="blocked",
+            parent_ids=[],
+            generation=0,
+            mutation_type="",
+        )
+        _evo = AdversarialPromptEvolution()
+        _mutated = _evo._mutate_gene(_gene)
+        return _mutated.text
+    except Exception as _e:
+        log.debug("_maybe_evolve_prompt: %s", _e)
+        return prompt
+
+
 async def _send_turn(
     http_client,
     target_url: str,
@@ -390,6 +420,39 @@ async def _send_turn(
                 if key in data:
                     return str(data[key]), 0, latency_ms
             return json.dumps(data), 0, latency_ms
+        elif resp.status_code in (403, 429):
+            # WAF/rate-limit blocked — mutate payload via AdversarialPromptEvolution and retry once
+            _mutated_prompt = _maybe_evolve_prompt(next_prompt)
+            if _mutated_prompt and _mutated_prompt != next_prompt:
+                try:
+                    if request_template:
+                        _hist_str = json.dumps(messages[:-1])
+                        _retry_body_str = (request_template
+                                           .replace("{{PROMPT}}", _mutated_prompt)
+                                           .replace("{{HISTORY}}", _hist_str))
+                        _retry_body = json.loads(_retry_body_str)
+                    else:
+                        _retry_body = {
+                            "model": model,
+                            "messages": messages[:-1] + [{"role": "user", "content": _mutated_prompt}],
+                            "max_tokens": 512,
+                            "temperature": 0.7,
+                        }
+                    _retry_resp = await http_client.post(target_url, json=_retry_body, timeout=timeout)
+                    latency_ms = (time.monotonic() - t0) * 1000
+                    if _retry_resp.status_code == 200:
+                        _retry_data = _retry_resp.json()
+                        if "choices" in _retry_data:
+                            return (_retry_data["choices"][0]["message"]["content"],
+                                    _retry_data.get("usage", {}).get("total_tokens", 0),
+                                    latency_ms)
+                        for _key in ("response", "output", "text", "content", "message"):
+                            if _key in _retry_data:
+                                return str(_retry_data[_key]), 0, latency_ms
+                        return json.dumps(_retry_data), 0, latency_ms
+                except Exception as _re:
+                    log.debug("_send_turn WAF-evolved retry failed: %s", _re)
+            return f"HTTP {resp.status_code}: {resp.text[:200]}", 0, latency_ms
         else:
             return f"HTTP {resp.status_code}: {resp.text[:200]}", 0, latency_ms
 

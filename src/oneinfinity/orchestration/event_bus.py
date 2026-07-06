@@ -54,21 +54,38 @@ log = logging.getLogger("oneinfinity.event_bus")
 # ── Event types ───────────────────────────────────────────────────────────────
 
 class EventType(str, Enum):
-    NEW_TARGET           = "NEW_TARGET"
-    NEW_ENDPOINT         = "NEW_ENDPOINT"
-    NEW_PARAMETER        = "NEW_PARAMETER"
-    NEW_VULNERABILITY    = "NEW_VULNERABILITY"
-    NEW_GRAPH_NODE       = "NEW_GRAPH_NODE"
-    NEW_API              = "NEW_API"
-    SCAN_PROGRESS_UPDATE = "SCAN_PROGRESS_UPDATE"
-    EXPLOIT_ATTEMPTED    = "EXPLOIT_ATTEMPTED"
-    CHAIN_DETECTED       = "CHAIN_DETECTED"
-    OSINT_RESULT         = "OSINT_RESULT"
-    HYPOTHESIS_CREATED   = "HYPOTHESIS_CREATED"
-    PAYLOAD_MUTATED      = "PAYLOAD_MUTATED"
-    AGENT_STATUS         = "AGENT_STATUS"
-    WORKFLOW_DETECTED    = "WORKFLOW_DETECTED"
-    LEARNING_UPDATE      = "LEARNING_UPDATE"
+    NEW_TARGET            = "NEW_TARGET"
+    NEW_ENDPOINT          = "NEW_ENDPOINT"
+    NEW_PARAMETER         = "NEW_PARAMETER"
+    NEW_VULNERABILITY     = "NEW_VULNERABILITY"
+    NEW_GRAPH_NODE        = "NEW_GRAPH_NODE"
+    NEW_API               = "NEW_API"
+    SCAN_PROGRESS_UPDATE  = "SCAN_PROGRESS_UPDATE"
+    EXPLOIT_ATTEMPTED     = "EXPLOIT_ATTEMPTED"
+    CHAIN_DETECTED        = "CHAIN_DETECTED"
+    OSINT_RESULT          = "OSINT_RESULT"
+    HYPOTHESIS_CREATED    = "HYPOTHESIS_CREATED"
+    PAYLOAD_MUTATED       = "PAYLOAD_MUTATED"
+    AGENT_STATUS          = "AGENT_STATUS"
+    WORKFLOW_DETECTED     = "WORKFLOW_DETECTED"
+    LEARNING_UPDATE       = "LEARNING_UPDATE"
+    # ── Auth-tiered surface expansion (added: council vote unanimous) ──────
+    CREDENTIAL_ACQUIRED   = "CREDENTIAL_ACQUIRED"
+    # Payload: {session_id, target, service, username, auth_tier, login_endpoint,
+    #           scan_id, role_hint?, account_index?, spray_finding_id?}
+    # session_id: SessionManager key — receivers call SessionManager().load()
+    # WARNING: never put raw tokens/passwords in this payload — use session_id ref
+    SURFACE_ENRICHED      = "SURFACE_ENRICHED"
+    # Payload: {target, auth_tier, new_urls: list[str], scan_id,
+    #           auth_context_id: int, source_session_id: str}
+    # Emitted when auth-tiered recon discovers URLs not in tier-0 surface
+    RECON_CONFIDENCE      = "RECON_CONFIDENCE"
+    # Payload: {score: float[0-1], recommended_rate: PAUSE|BACKGROUND|ACTIVE|AGGRESSIVE,
+    #           predicted_remaining: int, confidence_band: [float, float],
+    #           reason_class: str, scan_id: str}
+    AUTH_TIER_UNLOCKED    = "AUTH_TIER_UNLOCKED"
+    # Payload: {auth_tier: int, target: str, scan_id: str, endpoints_found: int}
+    # Emitted when a new auth tier completes its scoped recon run
 
 
 class Priority(int, Enum):

@@ -195,9 +195,10 @@ class CustomTestEngine:
         output_dir: str = "",
         base_url: str = "",
         tool_registry=None,
-        rate_limit: float = 1.0,      # min seconds between requests
+        rate_limit: float = 1.0,
         timeout: int = 15,
         oob_url: str = "",
+        auth_config: dict = None,
     ):
         self.target = target
         self.output_dir = resolve_output_dir(output_dir, target)
@@ -206,7 +207,19 @@ class CustomTestEngine:
         self.rate_limit = rate_limit
         self.timeout = timeout
         self.oob_url = oob_url
+        self.auth_config: dict = auth_config or {}
         self._last_request_time: float = 0.0
+
+    def _build_auth_headers(self) -> dict:
+        """Build Authorization/Cookie headers from auth_config."""
+        h: dict = {}
+        if self.auth_config.get("bearer_token"):
+            h["Authorization"] = f"Bearer {self.auth_config['bearer_token']}"
+        elif self.auth_config.get("auth_header"):
+            h["Authorization"] = self.auth_config["auth_header"]
+        if self.auth_config.get("session_cookie"):
+            h["Cookie"] = self.auth_config["session_cookie"]
+        return h
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -1198,7 +1211,9 @@ class CustomTestEngine:
         url = self._build_url(test.endpoint, test.params)
         try:
             req = urllib.request.Request(url, method=test.method)
-            for k, v in (test.headers or {}).items():
+            # Merge auth headers (test.headers take precedence — explicit test overrides auth)
+            _merged_headers = {**self._build_auth_headers(), **(test.headers or {})}
+            for k, v in _merged_headers.items():
                 req.add_header(k, v)
             if test.body:
                 body_bytes = (

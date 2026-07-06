@@ -972,7 +972,8 @@ class ReconStrategyEngine:
 # TOOL-BACKED RECON FUNCTIONS (use ToolRegistry when available)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _run_cmd_simple(cmd: list[str], timeout: int = 60) -> str:
+def _run_cmd_simple(cmd: list[str], timeout: int = 60,
+                    extra_env: dict = None) -> str:
     """Lightweight subprocess runner (no ToolRegistry dependency)."""
     import subprocess
     import os
@@ -982,6 +983,8 @@ def _run_cmd_simple(cmd: list[str], timeout: int = 60) -> str:
         env.get("PATH", "") +
         f":{home}/go/bin:{home}/.local/bin:/usr/local/go/bin"
     )
+    if extra_env:
+        env.update(extra_env)
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout, env=env)
@@ -1020,15 +1023,19 @@ def _httpx_probe(targets: list[str], timeout: int = 60) -> list[dict]:
     return results
 
 
-def _katana_crawl(url: str, depth: int = 2, timeout: int = 60) -> list[str]:
-    """Run katana and return discovered URLs."""
+def _katana_crawl(url: str, depth: int = 2, timeout: int = 60,
+                  extra_env: dict = None) -> list[str]:
+    """Run katana and return discovered URLs.
+    extra_env: optional env vars (e.g. COOKIE, AUTH_HEADER from AuthSessionContext)
+    injected into the subprocess environment for authenticated crawling.
+    """
     if not _tool_available("katana"):
         return []
     out = _run_cmd_simple([
         "katana", "-u", url, "-d", str(depth), "-silent",
         "-jc",    # crawl JavaScript
         "-ef", "png,jpg,gif,ico,woff,css,svg",
-    ], timeout=timeout)
+    ], timeout=timeout, extra_env=extra_env)
     return [l.strip() for l in out.splitlines() if l.strip().startswith("http")]
 
 
@@ -1144,6 +1151,7 @@ class AdaptiveReconEngine:
         attack_graph=None,
         depth: str = "standard",    # quick | standard | deep
         tool_registry=None,
+        auth_context=None,          # Optional[AuthSessionContext] — Phase B
     ):
         # Strip scheme properly (lstrip strips individual chars, not substrings)
         _t = target
@@ -1156,6 +1164,7 @@ class AdaptiveReconEngine:
         self.attack_graph = attack_graph
         self.depth = depth
         self.tool_registry = tool_registry
+        self._auth_context = auth_context  # Optional[AuthSessionContext]
 
         self._tech_detector = TechDetector()
         self._api_intel = APIIntelligence()
@@ -1178,54 +1187,136 @@ class AdaptiveReconEngine:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def run(self) -> ReconIntelligence:
-        """Execute full adaptive recon pipeline. Returns ReconIntelligence."""
+        """Execute adaptive recon pipeline with parallel phases where safe.
+
+        Phase D parallelization (DA2+PE2 dependency graph):
+          Wave 0: _load_existing_recon (always first)
+          Wave 1: subdomain_enum + gau URL discovery in parallel
+                  (gau only needs self.target, not subdomains)
+          Wave 2: http_probe (needs subdomains from wave 1)
+          Wave 3: url_discovery/katana + tech_detection + cloud_intelligence in parallel
+                  (all need alive_hosts from wave 2; gau already done in wave 1)
+          Wave 4: api_intelligence + js_intelligence in parallel
+                  (both need _all_urls from wave 3 url_discovery)
+          Wave 5: strategy + attack_surface_score + attack_graph (sequential, fast)
+        """
+        from concurrent.futures import ThreadPoolExecutor, wait as _fut_wait, FIRST_EXCEPTION
         t0 = time.time()
         self.output_dir.mkdir(parents=True, exist_ok=True)
-
         _info(f"Adaptive Recon Intelligence — {self.target} [{self.depth}]")
 
-        # 1. Load existing recon data if available
+        # Wave 0: load cache
         self._load_existing_recon()
 
-        # 2. Subdomain enumeration (if not already done)
-        if not self._subdomains:
-            self._phase_subdomain_enum()
+        # Wave 1: subdomain enum + gau in parallel (gau is target-only, no subdomain dep)
+        _gau_urls: list = []
+        def _run_gau():
+            nonlocal _gau_urls
+            _gau_urls = _gau_fetch(self.target, timeout=60)
 
-        # 3. HTTP probe
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="recon-w1") as _pool:
+            _futs = []
+            if not self._subdomains:
+                _futs.append(_pool.submit(self._phase_subdomain_enum))
+            _futs.append(_pool.submit(_run_gau))
+            _fut_wait(_futs)  # wait for both before proceeding
+
+        # Wave 2: HTTP probe (needs subdomains)
         if not self._alive_hosts:
             self._phase_http_probe()
 
-        # 4. URL discovery
-        if not self._all_urls:
-            self._phase_url_discovery()
+        # Merge gau URLs into state (done here so phase_url_discovery can extend them)
+        if _gau_urls:
+            _ok(f"gau (wave-1 parallel): {len(_gau_urls)} URLs")
+        self._gau_prefetch = _gau_urls  # pass to _phase_url_discovery via instance var
 
-        # 5. Technology detection
-        self._phase_tech_detection()
+        # Wave 3: URL discovery + tech detection + cloud intel in parallel
+        # URL discovery runs katana + auth-Playwright after alive_hosts known.
+        # Tech + cloud also need alive_hosts but are independent of each other.
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="recon-w3") as _pool:
+            _futs3 = []
+            if not self._all_urls:
+                _futs3.append(_pool.submit(self._phase_url_discovery))
+            _futs3.append(_pool.submit(self._phase_tech_detection))
+            _futs3.append(_pool.submit(self._phase_cloud_intelligence))
+            _fut_wait(_futs3)
 
-        # 6. API intelligence
-        self._phase_api_intelligence()
+        # Wave 4: API intelligence + JS intelligence in parallel (both need _all_urls)
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="recon-w4") as _pool:
+            _futs4 = [_pool.submit(self._phase_api_intelligence)]
+            if self.depth in ("standard", "deep"):
+                _futs4.append(_pool.submit(self._phase_js_intelligence))
+            _fut_wait(_futs4)
 
-        # 7. JS intelligence
-        if self.depth in ("standard", "deep"):
-            self._phase_js_intelligence()
+        # Wave 4.5: GoReconBridge — instantiate and call when gRPC sidecars are available
+        try:
+            from oneinfinity.recon.go_recon_bridge import GoReconBridge
+            if GoReconBridge.is_available():
+                import asyncio as _asyncio
+                _bridge = GoReconBridge()
+                _target_url = f"https://{self.target}"
+                _grpc_urls = _asyncio.run(_bridge.crawl(_target_url, depth=3))
+                if _grpc_urls:
+                    _existing = set(self._all_urls)
+                    _new_grpc = [u for u in _grpc_urls if u not in _existing]
+                    self._all_urls.extend(_new_grpc)
+                    _ok(f"GoReconBridge: {len(_new_grpc)} new URLs (total {len(self._all_urls)})")
+                _grpc_findings = _asyncio.run(_bridge.probe(self._subdomains[:20]))
+                if _grpc_findings:
+                    _ok(f"GoReconBridge probe: {len(_grpc_findings)} findings")
+                    try:
+                        from oneinfinity.orchestration.event_bus import get_bus, EventType
+                        for _gf in _grpc_findings:
+                            get_bus().publish(EventType.NEW_ENDPOINT, {
+                                "url": _gf.get("url", ""),
+                                "source": "go_recon_bridge",
+                                "target": self.target,
+                                "evidence": _gf.get("evidence", ""),
+                            }, source="go_recon_bridge")
+                    except Exception:
+                        pass
+        except Exception as _grpc_exc:
+            _warn(f"GoReconBridge unavailable or failed: {_grpc_exc}")
 
-        # 8. Cloud asset intelligence
-        self._phase_cloud_intelligence()
+        # Wave 4.6: OpenAPI / Swagger crawler — enriches _all_urls with discovered endpoints
+        try:
+            from oneinfinity.recon.openapi_crawler import crawl_openapi
+            _api_target = f"https://{self.target}"
+            _openapi_eps = crawl_openapi(_api_target, discovered_urls=self._all_urls, timeout=8)
+            if _openapi_eps:
+                _existing_urls = set(self._all_urls)
+                _openapi_urls = [
+                    f"https://{self.target}{ep['path']}"
+                    for ep in _openapi_eps
+                    if ep.get("path") and f"https://{self.target}{ep['path']}" not in _existing_urls
+                ]
+                self._all_urls.extend(_openapi_urls)
+                # Also surface the full endpoint dicts via event bus
+                try:
+                    from oneinfinity.orchestration.event_bus import get_bus, EventType
+                    for _ep in _openapi_eps:
+                        get_bus().publish(EventType.NEW_ENDPOINT, {
+                            "path": _ep.get("path", ""),
+                            "method": _ep.get("method", ""),
+                            "auth_required": _ep.get("auth_required", False),
+                            "source": "openapi_crawler",
+                            "target": self.target,
+                        }, source="openapi_crawler")
+                except Exception:
+                    pass
+                _ok(f"OpenAPICrawler: {len(_openapi_eps)} operations → {len(_openapi_urls)} new URLs")
+        except Exception as _oa_exc:
+            _warn(f"OpenAPICrawler failed: {_oa_exc}")
 
-        # 9. Generate strategy
+        # Wave 5: strategy (sequential — needs all prior phases)
         tasks, strategy = self._strategy.generate_recon_strategy(
             self._tech_profile, self._api_map,
             self._cloud_assets, self._hidden_endpoints,
         )
-
-        # 10. Compute attack surface score
         score = self._compute_attack_surface_score(tasks)
-
-        # 11. Update attack graph
         if self.attack_graph:
             self._update_attack_graph(tasks)
 
-        # Build result
         intel = ReconIntelligence(
             target=self.target,
             scan_duration_s=round(time.time() - t0, 1),
@@ -1240,12 +1331,24 @@ class AdaptiveReconEngine:
             recon_strategy=strategy,
             attack_surface_score=score,
         )
-        # Populate flat alias fields for JSON compat
         intel.technologies = self._tech_profile.raw_tech
         intel.apis = self._api_map.base_paths
         intel.recommended_tests = [t.task_id for t in tasks]
 
-        # Save output
+        # Emit RECON_CONFIDENCE with final surface data
+        try:
+            from oneinfinity.orchestration.event_bus import get_bus, EventType
+            get_bus().publish(EventType.RECON_CONFIDENCE, {
+                "score": min(1.0, score / 10.0) if score else 0.3,
+                "subdomains": len(self._subdomains),
+                "apis": len(self._api_map.base_paths),
+                "urls": len(self._all_urls),
+                "authenticated": self._auth_context is not None,
+                "scan_duration_s": intel.scan_duration_s,
+            }, source="adaptive_recon")
+        except Exception:
+            pass
+
         out_file = self.output_dir / "adaptive_recon.json"
         out_file.write_text(intel.to_json())
         _ok(f"Intelligence saved: {out_file}")
@@ -1371,8 +1474,23 @@ class AdaptiveReconEngine:
         _info("Phase 3: URL discovery (gau + katana)...")
         all_urls: set[str] = set()
 
-        # Historical URLs
-        gau_urls = _gau_fetch(self.target, timeout=60)
+        # Build env overrides for CLI tools if auth_context available (DA2 amendment)
+        _auth_env: dict = {}
+        if self._auth_context is not None:
+            try:
+                _auth_env = self._auth_context.inject_subprocess_env({})
+                _info("Phase 3: authenticated URL discovery — injecting session into tools")
+            except Exception as _ae:
+                _warn(f"Phase 3: auth env injection failed (non-fatal): {_ae}")
+
+        # Phase D: use pre-fetched gau URLs from wave-1 parallel run if available.
+        # If run() already ran gau in wave-1, _gau_prefetch contains those results.
+        _prefetch = getattr(self, "_gau_prefetch", None)
+        if _prefetch is not None:
+            gau_urls = _prefetch
+            self._gau_prefetch = None  # consume once
+        else:
+            gau_urls = _gau_fetch(self.target, timeout=60)
         all_urls.update(gau_urls)
         if gau_urls:
             _ok(f"gau: {len(gau_urls)} URLs")
@@ -1381,10 +1499,51 @@ class AdaptiveReconEngine:
         if self._alive_hosts:
             primary = self._alive_hosts[0].get("url", f"https://{self.target}")
             crawl_depth = 3 if self.depth == "deep" else 2
-            katana_urls = _katana_crawl(primary, depth=crawl_depth, timeout=120)
+            katana_urls = _katana_crawl(primary, depth=crawl_depth, timeout=120,
+                                        extra_env=_auth_env if _auth_env else None)
             all_urls.update(katana_urls)
             if katana_urls:
                 _ok(f"katana: {len(katana_urls)} URLs")
+
+        # Phase B: authenticated Playwright crawl when auth_context is provided
+        # This discovers auth-gated endpoints, lazy-loaded SPA routes, and
+        # XHR calls made only after authentication — invisible to gau/katana.
+        if self._auth_context is not None and self._alive_hosts:
+            try:
+                from oneinfinity.scan.headless_browser_engine import HeadlessBrowserEngine
+                primary = self._alive_hosts[0].get("url", f"https://{self.target}")
+                _info(f"Phase 3: authenticated Playwright crawl for {primary}")
+                hbe = HeadlessBrowserEngine(
+                    target=primary,
+                    output_dir=str(self.output_dir),
+                    auth_context=self._auth_context,
+                )
+                # Cap at max_pages=10 for auth crawls (PE2 bounds recommendation)
+                crawl_result = hbe.crawl(primary, max_pages=10)
+                auth_urls = crawl_result.get("urls", [])
+                spa_routes = crawl_result.get("spa_routes", [])
+                auth_urls_set = set(auth_urls) | set(spa_routes)
+                new_auth_urls = auth_urls_set - all_urls  # delta vs unauthenticated
+                all_urls.update(auth_urls_set)
+                _ok(f"playwright-auth: {len(auth_urls_set)} URLs ({len(new_auth_urls)} new vs unauthenticated)")
+                # Persist auth-specific JS secrets
+                auth_secrets = crawl_result.get("js_secrets", [])
+                if auth_secrets:
+                    _warn(f"Phase 3: {len(auth_secrets)} secrets found in authenticated JS/XHR")
+                # Emit RECON_CONFIDENCE with auth surface info
+                try:
+                    from oneinfinity.orchestration.event_bus import get_bus, EventType
+                    get_bus().publish(EventType.RECON_CONFIDENCE, {
+                        "source": "adaptive_recon_auth_crawl",
+                        "target": self.target,
+                        "auth_urls_found": len(auth_urls_set),
+                        "new_vs_anon": len(new_auth_urls),
+                        "spa_routes": len(spa_routes),
+                    }, source="adaptive_recon")
+                except Exception:
+                    pass
+            except Exception as _pe:
+                _warn(f"Phase 3: authenticated Playwright crawl failed (non-fatal): {_pe}")
 
         # Pure-Python fallback: crawl when gau/katana are unavailable
         if not all_urls:
@@ -1431,25 +1590,9 @@ class AdaptiveReconEngine:
                 if name and name not in profile.raw_tech:
                     profile.raw_tech.append(name)
 
-    def _filter_urls(self, urls: list[str]) -> list[str]:
-        """Reduce recon noise by dropping common static assets and overly long URLs."""
-        if not urls:
-            return []
-        static_ext = (
-            ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp",
-            ".css", ".ico", ".woff", ".woff2", ".ttf", ".eot",
-            ".mp4", ".mp3", ".avi", ".mov", ".pdf", ".zip", ".tar", ".gz",
-        )
-        filtered = []
-        for u in urls:
-            lower = u.lower()
-            if len(u) > 300:
-                continue
-            if any(lower.split("?", 1)[0].endswith(ext) for ext in static_ext):
-                continue
-            filtered.append(u)
-        return filtered
-
+        # BUG FIX (PE2): self._tech_profile assignment was unreachable dead code
+        # (it was placed after the return statement in _filter_urls which was
+        # accidentally placed inside _phase_tech_detection's scope).
         self._tech_profile = profile
 
         if profile.raw_tech:
@@ -1460,7 +1603,6 @@ class AdaptiveReconEngine:
         # Save
         (self.output_dir / "tech_profile.json").write_text(
             json.dumps(asdict(profile), indent=2))
-
     def _phase_api_intelligence(self):
         _info("Phase 5: API surface mapping...")
         self._api_map = self._api_intel.map_api_structure(self._all_urls)

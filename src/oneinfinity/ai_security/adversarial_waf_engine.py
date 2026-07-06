@@ -199,27 +199,51 @@ class AdversarialWAFEngine:
                 break
 
             # ── WAF Simulator evaluation ──────────────────────────────────
+            # ── WAF Simulator evaluation ──────────────────────────────────
+            # Strict prompt — Claude must block known-bad payloads accurately
+            waf_rules_hint = ""
+            if "cloudflare" in (known_waf or "").lower():
+                waf_rules_hint = (
+                    "\n\nCloudflare WAF RULES (be strict — these are real Cloudflare managed rules):\n"
+                    "- BLOCK any payload containing SQL keywords: OR, AND, UNION, SELECT, INSERT, DROP, SLEEP, WAITFOR, BENCHMARK\n"
+                    "- BLOCK single/double quote characters used as injection delimiters\n"
+                    "- BLOCK comment sequences: --, #, /*, */\n"
+                    "- BLOCK hex encoding of the above\n"
+                    "- ALLOW payloads that use unusual encoding, spacing tricks, or obfuscation that breaks the above regex\n"
+                    "- ALLOW payloads using MySQL inline comments (/*!*/), tab characters, newlines as whitespace\n"
+                    "- ALLOW payloads using Unicode/overlong UTF-8 representations of quotes\n"
+                )
             defender_prompt = (
-                f"You are a {known_waf or 'generic'} WAF (Web Application Firewall) engine. "
-                f"Evaluate each of these {self.vuln_type} attack payloads and decide if you would block them. "
-                f"Consider: regex patterns, encoding detection, keyword matching, behavioral heuristics.\n\n"
+                f"You are simulating a {known_waf or 'generic'} WAF engine with its REAL production rule set. "
+                f"You MUST accurately determine which {self.vuln_type} payloads your rules would block vs which would slip through.\n"
+                f"Your job is to identify true negatives (bypasses) — payloads that LOOK safe to your regex/signature engine but are still exploitable.\n"
+                f"{waf_rules_hint}\n"
                 f"Payloads to evaluate:\n"
-                + "\n".join(f"- {p}" for p in attacker_payloads[:10])
-                + "\n\nReturn ONLY valid JSON:\n"
-                '{"verdicts": [{"payload": "<exact payload>", "blocked": true/false, "reason": "<1 sentence why>"}]}'
+                + "\n".join(f"{i+1}. {p}" for i, p in enumerate(attacker_payloads[:10]))
+                + "\n\nFor each payload: determine if your WAF BLOCKS it (true) or it BYPASSES your rules (false)."
+                "\nReturn ONLY valid JSON array:\n"
+                '{"verdicts": [{"payload": "<exact payload copied verbatim>", "blocked": true, "reason": "which rule matched"}'
+                ' OR {"payload": "<exact payload>", "blocked": false, "reason": "how it evades detection"}]}'
             )
             try:
                 resp = provider.chat(
                     defender_prompt,
-                    system="You are a WAF security system. Respond ONLY with valid JSON.",
-                    max_tokens=1500,
-                    temperature=0.1,
+                    system=(
+                        f"You are a {known_waf or 'WAF'} security engine simulator. "
+                        "Be precise and strict. Respond ONLY with valid JSON. "
+                        "The 'payload' field must copy the exact payload string from the input."
+                    ),
+                    max_tokens=2000,
+                    temperature=0.05,  # near-zero temp for deterministic WAF simulation
                 )
-                verdicts_raw = json.loads(resp.text.strip() if resp else "{}")
+                raw_text = resp.text.strip() if resp else "{}"
+                # Strip markdown fences if Claude wrapped in ```json
+                if raw_text.startswith("```"):
+                    raw_text = raw_text.split("```")[1].lstrip("json").strip()
+                verdicts_raw = json.loads(raw_text)
                 verdicts = verdicts_raw.get("verdicts", [])
             except Exception as exc:
                 log.debug("[AdversarialWAF] WAF-sim call failed: %s", exc)
-                # Assume all pass on LLM failure (conservative — test them anyway)
                 bypass_payloads.extend(attacker_payloads)
                 break
 
@@ -243,7 +267,7 @@ class AdversarialWAFEngine:
             )
 
             if not newly_blocked:
-                break  # Everything bypassed — stop evolving
+                break  # all current batch bypassed — stop evolving
 
             # ── Attacker evolution: refine blocked payloads ───────────────
             blocked_summary = "\n".join(
@@ -251,28 +275,35 @@ class AdversarialWAFEngine:
                 for b in newly_blocked[:8]
             )
             attacker_prompt = (
-                f"You are an expert penetration tester creating {self.vuln_type} payloads "
-                f"to bypass a {known_waf or 'generic'} WAF. "
-                f"The following payloads were blocked:\n{blocked_summary}\n\n"
-                "Generate 8 NEW payloads that evade these specific blocks. Use techniques like:\n"
-                "- Unicode normalization (e.g. \\u0027 for quote)\n"
-                "- Double URL encoding (%2527 for %27)\n"
-                "- Case variation (SeLeCT instead of SELECT)\n"
-                "- Null bytes (\\x00) and comment injection (/**/ between keywords)\n"
-                "- HTML entity encoding (&#39; for quote)\n"
-                "- Chunked encoding tricks and HTTP parameter pollution\n"
-                "- Alternative syntax and equivalent expressions\n\n"
+                f"You are an elite penetration tester specialising in {known_waf or 'WAF'} bypass for {self.vuln_type}.\n"
+                f"The WAF blocked these payloads:\n{blocked_summary}\n\n"
+                "Generate 10 NEW payloads that evade the EXACT blocking rules described above.\n"
+                "Required techniques (use multiple per payload):\n"
+                "- MySQL inline comments: SE/**/LECT, UN/**/ION, adm/*!50000in*/\n"
+                "- Tab/newline as whitespace: UNION%09SELECT, OR%0AAND\n"
+                "- Double URL encoding: %2527 for %, %2560 for `\n"
+                "- Unicode variants: ʼ (U+02BC), ＇ (U+FF07) for quotes\n"
+                "- Overlong UTF-8: %c0%a7 for quote, %c0%af for slash\n"
+                "- HTTP parameter pollution: param=1&param=OR+1=1\n"
+                "- Scientific notation for numbers: 1e0 instead of 1\n"
+                "- CASE mixing: sElEcT, UnIoN, oR\n"
+                "- Hex encoding of keywords: 0x53454c454354 for SELECT\n"
+                "- Nested comments and versioned comments: /*!SELECT*/\n"
+                "Avoid ALL patterns that triggered the blocks above.\n"
                 "Return ONLY valid JSON:\n"
                 '{"payloads": ["payload1", "payload2", ...]}'
             )
             try:
                 resp = provider.chat(
                     attacker_prompt,
-                    system="You are an expert offensive security researcher. Return ONLY JSON.",
-                    max_tokens=1000,
-                    temperature=0.7,
+                    system="You are an expert offensive security researcher generating WAF bypass payloads. Return ONLY JSON.",
+                    max_tokens=1500,
+                    temperature=0.8,
                 )
-                new_raw = json.loads(resp.text.strip() if resp else "{}")
+                raw_text = resp.text.strip() if resp else "{}"
+                if raw_text.startswith("```"):
+                    raw_text = raw_text.split("```")[1].lstrip("json").strip()
+                new_raw = json.loads(raw_text)
                 attacker_payloads = [
                     p for p in new_raw.get("payloads", [])
                     if p and p not in bypass_payloads and p not in existing

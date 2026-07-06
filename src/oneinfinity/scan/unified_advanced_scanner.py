@@ -435,6 +435,12 @@ class AdvancedScanResult:
     rate_limiting_findings: List[Dict] = field(default_factory=list)
     cache_poisoning_findings: List[Dict] = field(default_factory=list)
     dns_rebinding_findings: List[Dict] = field(default_factory=list)
+    # Phase 4: Additional scanner findings
+    mass_assignment_findings: List[Dict] = field(default_factory=list)
+    cache_deception_findings: List[Dict] = field(default_factory=list)
+    h2c_findings: List[Dict] = field(default_factory=list)
+    http2_attack_findings: List[Dict] = field(default_factory=list)
+    dns_security_findings: List[Dict] = field(default_factory=list)
     validated_chains: List[Dict] = field(default_factory=list)  # Findings with chain validation
     attack_chains: List[AttackChain] = field(default_factory=list)
     risk_score: float = 0.0
@@ -474,6 +480,11 @@ class AdvancedScanResult:
             'rate_limiting_findings': self.rate_limiting_findings,
             'cache_poisoning_findings': self.cache_poisoning_findings,
             'dns_rebinding_findings': self.dns_rebinding_findings,
+            'mass_assignment_findings': self.mass_assignment_findings,
+            'cache_deception_findings': self.cache_deception_findings,
+            'h2c_findings': self.h2c_findings,
+            'http2_attack_findings': self.http2_attack_findings,
+            'dns_security_findings': self.dns_security_findings,
             'validated_chains': self.validated_chains,
             'attack_chains': [c.to_dict() for c in self.attack_chains],
             'risk_score': self.risk_score,
@@ -536,6 +547,13 @@ class UnifiedAdvancedScanner:
         enable_dns_rebinding: bool = True,
         enable_chain_validation: bool = True,
         oob_domain: Optional[str] = None,
+        # Phase 4: Additional scanners
+        enable_mass_assignment: bool = True,
+        enable_cache_deception: bool = True,
+        enable_h2c: bool = True,
+        enable_http2: bool = True,
+        enable_dns_security: bool = True,
+        output_json_path: Optional[str] = None,
     ) -> AdvancedScanResult:
         """
         Run complete advanced security scan.
@@ -652,6 +670,22 @@ class UnifiedAdvancedScanner:
         if enable_dns_rebinding:
             tasks.append(self._run_dns_rebinding_testing())
 
+        # Phase 4: Additional scanners
+        if enable_mass_assignment:
+            tasks.append(self._run_mass_assignment_testing())
+
+        if enable_cache_deception:
+            tasks.append(self._run_cache_deception_testing())
+
+        if enable_h2c:
+            tasks.append(self._run_h2c_testing())
+
+        if enable_http2:
+            tasks.append(self._run_http2_testing())
+
+        if enable_dns_security:
+            tasks.append(self._run_dns_security_testing())
+
         # Execute in parallel
         results_batch = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -723,6 +757,16 @@ class UnifiedAdvancedScanner:
                 result.cache_poisoning_findings = findings
             elif module_name == 'dns_rebinding':
                 result.dns_rebinding_findings = findings
+            elif module_name == 'mass_assignment':
+                result.mass_assignment_findings = findings
+            elif module_name == 'cache_deception':
+                result.cache_deception_findings = findings
+            elif module_name == 'h2c':
+                result.h2c_findings = findings
+            elif module_name == 'http2_attack':
+                result.http2_attack_findings = findings
+            elif module_name == 'dns_security':
+                result.dns_security_findings = findings
 
         # Calculate totals
         result.total_findings = (
@@ -755,7 +799,12 @@ class UnifiedAdvancedScanner:
             len(result.redis_injection_findings) +
             len(result.rate_limiting_findings) +
             len(result.cache_poisoning_findings) +
-            len(result.dns_rebinding_findings)
+            len(result.dns_rebinding_findings) +
+            len(result.mass_assignment_findings) +
+            len(result.cache_deception_findings) +
+            len(result.h2c_findings) +
+            len(result.http2_attack_findings) +
+            len(result.dns_security_findings)
         )
 
         # NEW: Chain validation
@@ -804,6 +853,11 @@ class UnifiedAdvancedScanner:
             all_findings_flat.extend(result.cache_poisoning_findings)
             all_findings_flat.extend(result.dns_rebinding_findings)
 
+            all_findings_flat.extend(result.mass_assignment_findings)
+            all_findings_flat.extend(result.cache_deception_findings)
+            all_findings_flat.extend(result.h2c_findings)
+            all_findings_flat.extend(result.http2_attack_findings)
+            all_findings_flat.extend(result.dns_security_findings)
             integrated_detector = IntegratedChainDetector(self.target)
             integrated_chains_dicts = integrated_detector.detect_chains(all_findings_flat)
 
@@ -843,6 +897,68 @@ class UnifiedAdvancedScanner:
 
         # Generate executive summary
         result.executive_summary = self._generate_summary(result)
+
+        # ── Phase 4: ExploitChainEngine (attack_graph_core) — Neo4j chain storage ──
+        try:
+            from oneinfinity.attack_graph_core.exploit_chain_engine import (
+                ExploitChainEngine as GraphExploitChainEngine,
+            )
+            from oneinfinity.attack_graph_core.graph_engine import get_engine, NodeType
+
+            graph_engine = get_engine()
+            # Register each finding as a vulnerability node so the chain engine can match
+            for fnd in all_findings_flat:
+                vuln_type = str(fnd.get("vuln_type") or fnd.get("category") or "unknown")
+                url = str(fnd.get("url") or self.target)
+                severity = str(fnd.get("severity") or "info")
+                try:
+                    graph_engine.add_vulnerability(
+                        vuln_type=vuln_type,
+                        host=url,
+                        endpoint=url,
+                        severity=severity,
+                        source_engine="unified_advanced_scanner",
+                        properties={
+                            "evidence": str(fnd.get("evidence") or ""),
+                            "source_tool": str(fnd.get("source_tool") or "unified"),
+                        },
+                    )
+                except Exception:
+                    pass
+
+            graph_chain_engine = GraphExploitChainEngine(engine=graph_engine)
+            graph_chains = graph_chain_engine.detect_chains(target=self.target)
+            if graph_chains:
+                graph_chain_engine.add_chains_to_graph(graph_chains)
+                log.info(
+                    "attack_graph_core ExploitChainEngine: %d chains stored in graph/Neo4j",
+                    len(graph_chains),
+                )
+        except Exception as _e:
+            log.debug("attack_graph_core chain storage skipped: %s", _e)
+
+        # ── Write output JSON ─────────────────────────────────────────────────
+        if output_json_path:
+            import json as _json
+            import pathlib as _pathlib
+            try:
+                _pathlib.Path(output_json_path).parent.mkdir(parents=True, exist_ok=True)
+                with open(output_json_path, "w", encoding="utf-8") as _fh:
+                    _json.dump(
+                        {
+                            **result.to_dict(),
+                            "exploit_chains": [
+                                c.to_dict() if hasattr(c, "to_dict") else vars(c)
+                                for c in graph_chains
+                            ] if "graph_chains" in dir() else [],
+                        },
+                        _fh,
+                        indent=2,
+                        default=str,
+                    )
+                log.info("Scan results written to %s", output_json_path)
+            except Exception as _we:
+                log.warning("Failed to write output JSON: %s", _we)
 
         log.info(f"Unified scan complete: {result.total_findings} findings, "
                 f"{len(result.attack_chains)} attack chains, risk={result.risk_score:.1f}/10")
@@ -1106,23 +1222,36 @@ class UnifiedAdvancedScanner:
             return ('prototype_pollution', [])
 
     async def _run_grpc_testing(self) -> Tuple[str, List[Dict]]:
-        """Run gRPC/SOAP vulnerability testing"""
-        log.info("Running gRPC/SOAP testing...")
+        """Run gRPC vulnerability testing via grpc_scanner.py"""
+        log.info("Running gRPC testing...")
 
         try:
-            from oneinfinity.scan.enhanced_scanners import scan_grpc
+            from oneinfinity.scan.grpc_scanner import scan_grpc as _scan_grpc_native
         except ImportError:
             log.warning("gRPC scanner not available")
             return ('grpc', [])
 
         try:
-            findings = await scan_grpc(self.target)
-            log.info(f"gRPC testing complete: {len(findings)} findings")
-            return ('grpc', [f.to_dict() if hasattr(f, 'to_dict') else f for f in findings])
+            loop = asyncio.get_event_loop()
+            findings = await loop.run_in_executor(
+                None, _scan_grpc_native, self.target
+            )
+            normalized = [
+                {
+                    "vuln_type": f.vuln_type if hasattr(f, "vuln_type") else f.get("vuln_type", "grpc"),
+                    "severity": f.severity if hasattr(f, "severity") else f.get("severity", "info"),
+                    "url": f.url if hasattr(f, "url") else f.get("url", self.target),
+                    "evidence": f.evidence if hasattr(f, "evidence") else f.get("evidence", ""),
+                    "source_tool": "grpc_scanner",
+                    **(f.to_dict() if hasattr(f, "to_dict") else f if isinstance(f, dict) else {}),
+                }
+                for f in (findings or [])
+            ]
+            log.info(f"gRPC testing complete: {len(normalized)} findings")
+            return ('grpc', normalized)
         except Exception as e:
             log.error(f"gRPC testing failed: {e}")
             return ('grpc', [])
-
     # ── P0 Critical Scanner Module Runners ────────────────────────────────────
 
     async def _run_sqli_testing(self) -> Tuple[str, List[Dict]]:
@@ -1395,12 +1524,167 @@ class UnifiedAdvancedScanner:
             log.error(f"DNS rebinding testing failed: {e}")
             return ('dns_rebinding', [])
 
+
+    # ── Phase 4 Scanner Module Runners ───────────────────────────────────────
+
+    async def _run_mass_assignment_testing(self) -> Tuple[str, List[Dict]]:
+        """Run mass assignment / BOLA vulnerability testing"""
+        log.info("Running mass assignment testing...")
+
+        try:
+            from oneinfinity.scan.mass_assignment_scanner import MassAssignmentScanner
+        except ImportError:
+            log.warning("Mass assignment scanner not available")
+            return ('mass_assignment', [])
+
+        try:
+            scanner = MassAssignmentScanner()
+            findings = await scanner.scan(self.target)
+            normalized = [
+                {
+                    "vuln_type": f.get("vuln_type", "mass_assignment"),
+                    "severity": f.get("severity", "high"),
+                    "url": f.get("url", self.target),
+                    "evidence": f.get("evidence", f.get("description", "")),
+                    "source_tool": "mass_assignment_scanner",
+                    **f,
+                }
+                for f in (findings or [])
+            ]
+            log.info(f"Mass assignment testing complete: {len(normalized)} findings")
+            return ('mass_assignment', normalized)
+        except Exception as e:
+            log.error(f"Mass assignment testing failed: {e}")
+            return ('mass_assignment', [])
+
+    async def _run_cache_deception_testing(self) -> Tuple[str, List[Dict]]:
+        """Run web cache deception testing"""
+        log.info("Running cache deception testing...")
+
+        try:
+            from oneinfinity.scan.cache_deception_scanner import get_scanner as _get_cds
+        except ImportError:
+            log.warning("Cache deception scanner not available")
+            return ('cache_deception', [])
+
+        try:
+            scanner = _get_cds()
+            findings = await scanner.scan(self.target, endpoints=[])
+            await scanner.close()
+            normalized = [
+                {
+                    "vuln_type": f.vuln_type if hasattr(f, "vuln_type") else f.get("vuln_type", "cache_deception"),
+                    "severity": f.severity if hasattr(f, "severity") else f.get("severity", "high"),
+                    "url": f.url if hasattr(f, "url") else f.get("url", self.target),
+                    "evidence": f.evidence if hasattr(f, "evidence") else f.get("evidence", ""),
+                    "source_tool": "cache_deception_scanner",
+                    **(f.to_dict() if hasattr(f, "to_dict") else f if isinstance(f, dict) else {}),
+                }
+                for f in (findings or [])
+            ]
+            log.info(f"Cache deception testing complete: {len(normalized)} findings")
+            return ('cache_deception', normalized)
+        except Exception as e:
+            log.error(f"Cache deception testing failed: {e}")
+            return ('cache_deception', [])
+
+    async def _run_h2c_testing(self) -> Tuple[str, List[Dict]]:
+        """Run HTTP/2 cleartext (h2c) upgrade smuggling testing"""
+        log.info("Running H2C testing...")
+
+        try:
+            from oneinfinity.scan.h2c_scanner import scan_h2c as _scan_h2c
+        except ImportError:
+            log.warning("H2C scanner not available")
+            return ('h2c', [])
+
+        try:
+            loop = asyncio.get_event_loop()
+            findings = await loop.run_in_executor(None, _scan_h2c, self.target)
+            normalized = [
+                {
+                    "vuln_type": f.get("vuln_type", "h2c_upgrade_smuggling"),
+                    "severity": f.get("severity", "high"),
+                    "url": f.get("url", self.target),
+                    "evidence": f.get("evidence", f.get("title", "")),
+                    "source_tool": "h2c_scanner",
+                    **f,
+                }
+                for f in (findings or [])
+            ]
+            log.info(f"H2C testing complete: {len(normalized)} findings")
+            return ('h2c', normalized)
+        except Exception as e:
+            log.error(f"H2C testing failed: {e}")
+            return ('h2c', [])
+
+    async def _run_http2_testing(self) -> Tuple[str, List[Dict]]:
+        """Run HTTP/2 protocol-level attack testing"""
+        log.info("Running HTTP/2 attack testing...")
+
+        try:
+            from oneinfinity.scan.http2_attack_engine import scan_http2 as _scan_http2
+        except ImportError:
+            log.warning("HTTP/2 attack engine not available")
+            return ('http2_attack', [])
+
+        try:
+            findings = await _scan_http2(self.target)
+            normalized = [
+                {
+                    "vuln_type": f.get("vuln_type", "http2_attack"),
+                    "severity": f.get("severity", "high"),
+                    "url": f.get("url", self.target),
+                    "evidence": f.get("evidence", f.get("title", "")),
+                    "source_tool": "http2_attack_engine",
+                    **f,
+                }
+                for f in (findings or [])
+            ]
+            log.info(f"HTTP/2 attack testing complete: {len(normalized)} findings")
+            return ('http2_attack', normalized)
+        except Exception as e:
+            log.error(f"HTTP/2 attack testing failed: {e}")
+            return ('http2_attack', [])
+
+    async def _run_dns_security_testing(self) -> Tuple[str, List[Dict]]:
+        """Run DNS security scanning (DNSSEC, zone transfer, cache poisoning)"""
+        log.info("Running DNS security testing...")
+
+        try:
+            from oneinfinity.scan.dns_security_scanner import scan_dns_security as _scan_dns_security
+        except ImportError:
+            log.warning("DNS security scanner not available")
+            return ('dns_security', [])
+
+        try:
+            # Extract base domain from target URL for DNS queries
+            import urllib.parse as _urlparse
+            _parsed = _urlparse.urlparse(self.target)
+            domain = _parsed.hostname or self.target.rstrip("/")
+            findings = await _scan_dns_security(domain)
+            normalized = [
+                {
+                    "vuln_type": f.get("vuln_type", "dns_security"),
+                    "severity": f.get("severity", "medium"),
+                    "url": f.get("url", f.get("domain", self.target)),
+                    "evidence": f.get("evidence", f.get("title", "")),
+                    "source_tool": "dns_security_scanner",
+                    **f,
+                }
+                for f in (findings or [])
+            ]
+            log.info(f"DNS security testing complete: {len(normalized)} findings")
+            return ('dns_security', normalized)
+        except Exception as e:
+            log.error(f"DNS security testing failed: {e}")
+            return ('dns_security', [])
+
     async def _run_chain_validation(
         self,
         result: AdvancedScanResult,
         oob_domain: Optional[str]
     ) -> List[Dict]:
-        """Validate attack chains with exploitation tests"""
         log.info("Running chain validation...")
 
         validated = []

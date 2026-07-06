@@ -796,9 +796,9 @@ class UnifiedScanEngine:
         "lfi_agent":    "nuclei",
         "rce_agent":    "nuclei",
         "ai_agent":     "garak",
-        "cmdi_agent":   "nuclei",
-        "xssstrike":    "xssstrike",
-        "commix":       "commix",
+        "cmdi_agent":   "commix",
+        "xss_strike_agent": "xssstrike",   # DE emits 'xss_strike_agent'; routes to xssstrike
+        "commix_agent":     "commix",       # DE emits 'commix_agent'; routes to commix (cmdi_agent→nuclei kept at line 799)
     }
 
     def _phase_agent_trigger(self, session: ScanSession, ctx: dict) -> None:
@@ -1126,6 +1126,24 @@ class UnifiedScanEngine:
 
         plan: List[str] = ctx.get("agent_plan", ["nuclei"])
         findings: List[dict] = []
+
+        # ── PersistentMemory: pre-scan read — inject historically successful payloads ──
+        # Closes the write-only feedback loop: record_result() is called post-scan;
+        # get_boosted_payloads() is now called pre-scan to prepend known-good payloads.
+        _boosted: dict = {}  # vuln_type → List[str]
+        try:
+            mem = ctx.get("persistent_memory")
+            if mem is not None and hasattr(mem, "get_boosted_payloads"):
+                for _vtype in ("sqli", "xss", "ssrf", "ssti", "cmdi", "lfi", "xxe", "idor"):
+                    _bp = mem.get_boosted_payloads(_vtype, top_n=10)
+                    if _bp:
+                        _boosted[_vtype] = _bp
+                if _boosted:
+                    ctx["boosted_payloads"] = _boosted
+                    log.info("PersistentMemory boosted payloads loaded: %d vuln types, %d total",
+                             len(_boosted), sum(len(v) for v in _boosted.values()))
+        except Exception as _bp_exc:
+            log.debug("PersistentMemory.get_boosted_payloads failed (non-fatal): %s", _bp_exc)
         intel = ctx.get("recon_intel")
 
         urls: List[str] = []
@@ -1198,6 +1216,52 @@ class UnifiedScanEngine:
                     if _hint_targets and _hinted_urls:
                         log.info("[AI-Hints] %s: %d hinted URLs prioritized",
                                  tool_name, len(_hinted_urls))
+                    # ── PersistentMemory: prepend boosted payloads ────────────────
+                    # For each scanner get known-successful payloads from cross-run
+                    # memory and build probe URLs with those payloads injected as
+                    # query parameters. These probe URLs are prepended to the
+                    # ordered list so the scanner tests proven payloads first.
+                    _mem_pm = ctx.get("persistent_memory")
+                    if _mem_pm is not None:
+                        _vuln_type_map = {
+                            "dalfox": "xss",
+                            "sqlmap": "sqli",
+                            "xssstrike": "xss",
+                            "commix": "cmdi",
+                        }
+                        _pm_vtype = _vuln_type_map.get(tool_name, "")
+                        if _pm_vtype:
+                            try:
+                                _boosted = _mem_pm.get_boosted_payloads(_pm_vtype, top_n=5)
+                                if _boosted and _ordered_urls:
+                                    from urllib.parse import (
+                                        urlparse as _bup, urlunparse as _buunp,
+                                        urlencode as _buenc, parse_qs as _bpqs,
+                                        quote as _bquote,
+                                    )
+                                    _base_u = _ordered_urls[0]
+                                    _parsed_u = _bup(_base_u)
+                                    _existing_qs = _bpqs(_parsed_u.query)
+                                    _probe_urls: List[str] = []
+                                    for _bpl in _boosted:
+                                        # Inject into existing params if present, else add 'q'
+                                        if _existing_qs:
+                                            _new_qs = {k: [_bpl] for k in _existing_qs}
+                                        else:
+                                            _new_qs = {"q": [_bpl], "input": [_bpl]}
+                                        _probe_urls.append(_buunp((
+                                            _parsed_u.scheme, _parsed_u.netloc,
+                                            _parsed_u.path, _parsed_u.params,
+                                            _buenc(_new_qs, doseq=True), "",
+                                        )))
+                                    # Prepend probe URLs; keep total cap at 5
+                                    _ordered_urls = (_probe_urls + _ordered_urls)[:5]
+                                    log.debug(
+                                        "[Memory] Prepended %d boosted %s payload URLs for %s",
+                                        len(_probe_urls), _pm_vtype, tool_name,
+                                    )
+                            except Exception as _bme:
+                                log.debug("[Memory] get_boosted_payloads skipped: %s", _bme)
                     for url in _ordered_urls:
                         result = self._run_tool_safe(registry, tool_name, session.target, [url])
                         _tool_result.extend(result)
@@ -1346,6 +1410,7 @@ class UnifiedScanEngine:
                 run_deserialization_test, run_file_upload_test,
                 run_oauth_test, run_prototype_pollution_test,
                 run_mfa_bypass_test, run_rate_limit_test, run_pii_scanner,
+                run_race_condition_test,
             )
             _ext_tests = [
                 ("deserialization",       run_deserialization_test,       session.target),
@@ -1355,6 +1420,8 @@ class UnifiedScanEngine:
                 ("mfa_bypass",            run_mfa_bypass_test,            session.target),
                 ("rate_limit",            run_rate_limit_test,            session.target),
             ]
+            # Race condition: test primary target URL
+            _ext_tests.append(("race_condition", run_race_condition_test, session.target))
             # PII scan: use discovered URLs if available, else target
             _pii_urls = list(urls[:20]) if urls else [session.target]
             _ext_tests.append(("pii_scanner", run_pii_scanner, _pii_urls[0]))
@@ -1522,12 +1589,6 @@ class UnifiedScanEngine:
         elif tool_name in ("dalfox", "sqlmap", "xssstrike", "commix"):
             url = urls[0] if urls else target
             kwargs = {"url": url}
-        elif tool_name == "kxss":
-            kwargs = {"urls": urls if urls else [target]}
-        elif tool_name == "httpx":
-            kwargs = {"targets": urls if urls else [target]}
-        elif tool_name == "subfinder":
-            kwargs = {"domain": target.replace("https://", "").replace("http://", "").split("/")[0]}
         else:
             kwargs = {"target": target}
 
@@ -2243,6 +2304,36 @@ class UnifiedScanEngine:
                 session.phases["exploit_chaining"].meta["token_tests"] = 0
         except Exception as exc:
             log.debug("[TOKEN] token_execution_engine skipped (non-fatal): %s", exc)
+
+        # ── AttackGraphBuilder.suggest_chains — post attack_graph phase ────────
+        # After chain detection completes, build a fresh AttackGraph from
+        # validated findings, run BFS suggest_chains(), write suggestions to
+        # a JSON file in the scan output directory, and surface the file path
+        # via ctx["waf_profile"]["suggested_chains_file"] for downstream phases.
+        try:
+            from oneinfinity.attack_graph_core.builder import AttackGraphBuilder as _AGB
+            import json as _sc_json
+            from oneinfinity.infra.path_manager import get_target_path as _gtp
+            _sc_findings = ctx.get("validated_findings") or ctx.get("scan_findings", [])
+            if _sc_findings:
+                _sc_b = _AGB(target=session.target)
+                for _scf in _sc_findings:
+                    if isinstance(_scf, dict):
+                        _sc_b._add_finding(_scf)
+                _sc_suggestions = _sc_b.suggest_chains()
+                if _sc_suggestions:
+                    _sc_dir = _gtp(session.target, subdir="chains")
+                    _sc_dir.mkdir(parents=True, exist_ok=True)
+                    _sc_file = _sc_dir / f"suggested_chains_{session.scan_id[:8]}.json"
+                    _sc_file.write_text(_sc_json.dumps(_sc_suggestions, indent=2))
+                    ctx.setdefault("waf_profile", {})["suggested_chains_file"] = str(_sc_file)
+                    session.phases["exploit_chaining"].meta["suggested_chains"] = len(_sc_suggestions)
+                    log.info(
+                        "suggest_chains: %d chain suggestions written → %s",
+                        len(_sc_suggestions), _sc_file,
+                    )
+        except Exception as _sc_exc:
+            log.debug("suggest_chains skipped (non-fatal): %s", _sc_exc)
 
     def _phase_result_ingest(self, session: ScanSession, ctx: dict) -> None:
         """Push all findings into the result ingestion layer with integrity checks."""

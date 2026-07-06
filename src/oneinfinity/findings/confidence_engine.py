@@ -216,6 +216,9 @@ class ConfidenceEngine:
             updated.append(f)
         return updated
 
+    # Alias used by GodModeConductor and other callers
+    score_all = score_findings
+
     def summary(self, findings: List[dict]) -> Dict[str, Any]:
         """Return a high-level confidence summary."""
         scored = self.score_findings(findings)

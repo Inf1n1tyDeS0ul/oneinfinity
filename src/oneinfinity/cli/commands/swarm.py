@@ -420,7 +420,8 @@ def register(subparsers):
         help="Multi-agent swarm intelligence scan (14 specialized agents)")
     si_scan.add_argument("target", help="Target domain or URL")
     si_scan.add_argument("--agents", nargs="+",
-        choices=["xss", "sqli", "ssrf", "idor", "auth", "business_logic", "mobile", "api",
+        choices=["xss", "sqli", "ssrf", "idor", "auth", "cors", "jwt",
+                 "business_logic", "mobile", "api",
                  "deserialization", "race_condition", "file_upload", "oauth",
                  "prototype_pollution", "clickjacking"],
         default=None, help="Agent types to deploy (default: all 14)")

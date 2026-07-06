@@ -794,6 +794,17 @@ class AttackPathPlanner:
         }
 
 
+    def plan(self, findings: list, target: str, recon_data: Optional[dict] = None,
+             max_paths: int = 10) -> list:
+        """
+        Convenience: build_graph → find_paths → return ranked AttackPath objects.
+        Called by the executor after exploit_chains to score and rank attack paths.
+        Returns a list of AttackPath ordered by total_score descending.
+        """
+        nodes, edges = self.build_graph(findings, recon_data=recon_data)
+        return self.find_paths(nodes, edges, max_paths=max_paths)
+
+
 # ---------------------------------------------------------------------------
 # Global singleton
 # ---------------------------------------------------------------------------

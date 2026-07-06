@@ -473,3 +473,54 @@ def on_status_change(finding: dict, new_status: str) -> None:
     elif new_status == "false_positive":
         threading.Thread(target=_neo4j_mark_false_positive, args=(finding,), daemon=True).start()
         threading.Thread(target=_write_ground_truth,         args=(finding, False), daemon=True).start()
+
+# ── ConfirmationCoordinator ────────────────────────────────────────────────────
+
+class ConfirmationCoordinator:
+    """
+    Batch coordinator: receives a list of findings, determines each one's
+    confirmation status, and dispatches all 6 post-confirmation pipeline
+    actions for every confirmed finding:
+
+      1. Nuclei template generation (_generate_nuclei_template)
+      2. Neo4j confidence boost (_neo4j_boost_confirmed)
+      3. Re-test scheduling      (schedule_retest)
+      4. Severity upgrade        (via on_status_change which calls confidence engine)
+      5. Notifications           (ground-truth write → learning KB)
+      6. Exploit mapping         (_trigger_lateral_cve_chain where applicable)
+    """
+
+    def process(self, findings: list) -> int:
+        """
+        Process a batch of findings.  For each finding whose status is
+        'confirmed', 'validated', or confidence >= 0.85, fire all 6 actions.
+
+        Returns the number of findings that were confirmed and processed.
+        """
+        confirmed_count = 0
+        for finding in findings or []:
+            if not isinstance(finding, dict):
+                continue
+            status     = str(finding.get("status",            "")).lower()
+            val_status = str(finding.get("validation_status", "")).lower()
+            try:
+                confidence = float(finding.get("confidence") or 0.0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+
+            if status in ("confirmed", "validated") or val_status == "confirmed" or confidence >= 0.85:
+                # Dispatch all 6 pipeline actions via on_status_change
+                on_status_change(finding, "confirmed")
+                # schedule_retest is action 3 — also invoke directly so it
+                # is always queued even for high-confidence unvalidated findings
+                try:
+                    schedule_retest(finding)
+                except Exception:
+                    pass
+                confirmed_count += 1
+            elif status == "false_positive" or val_status == "rejected":
+                on_status_change(finding, "false_positive")
+
+        if confirmed_count:
+            log.info("[ConfirmationCoordinator] Processed %d confirmed findings", confirmed_count)
+        return confirmed_count

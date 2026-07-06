@@ -7,9 +7,9 @@ const api = axios.create({ baseURL: '/api', timeout: 15000 })
 const _fetchKey = axios.get('/api/auth-token').then(r => {
   api.defaults.headers.common['X-API-Key'] = r.data.token
 }).catch(() => {
-  // If ONEINFINITY_API_KEY is set in the environment, the user can also set it
-  // in sessionStorage as a fallback.
+  // Fallback: check sessionStorage then localStorage (SystemControl saves to localStorage)
   const stored = sessionStorage.getItem('oneinfinity_api_key')
+              || localStorage.getItem('oneinfinity_api_key')
   if (stored) {
     api.defaults.headers.common['X-API-Key'] = stored
   }
@@ -380,4 +380,12 @@ export const endpoints = {
   payloadMutation:     (data) => api.post('/scan/payload-mutation', data),
   zeroDayDetection:    (data) => api.post('/scan/zero-day-detection', data),
   validateFindings:    (data) => api.post('/scan/validate-findings', data),
+
+  // Scan endpoints (singular /scan/* — god-mode, per-scan findings & chains)
+  scanGodMode:     (data) => api.post('/scan/god-mode', data),
+  scanFindings:    (id) => api.get(`/scan/${id}/findings`),
+  scanChains:      (id) => api.get(`/scan/${id}/chains`),
+
+  // AI Council
+  councilGet:          (scanId) => api.get(`/council/${scanId}`),
 }

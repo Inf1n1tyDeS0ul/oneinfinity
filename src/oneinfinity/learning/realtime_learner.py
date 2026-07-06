@@ -452,6 +452,17 @@ class RealtimeLearner:
             self.scan_count, scan_id, finding_count, self.adaptation_count, self.pattern_count,
         )
 
+    def start(self) -> "RealtimeLearner":
+        """
+        Activate the learner — ensures event subscriptions are live.
+        Called by GodModeConductor at conductor startup (before stage 2).
+        Returns self for chaining.
+        """
+        # Re-subscribe in case the event bus was replaced after __init__
+        self._subscribe_to_events()
+        log.info("RealtimeLearner.start() called — event subscriptions live")
+        return self
+
 
 # ── Singleton ─────────────────────────────────────────────────────────────────
 

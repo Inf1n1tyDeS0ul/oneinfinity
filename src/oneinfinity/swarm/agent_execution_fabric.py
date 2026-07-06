@@ -578,17 +578,26 @@ class AISecurityAgent(GraphAgent):
         findings = []
 
         try:
-            from oneinfinity.ai.ai_security_engine import AISecurityEngine
-            engine  = AISecurityEngine()
-            results = engine.scan_endpoint(task.node_label, context=task.context)
-            for r in (results or []):
-                if isinstance(r, dict):
+            import asyncio as _asyncio
+            from oneinfinity.ai.ai_security_engine import AISecurityEngine, AISecurityScanConfig
+            engine = AISecurityEngine()
+            config = AISecurityScanConfig(
+                target=task.node_label,
+                tools=["garak"],
+                endpoint_path=task.context.get("endpoint_path", "/v1/chat/completions"),
+                auth_header=task.context.get("auth_header", ""),
+                extra_headers=task.context.get("extra_headers", {}),
+            )
+            scan_result = _asyncio.run(engine.scan(config))
+            for r in (scan_result.findings if scan_result else []):
+                raw = r if isinstance(r, dict) else (r.__dict__ if hasattr(r, "__dict__") else {})
+                if raw:
                     findings.append(self._make_finding(
-                        task, r.get("vuln_type", "ai_vulnerability"),
-                        r.get("severity", "high"),
-                        r.get("description", "AI security finding"),
-                        str(r),
-                        cvss=float(r.get("cvss", 7.5)),
+                        task, raw.get("vuln_type", "ai_vulnerability"),
+                        raw.get("severity", "high"),
+                        raw.get("description", "AI security finding"),
+                        str(raw),
+                        cvss=float(raw.get("cvss", 7.5)),
                     ))
         except Exception:
             pass

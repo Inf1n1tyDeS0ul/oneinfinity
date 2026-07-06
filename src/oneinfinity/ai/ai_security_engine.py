@@ -133,7 +133,7 @@ class AISecurityEngine:
     Orchestrates multiple AI security testing tools in parallel.
     """
 
-    _ALL_TOOLS = ["garak", "pyrit", "giskard", "purple_llama", "rebuff", "art"]
+    _ALL_TOOLS = ["garak", "pyrit", "giskard", "purple_llama", "rebuff", "art", "airt"]
 
     def __init__(self) -> None:
         self._wrappers: Dict[str, Any] = {}
@@ -155,6 +155,15 @@ class AISecurityEngine:
             "rebuff":      RebuffWrapper(),
             "art":         ARTWrapper(),
         }
+        # AIRTWrapper — optional; guarded import so startup succeeds if ai_red_teamer absent
+        try:
+            from oneinfinity.ai_security.tool_wrappers.airt_wrapper import AIRTWrapper
+            self._wrappers["airt"] = AIRTWrapper()
+            log.debug("[AISecurityEngine] AIRTWrapper loaded successfully")
+        except ImportError as _airt_imp:
+            log.debug("[AISecurityEngine] AIRTWrapper unavailable (ai_red_teamer not installed): %s", _airt_imp)
+        except Exception as _airt_exc:
+            log.warning("[AISecurityEngine] AIRTWrapper init failed (non-fatal): %s", _airt_exc)
 
     # ── Public API ────────────────────────────────────────────────────────────
 

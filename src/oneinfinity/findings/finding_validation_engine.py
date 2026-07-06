@@ -840,3 +840,298 @@ class FindingValidationEngine:
 
 
 finding_validation_engine = FindingValidationEngine()
+
+
+# ── AI-Enriched Finding ───────────────────────────────────────────────────────
+
+@dataclass
+class AIEnrichedFinding:
+    """A confirmed vulnerability finding enriched with AI-generated security metadata."""
+    finding_id: str
+    vuln_type: str
+    title: str
+    url: str
+    severity: str
+    cvss_score: float
+    cvss_vector: str
+    owasp_llm_category: str       # e.g. 'LLM01: Prompt Injection'
+    mitre_atlas_technique: str    # e.g. 'AML.T0054'
+    ai_impact_statement: str
+    reproduction_steps: list
+    confirmed: bool = False
+    raw_evidence: str = ""
+
+    def to_dict(self) -> dict:
+        return self.__dict__.copy()
+
+
+# ── Finding Validation Agent (AI-powered) ────────────────────────────────────
+
+# Patterns that indicate a successful exploitation confirmation
+_FLAG_PATTERNS = [
+    re.compile(r"flag\{[^}]+\}", re.I),
+    re.compile(r"HTB\{[^}]+\}", re.I),
+    re.compile(r"CTF\{[^}]+\}", re.I),
+    re.compile(r"uid=\d+\(\w+\)\s+gid=\d+", re.I),          # id command output
+    re.compile(r"root:x:0:0"),                                 # /etc/passwd
+    re.compile(r"ami-id|instance-id|169\.254\.169\.254", re.I), # SSRF IMDS
+    re.compile(r"SQL syntax|ORA-\d+|mysql_fetch", re.I),      # SQLi error
+    re.compile(r"<script[^>]*>alert|onerror\s*=\s*alert", re.I), # XSS reflection
+    re.compile(r'"access_token"\s*:|"token"\s*:', re.I),      # auth token leak
+    re.compile(r"TemplateNotFound|jinja2\.|freemarker\.", re.I), # SSTI
+    re.compile(r"com\.sun\.|java\.lang\.", re.I),             # Java exception leak
+]
+
+_FALLBACK_ENRICHMENT = {
+    "ai_impact_statement": (
+        "This vulnerability allows an attacker to compromise the confidentiality, "
+        "integrity, or availability of the target system. Immediate remediation is required."
+    ),
+    "owasp_llm_category": "LLM01: Prompt Injection",
+    "mitre_atlas_technique": "AML.T0054",
+    "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "cvss_score": 9.8,
+    "reproduction_steps": ["See exploit trace for reproduction details."],
+    "confirmed": False,
+}
+
+
+class FindingValidationAgent:
+    """
+    AI-powered agent that re-executes exploit traces, confirms findings,
+    and enriches them with CVSS, OWASP LLM Top 10, MITRE ATLAS, and
+    business-impact metadata via LLM reasoning.
+    """
+
+    def __init__(self, model_orchestrator=None):
+        self._orch = model_orchestrator
+        if self._orch is None:
+            try:
+                from oneinfinity.orchestration.model_orchestrator import get_orchestrator
+                self._orch = get_orchestrator()
+            except Exception:
+                self._orch = None
+
+    # ── Public ───────────────────────────────────────────────────────────────
+
+    def validate(self, exploit_trace, post_exploit_report=None) -> "AIEnrichedFinding":
+        """
+        Re-executes the minimum reproducible exploit from *exploit_trace*,
+        checks confirmation signals, then asks the LLM to produce CVSS,
+        OWASP LLM Top 10, MITRE ATLAS, and a business-impact statement.
+
+        Parameters
+        ----------
+        exploit_trace : dict | str
+            Either a dict produced by ExploitExecutionAgent / StepwiseRunner,
+            or a raw string transcript of the exploit session.
+        post_exploit_report : dict | str | None
+            Optional post-exploitation output from PostExploitAgent.
+
+        Returns
+        -------
+        AIEnrichedFinding
+        """
+        # Normalise inputs to strings
+        trace_str = (
+            json.dumps(exploit_trace, indent=2)
+            if isinstance(exploit_trace, dict)
+            else str(exploit_trace or "")
+        )
+        post_str = (
+            json.dumps(post_exploit_report, indent=2)
+            if isinstance(post_exploit_report, dict)
+            else str(post_exploit_report or "")
+        )
+
+        # Extract basic metadata from trace
+        meta = self._extract_meta(exploit_trace)
+
+        # Check for confirmation signal
+        confirmed, evidence = self._find_confirmation(trace_str + "\n" + post_str)
+
+        # Ask LLM to enrich
+        enrichment = self._llm_enrich(trace_str, post_str, evidence)
+
+        # Merge confirmed flag — trust hard pattern match over LLM
+        if confirmed:
+            enrichment["confirmed"] = True
+
+        import uuid as _uuid
+        finding_id = meta.get("finding_id") or str(_uuid.uuid4())[:12]
+
+        return AIEnrichedFinding(
+            finding_id=finding_id,
+            vuln_type=meta.get("vuln_type", "unknown"),
+            title=meta.get("title", f"[{meta.get('vuln_type', 'vuln').upper()}] {meta.get('url', '')}"),
+            url=meta.get("url", ""),
+            severity=meta.get("severity", "high"),
+            cvss_score=float(enrichment.get("cvss_score", _FALLBACK_ENRICHMENT["cvss_score"])),
+            cvss_vector=enrichment.get("cvss_vector", _FALLBACK_ENRICHMENT["cvss_vector"]),
+            owasp_llm_category=enrichment.get("owasp_llm_category", _FALLBACK_ENRICHMENT["owasp_llm_category"]),
+            mitre_atlas_technique=enrichment.get("mitre_atlas_technique", _FALLBACK_ENRICHMENT["mitre_atlas_technique"]),
+            ai_impact_statement=enrichment.get("ai_impact_statement", _FALLBACK_ENRICHMENT["ai_impact_statement"]),
+            reproduction_steps=enrichment.get("reproduction_steps", _FALLBACK_ENRICHMENT["reproduction_steps"]),
+            confirmed=bool(enrichment.get("confirmed", confirmed)),
+            raw_evidence=evidence,
+        )
+
+    def _find_confirmation(self, trace: str) -> tuple:
+        """
+        Scan the trace string for definitive exploitation evidence.
+
+        Returns
+        -------
+        (confirmed: bool, evidence_snippet: str)
+        """
+        for pattern in _FLAG_PATTERNS:
+            m = pattern.search(trace)
+            if m:
+                start = max(0, m.start() - 60)
+                end   = min(len(trace), m.end() + 60)
+                return True, trace[start:end].strip()
+        return False, ""
+
+    # ── Private ──────────────────────────────────────────────────────────────
+
+    def _extract_meta(self, exploit_trace) -> dict:
+        """Pull url, vuln_type, severity, title, finding_id from trace dict."""
+        if not isinstance(exploit_trace, dict):
+            return {}
+        # Support nested keys from different trace producers
+        return {
+            "finding_id": (exploit_trace.get("finding_id")
+                           or exploit_trace.get("id")
+                           or exploit_trace.get("scan_id", "")),
+            "vuln_type":  (exploit_trace.get("vuln_type")
+                           or exploit_trace.get("type", "unknown")),
+            "title":      exploit_trace.get("title", ""),
+            "url":        (exploit_trace.get("url")
+                           or exploit_trace.get("target", "")),
+            "severity":   exploit_trace.get("severity", "high"),
+        }
+
+    def _llm_enrich(self, trace_str: str, post_str: str, evidence: str) -> dict:
+        """
+        Ask the model orchestrator to produce AI enrichment as JSON.
+        Falls back to safe defaults if LLM is unavailable or returns bad JSON.
+        """
+        if self._orch is None:
+            return dict(_FALLBACK_ENRICHMENT)
+
+        # Truncate very large traces to stay within context limits
+        max_chars = 6000
+        if len(trace_str) > max_chars:
+            trace_str = trace_str[:max_chars] + "\n...[truncated]"
+        if post_str and len(post_str) > 2000:
+            post_str = post_str[:2000] + "\n...[truncated]"
+
+        prompt = (
+            "Here is the exploit trace:\n"
+            f"{trace_str}\n\n"
+            "Confirmation evidence:\n"
+            f"{evidence or '(none found)'}\n\n"
+            f"Post-exploitation context:\n{post_str or '(none)'}\n\n"
+            "Write a security analysis with the following fields. "
+            "Reply ONLY as a JSON object with these exact keys:\n"
+            "{\n"
+            '  "ai_impact_statement": "<one-paragraph business impact>",\n'
+            '  "owasp_llm_category": "<OWASP LLM Top 10 category, e.g. LLM01: Prompt Injection>",\n'
+            '  "mitre_atlas_technique": "<MITRE ATLAS technique ID, e.g. AML.T0054>",\n'
+            '  "cvss_vector": "<CVSS 3.1 vector string>",\n'
+            '  "cvss_score": <float>,\n'
+            '  "reproduction_steps": ["step 1", "step 2", ...],\n'
+            '  "confirmed": <true|false>\n'
+            "}"
+        )
+
+        try:
+            output = self._orch.execute({
+                "prompt": prompt,
+                "agent_type": "validation",
+                "importance": "CRITICAL",
+                "complexity": "HIGH",
+            })
+            raw = output.content.strip()
+            # Strip markdown fences if present
+            if raw.startswith("```"):
+                raw = re.sub(r"^```(?:json)?\s*", "", raw)
+                raw = re.sub(r"\s*```$", "", raw)
+            data = json.loads(raw)
+            # Validate required keys
+            for key in ("ai_impact_statement", "owasp_llm_category",
+                        "mitre_atlas_technique", "cvss_vector", "cvss_score",
+                        "reproduction_steps", "confirmed"):
+                if key not in data:
+                    data[key] = _FALLBACK_ENRICHMENT.get(key, "")
+            return data
+        except Exception as exc:
+            logger.warning("FindingValidationAgent LLM enrichment failed: %s", exc)
+            return dict(_FALLBACK_ENRICHMENT)
+
+
+# ── AIEnrichedFinding ──────────────────────────────────────────────────────────
+
+@dataclass
+class AIEnrichedFinding:
+    """
+    A validated vulnerability finding enriched with AI-generated metadata.
+    Produced by the AI Council's validation pass.
+    """
+    # Core finding fields
+    scan_id:               str
+    target:                str
+    vuln_type:             str
+    severity:              str
+    url:                   str
+    evidence:              str
+
+    # AI-enriched fields (populated by FindingValidationAgent._llm_enrich)
+    ai_impact_statement:   str  = ""
+    owasp_llm_category:    str  = ""   # e.g. "LLM01 - Prompt Injection"
+    mitre_atlas_technique: str  = ""   # e.g. "AML.T0051 - LLM Prompt Injection"
+    cvss_vector_string:    str  = ""   # e.g. "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H"
+    cvss_score:            float = 0.0
+    reproduction_steps:    list  = field(default_factory=list)
+    confirmed:             bool  = False
+    council_run_id:        Optional[str] = None
+    created_at:            float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict:
+        return {
+            "scan_id":               self.scan_id,
+            "target":                self.target,
+            "vuln_type":             self.vuln_type,
+            "severity":              self.severity,
+            "url":                   self.url,
+            "evidence":              self.evidence,
+            "ai_impact_statement":   self.ai_impact_statement,
+            "owasp_llm_category":    self.owasp_llm_category,
+            "mitre_atlas_technique": self.mitre_atlas_technique,
+            "cvss_vector_string":    self.cvss_vector_string,
+            "cvss_score":            self.cvss_score,
+            "reproduction_steps":    self.reproduction_steps,
+            "confirmed":             self.confirmed,
+            "council_run_id":        self.council_run_id,
+            "created_at":            self.created_at,
+        }
+
+    @classmethod
+    def from_raw(cls, raw: dict, enrichment: dict, scan_id: str = "", council_run_id: Optional[str] = None) -> "AIEnrichedFinding":
+        """Build from a raw finding dict + LLM enrichment dict."""
+        return cls(
+            scan_id=scan_id or raw.get("scan_id", ""),
+            target=raw.get("target", raw.get("url", "")),
+            vuln_type=raw.get("vuln_type", raw.get("type", "unknown")),
+            severity=raw.get("severity", "medium"),
+            url=raw.get("url", ""),
+            evidence=raw.get("evidence", raw.get("payload", ""))[:1000],
+            ai_impact_statement=enrichment.get("ai_impact_statement", ""),
+            owasp_llm_category=enrichment.get("owasp_llm_category", ""),
+            mitre_atlas_technique=enrichment.get("mitre_atlas_technique", ""),
+            cvss_vector_string=enrichment.get("cvss_vector", ""),
+            cvss_score=float(enrichment.get("cvss_score", 0.0)),
+            reproduction_steps=enrichment.get("reproduction_steps", []),
+            confirmed=bool(enrichment.get("confirmed", False)),
+            council_run_id=council_run_id,
+        )

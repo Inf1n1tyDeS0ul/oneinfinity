@@ -351,3 +351,44 @@ class AttackGraphBuilder:
 
     def build(self) -> AttackGraph:
         return self.g
+
+    def suggest_chains(
+        self,
+        objectives: list = None,
+        min_exploitability: float = 0.0,
+    ) -> list:
+        """
+        Return a list of attack-chain suggestion dicts ranked by exploitability.
+
+        Uses GraphChainDetector BFS on the current AttackGraph to enumerate
+        multi-hop chains from low-severity entry nodes to high-impact objectives.
+        Caller should call build() first (or use from_* methods to populate the
+        graph) before calling suggest_chains().
+
+        Parameters
+        ----------
+        objectives:
+            Target objectives to search for. Defaults to all four standard ones.
+        min_exploitability:
+            Chains below this exploitability score are filtered out.
+
+        Returns
+        -------
+        list[dict]
+            Each dict is the result of AttackChain.to_dict(), sorted by
+            exploitability_score descending.
+        """
+        if objectives is None:
+            objectives = ["rce", "ato", "data_exfil", "privilege_escalation"]
+        try:
+            from oneinfinity.attack_graph_core.graph_chain_detector import GraphChainDetector
+            detector = GraphChainDetector(self.g)
+            chains = detector.detect_chains(objectives)
+            filtered = [c for c in chains if c.exploitability_score >= min_exploitability]
+            return [c.to_dict() for c in filtered]
+        except Exception as exc:
+            import logging as _logging
+            _logging.getLogger("oneinfinity.attack_graph_core.builder").debug(
+                "suggest_chains failed: %s", exc
+            )
+            return []

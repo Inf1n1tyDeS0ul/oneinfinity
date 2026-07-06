@@ -34,6 +34,92 @@ EVENT_UNLOCK_VULN_THRESHOLD = 1        # Reduced from 3 — unlock Research earl
 EVENT_UNLOCK_ENDPOINT_THRESHOLD = 5   # Reduced from 10 — unlock Swarm earlier in God Mode
 
 
+
+def _is_ai_target(target: str, app_context: str, recon) -> bool:
+    """Return True if the target appears to be an AI/LLM/chatbot endpoint."""
+    _AI_KEYWORDS = (
+        "/v1/chat", "/api/chat", "completions", "llm", "chatbot",
+        "openai", "anthropic", "ollama", "gemini", "/inference",
+        "/generate", "/ai/", "gpt", "claude",
+    )
+    combined = (target + " " + app_context).lower()
+    if any(k in combined for k in _AI_KEYWORDS):
+        return True
+    if recon and hasattr(recon, "api_map") and recon.api_map:
+        for ep in (getattr(recon.api_map, "endpoints", []) or []):
+            if any(k in str(ep).lower() for k in _AI_KEYWORDS):
+                return True
+    return False
+
+
+def _run_nim_stealth_prober(
+    target: str,
+    waf_vendor: str,
+    timeout_ms: int = 8000,
+    scan_id: str | None = None,
+) -> list[dict]:
+    """
+    Run the Nim stealth_prober binary to discover WAF bypass techniques.
+    Called by FoundationMission Step 4d when Cloudflare or Akamai is detected.
+
+    Returns list of finding dicts from the prober; empty if binary unavailable.
+    """
+    import json as _json
+    import shutil as _shutil
+    import subprocess as _subprocess
+    from pathlib import Path as _Path
+
+    # Binary resolution: src/nim/bin/ → ~/.local/bin/ → PATH
+    _here = _Path(__file__).parent
+    _repo_root = _here.parent.parent
+    _local = _repo_root / "src" / "nim" / "bin" / "stealth_prober"
+    if not (_local.is_file() and os.access(str(_local), os.X_OK)):
+        _found = _shutil.which("stealth_prober")
+        _local_bin = _Path.home() / ".local" / "bin" / "stealth_prober"
+        if _found:
+            _local = _Path(_found)
+        elif _local_bin.is_file() and os.access(str(_local_bin), os.X_OK):
+            _local = _local_bin
+        else:
+            log.debug("[god_mode] Nim stealth_prober binary not found — skipping")
+            return []
+
+    _sid = scan_id or uuid.uuid4().hex[:16]
+    _cmd = [
+        str(_local),
+        "--target", target if target.startswith("http") else f"https://{target}",
+        "--waf", waf_vendor,
+        "--timeout", str(timeout_ms),
+        "--scan-id", _sid,
+        "--concurrency", "5",
+        "--jitter", "200",
+    ]
+
+    _findings: list[dict] = []
+    try:
+        _proc = _subprocess.run(
+            _cmd,
+            capture_output=True, text=True,
+            timeout=max(timeout_ms // 1000 + 15, 30),
+        )
+        for _line in _proc.stdout.splitlines():
+            _line = _line.strip()
+            if not _line:
+                continue
+            try:
+                _f = _json.loads(_line)
+                _f.setdefault("source_type", "nim")
+                _f.setdefault("tool", "nim:stealth_prober")
+                _findings.append(_f)
+            except _json.JSONDecodeError:
+                pass
+    except _subprocess.TimeoutExpired:
+        log.debug("[god_mode] Nim stealth_prober timed out")
+    except OSError as _exc:
+        log.debug("[god_mode] Nim stealth_prober subprocess error: %s", _exc)
+    return _findings
+
+
 class FoundationError(RuntimeError):
     """Raised when doctor --quick fails. Only hard-abort in GOD MODE."""
 
@@ -53,7 +139,13 @@ class GodModeSession:
     terminated_by: Optional[str] = None            # "convergence"|"stop"|"error"
     log_path: str = ""
     background: bool = False
-    auth_config: dict = field(default_factory=dict)  # session_cookie/bearer_token/auth_header
+    auth_config: dict = field(default_factory=dict)
+    app_context: str = ""
+    max_time: int = 0
+    max_findings: int = 0
+    # WAF bypass state — populated by FoundationMission Step 4, consumed by all missions
+    waf_vendor: str = ""                              # "cloudflare"|"akamai"|"aws_waf"|...
+    waf_bypass_payloads: dict = field(default_factory=dict)  # {vuln_type: [bypass_payloads]}
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def add_findings(self, count: int) -> None:
@@ -327,9 +419,382 @@ class FoundationMission(Mission):
             log.warning("[GOD MODE] App analysis failed (non-fatal): %s — continuing", exc, exc_info=True)
             self.app_model = None
 
+        # ── Step 3a: Target Discovery Engine ─────────────────────────────
+        log.info("[GOD MODE] Foundation Step 3a: TargetDiscoveryEngine")
+        try:
+            from oneinfinity.recon.target_discovery_engine import TargetDiscoveryEngine
+            _domain = session.target.split("/")[0]
+            _tde = TargetDiscoveryEngine()
+            _discovered_targets = _tde.discover_all(seed_domains=[_domain])
+            log.info("[GOD MODE] TargetDiscovery: %d targets discovered", len(_discovered_targets))
+            # Merge new subdomains back into recon intel if available
+            if self.recon and _discovered_targets:
+                _existing_subs = set(getattr(self.recon, "subdomains", []) or [])
+                _new_subs = [t.domain for t in _discovered_targets if t.domain not in _existing_subs]
+                if _new_subs:
+                    self.recon.subdomains = list(_existing_subs) + _new_subs
+            # Emit endpoints to bus
+            try:
+                from oneinfinity.orchestration.event_bus import get_bus, EventType
+                for _dt in (_discovered_targets or []):
+                    get_bus().publish(EventType.NEW_ENDPOINT, {
+                        "url": _dt.domain,
+                        "source": f"target_discovery/{_dt.source}",
+                        "target": session.target,
+                        "confidence": _dt.confidence,
+                    }, source="target_discovery_engine")
+            except Exception:
+                pass
+        except Exception as exc:
+            log.warning("[GOD MODE] TargetDiscoveryEngine failed (non-fatal): %s", exc, exc_info=True)
+
+        # ── Step 3b: GitHub Secrets Scanner ──────────────────────────────
+        log.info("[GOD MODE] Foundation Step 3b: GitHubSecretsScanner")
+        try:
+            from oneinfinity.recon.github_secrets_scanner import GitHubSecretsScanner
+            import os as _os
+            _gh_token = _os.environ.get("GITHUB_TOKEN") or _os.environ.get("GITHUB_TOKENS", "").split(",")[0].strip() or None
+            _org = session.target.split(".")[0]  # best-effort org name from domain prefix
+            _gss = GitHubSecretsScanner(github_token=_gh_token)
+            _secrets_result = _gss.scan_org(_org, max_repos=30, commits_per_repo=5, timeout=120)
+            log.info("[GOD MODE] GitHubSecretsScanner: %d findings for org %s",
+                     len(_secrets_result.findings), _org)
+            if _secrets_result.findings:
+                # Persist to PostgreSQL
+                try:
+                    import asyncio as _asyncio
+                    from oneinfinity.core.pg_client import store_recon_findings
+                    _asyncio.get_event_loop().run_until_complete(
+                        store_recon_findings(
+                            session.scan_id, session.target,
+                            "github_secret", _secrets_result.findings,
+                        )
+                    )
+                except Exception as _pg_exc:
+                    log.debug("[GOD MODE] PG persist secrets failed: %s", _pg_exc)
+                # Emit CREDENTIAL_ACQUIRED for each secret
+                try:
+                    from oneinfinity.orchestration.event_bus import get_bus, EventType
+                    for _sf in _secrets_result.findings:
+                        get_bus().publish(EventType.CREDENTIAL_ACQUIRED, {
+                            "scan_id": session.scan_id,
+                            "target": session.target,
+                            "service": "github",
+                            "secret_type": _sf.get("secret_type", "unknown"),
+                            "repo": _sf.get("repo", ""),
+                            "severity": _sf.get("severity", "medium"),
+                            "source": "github_secrets_scanner",
+                        }, source="github_secrets_scanner")
+                except Exception:
+                    pass
+        except Exception as exc:
+            log.warning("[GOD MODE] GitHubSecretsScanner failed (non-fatal): %s", exc, exc_info=True)
+
+        # ── Step 3c: GitHub Deep Intel ────────────────────────────────────
+        log.info("[GOD MODE] Foundation Step 3c: GitHubDeepIntel")
+        try:
+            from oneinfinity.recon.github_deep_intel import GitHubDeepIntel
+            import os as _os
+            _gh_token2 = _os.environ.get("GITHUB_TOKEN") or _os.environ.get("GITHUB_TOKENS", "").split(",")[0].strip() or None
+            _org2 = session.target.split(".")[0]
+            _gdi = GitHubDeepIntel(github_token=_gh_token2)
+            _deep_intel = _gdi.scan_org(_org2, max_repos=100, deep_scan=True, timeout=300)
+            log.info("[GOD MODE] GitHubDeepIntel: %d contributors, %d secrets, org=%s",
+                     len(_deep_intel.contributors), len(_deep_intel.findings), _org2)
+            # Save employee names for credential spray (Phase 7)
+            # employees.json schema: { target, org, scan_id, employees: [{name,email,username,source,repos}] }
+            if _deep_intel.contributors or _deep_intel.emails:
+                try:
+                    import json as _json
+                    from pathlib import Path as _Path
+                    _recon_dir = _Path(GOD_MODE_DIR / session.scan_id / "recon")
+                    _recon_dir.mkdir(parents=True, exist_ok=True)
+                    _employees_file = _recon_dir / "employees.json"
+                    # Build structured employee records — email dicts first (richer),
+                    # then any contributor logins not already captured by email records.
+                    _seen_logins: set = set()
+                    _employees: list = []
+                    for _ei in (_deep_intel.emails or []):
+                        # EmailIntel serialised as dict: email, name, github_username, commit_count, repos
+                        _login = (_ei.get("github_username") or "") if isinstance(_ei, dict) else ""
+                        _email_addr = (_ei.get("email") or "") if isinstance(_ei, dict) else ""
+                        _display = (_ei.get("name") or _login) if isinstance(_ei, dict) else ""
+                        _repos = (_ei.get("repos") or []) if isinstance(_ei, dict) else []
+                        if _login:
+                            _seen_logins.add(_login)
+                        _employees.append({
+                            "name":     _display,
+                            "email":    _email_addr,
+                            "username": _login,
+                            "source":   "github_deep_intel",
+                            "repos":    _repos,
+                        })
+                    for _login in sorted(_deep_intel.contributors or []):
+                        if _login in _seen_logins:
+                            continue
+                        _employees.append({
+                            "name":     _login,
+                            "email":    "",
+                            "username": _login,
+                            "source":   "github_deep_intel",
+                            "repos":    [],
+                        })
+                    _employees_file.write_text(_json.dumps({
+                        "target":    session.target,
+                        "org":       _org2,
+                        "scan_id":   session.scan_id,
+                        "employees": _employees,
+                    }, indent=2))
+                    log.info("[GOD MODE] Employees saved to %s (%d records)", _employees_file, len(_employees))
+                except Exception as _ef:
+                    log.warning("[GOD MODE] Failed to save employees file: %s", _ef)
+            # Persist deep intel findings
+            if _deep_intel.findings:
+                try:
+                    import asyncio as _asyncio
+                    from oneinfinity.core.pg_client import store_recon_findings
+                    _asyncio.get_event_loop().run_until_complete(
+                        store_recon_findings(
+                            session.scan_id, session.target,
+                            "github_deep_intel", _deep_intel.findings,
+                        )
+                    )
+                except Exception as _pg_exc:
+                    log.debug("[GOD MODE] PG persist deep-intel failed: %s", _pg_exc)
+                # Emit CREDENTIAL_ACQUIRED for each deep-intel finding
+                try:
+                    from oneinfinity.orchestration.event_bus import get_bus, EventType
+                    for _df in _deep_intel.findings:
+                        get_bus().publish(EventType.CREDENTIAL_ACQUIRED, {
+                            "scan_id": session.scan_id,
+                            "target": session.target,
+                            "service": "github",
+                            "secret_type": _df.get("secret_type", "unknown") if isinstance(_df, dict) else "unknown",
+                            "source": "github_deep_intel",
+                        }, source="github_deep_intel")
+                except Exception:
+                    pass
+            # Persist discovered API endpoints from deep intel
+            if getattr(_deep_intel, "api_endpoints", None):
+                try:
+                    import asyncio as _asyncio
+                    from oneinfinity.core.pg_client import store_recon_findings
+                    _asyncio.get_event_loop().run_until_complete(
+                        store_recon_findings(
+                            session.scan_id, session.target,
+                            "api_endpoint",
+                            [{"url": u, "source": "github_deep_intel"} for u in _deep_intel.api_endpoints],
+                        )
+                    )
+                except Exception:
+                    pass
+                try:
+                    from oneinfinity.orchestration.event_bus import get_bus, EventType
+                    for _ep_url in _deep_intel.api_endpoints:
+                        get_bus().publish(EventType.NEW_ENDPOINT, {
+                            "url": _ep_url,
+                            "source": "github_deep_intel",
+                            "target": session.target,
+                        }, source="github_deep_intel")
+                except Exception:
+                    pass
+        except Exception as exc:
+            log.warning("[GOD MODE] GitHubDeepIntel failed (non-fatal): %s", exc, exc_info=True)
+
+        # ── Step 3d: OSINT Collector ──────────────────────────────────────
+        log.info("[GOD MODE] Foundation Step 3d: OSINTCollector")
+        try:
+            from oneinfinity.recon.osint_collector import OSINTCollector
+            _domain_for_osint = session.target.split("/")[0]
+            _oc = OSINTCollector()
+            _osint_results = _oc.collect_all(_domain_for_osint)
+            _osint_summary = {
+                "subdomains": sum(len(r.subdomains) for r in _osint_results),
+                "emails": sum(len(r.emails) for r in _osint_results),
+                "ips": sum(len(r.ips) for r in _osint_results),
+                "api_keys": sum(len(r.api_keys_found) for r in _osint_results),
+            }
+            log.info("[GOD MODE] OSINTCollector: subdomains=%d emails=%d ips=%d api_keys=%d",
+                     _osint_summary["subdomains"], _osint_summary["emails"],
+                     _osint_summary["ips"], _osint_summary["api_keys"])
+            # Merge subdomains into recon intel
+            if self.recon:
+                _existing_subs2 = set(getattr(self.recon, "subdomains", []) or [])
+                for _or in _osint_results:
+                    for _sd in (_or.subdomains or []):
+                        if _sd not in _existing_subs2:
+                            _existing_subs2.add(_sd)
+                            self.recon.subdomains.append(_sd)
+            # Persist OSINT API keys as credentials
+            for _or in _osint_results:
+                if _or.api_keys_found:
+                    try:
+                        import asyncio as _asyncio
+                        from oneinfinity.core.pg_client import store_recon_findings
+                        _asyncio.get_event_loop().run_until_complete(
+                            store_recon_findings(
+                                session.scan_id, session.target,
+                                "osint_api_key", _or.api_keys_found,
+                            )
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        from oneinfinity.orchestration.event_bus import get_bus, EventType
+                        for _ak in _or.api_keys_found:
+                            get_bus().publish(EventType.CREDENTIAL_ACQUIRED, {
+                                "scan_id": session.scan_id,
+                                "target": session.target,
+                                "service": _or.source,
+                                "secret_type": "api_key",
+                                "source": "osint_collector",
+                                "value_hint": str(_ak)[:20] + "…" if len(str(_ak)) > 20 else str(_ak),
+                            }, source="osint_collector")
+                    except Exception:
+                        pass
+        except Exception as exc:
+            log.warning("[GOD MODE] OSINTCollector failed (non-fatal): %s", exc, exc_info=True)
+
+        # ── Step 3e: SecretIntelAgent (GitHub + dork-based) ───────────────
+        log.info("[GOD MODE] Foundation Step 3e: SecretIntelAgent")
+        try:
+            from oneinfinity.agents.secret_intel import SecretIntelAgent
+            import os as _os
+            _gh_token3 = _os.environ.get("GITHUB_TOKEN") or _os.environ.get("GITHUB_TOKENS", "").split(",")[0].strip() or None
+            _sia = SecretIntelAgent(token=_gh_token3)
+            _intel_result = _sia.run(
+                session.target,
+                stop_on_critical=False,
+                max_dorks=15,
+                concurrency=3,
+            )
+            _intel_findings = _intel_result.get("findings", []) if isinstance(_intel_result, dict) else []
+            log.info("[GOD MODE] SecretIntelAgent: %d findings", len(_intel_findings))
+            if _intel_findings:
+                try:
+                    import asyncio as _asyncio
+                    from oneinfinity.core.pg_client import store_recon_findings
+                    _asyncio.get_event_loop().run_until_complete(
+                        store_recon_findings(
+                            session.scan_id, session.target,
+                            "secret_intel", _intel_findings,
+                        )
+                    )
+                except Exception:
+                    pass
+                try:
+                    from oneinfinity.orchestration.event_bus import get_bus, EventType
+                    for _if in _intel_findings:
+                        if not isinstance(_if, dict):
+                            continue
+                        get_bus().publish(EventType.CREDENTIAL_ACQUIRED, {
+                            "scan_id": session.scan_id,
+                            "target": session.target,
+                            "service": "github",
+                            "secret_type": _if.get("secret_type", "unknown"),
+                            "severity": _if.get("severity", "medium"),
+                            "source": "secret_intel_agent",
+                            "repo": _if.get("repo_url", ""),
+                        }, source="secret_intel_agent")
+                except Exception:
+                    pass
+        except Exception as exc:
+            log.warning("[GOD MODE] SecretIntelAgent failed (non-fatal): %s", exc, exc_info=True)
+
+        # ── Step 4: WAF detection + bypass payload pre-generation ────────
+        # Runs AFTER recon so we know the tech_profile (waf field).
+        # Populates session.waf_vendor and session.waf_bypass_payloads so all
+        # downstream missions (FullScan, Swarm, Research) use bypass payloads
+        # instead of plain payloads when a WAF is detected.
+        log.info("[GOD MODE] Foundation Step 4: WAF detection + bypass payload generation")
+        try:
+            from oneinfinity.ai_security.adversarial_waf_engine import AdversarialWAFEngine
+            from oneinfinity.scan.adaptive_mutation_helper import get_waf_vendor as _detect_waf_vendor
+
+            # Step 4a: detect WAF vendor from tech_profile first (free, no HTTP)
+            waf_vendor = ""
+            if self.recon and hasattr(self.recon, "tech_profile"):
+                tp = self.recon.tech_profile
+                raw_tech = getattr(tp, "raw_tech", []) or []
+                waf_field = getattr(tp, "waf", "") or ""
+                tech_str = " ".join(raw_tech + [waf_field]).lower()
+                if "cloudflare" in tech_str:
+                    waf_vendor = "cloudflare"
+                elif "akamai" in tech_str:
+                    waf_vendor = "akamai"
+                elif "aws" in tech_str and "waf" in tech_str:
+                    waf_vendor = "aws_waf"
+                elif "imperva" in tech_str or "incapsula" in tech_str:
+                    waf_vendor = "imperva"
+                elif "f5" in tech_str or "big-ip" in tech_str:
+                    waf_vendor = "f5"
+                elif "modsecurity" in tech_str or "modsec" in tech_str:
+                    waf_vendor = "modsecurity"
+
+            # Step 4b: if still unknown, probe HTTP to detect WAF from response headers
+            if not waf_vendor:
+                waf_engine = AdversarialWAFEngine(vuln_type="sqli", target=session.target)
+                waf_vendor = waf_engine.detect_waf()
+
+            session.waf_vendor = waf_vendor or ""
+
+            if waf_vendor:
+                log.info("[GOD MODE] WAF detected: %s — generating bypass payloads", waf_vendor)
+                # Step 4c: generate bypass payloads for critical vuln types via LLM self-play
+                # Runs AdversarialWAFEngine: Attacker LLM vs WAF-Simulator LLM, up to 8 iterations
+                adv_engine = AdversarialWAFEngine(
+                    vuln_type="sqli",
+                    target=session.target,
+                    max_iterations=5,   # balance quality vs speed
+                    timeout=8,
+                )
+                bypass_payloads = adv_engine.generate_all_types(
+                    endpoint="/login",  # most critical endpoint for auth bypass
+                    vuln_types=["sqli", "xss", "ssrf", "ssti", "cmdi", "lfi"],
+                )
+                session.waf_bypass_payloads = bypass_payloads
+                total = sum(len(v) for v in bypass_payloads.values())
+                log.info("[GOD MODE] WAF bypass payloads generated: %d total across %d vuln types",
+                         total, len(bypass_payloads))
+            else:
+                log.info("[GOD MODE] No WAF detected — standard payloads will be used")
+                session.waf_bypass_payloads = {}
+        except Exception as exc:
+            log.warning("[GOD MODE] WAF bypass generation failed (non-fatal): %s", exc, exc_info=True)
+            session.waf_bypass_payloads = {}
+
+        # ── Step 4d: Nim stealth_prober for Cloudflare/Akamai WAF evasion ────
+        # When a heavy-fingerprinting WAF is detected, kick off the Nim stealth
+        # prober to pre-test bypass techniques before the main scan begins.
+        # Results are merged into session.waf_bypass_payloads for downstream use.
+        if session.waf_vendor in ("cloudflare", "akamai"):
+            log.info("[GOD MODE] Foundation Step 4d: Nim stealth_prober for %s WAF evasion", session.waf_vendor)
+            try:
+                _nim_findings = _run_nim_stealth_prober(
+                    target=session.target,
+                    waf_vendor=session.waf_vendor,
+                    timeout_ms=8000,
+                )
+                if _nim_findings:
+                    # Integrate bypass payloads discovered by the Nim prober
+                    _nim_payloads: list = [
+                        f.get("payload", "") for f in _nim_findings
+                        if f.get("payload") and not f.get("blocked", True)
+                    ]
+                    if _nim_payloads:
+                        session.waf_bypass_payloads.setdefault("nim_stealth", []).extend(_nim_payloads[:20])
+                        log.info("[GOD MODE] Nim stealth_prober: %d bypass techniques found for %s",
+                                 len(_nim_payloads), session.waf_vendor)
+                    session.add_findings(len(_nim_findings))
+            except Exception as _nim_exc:
+                log.debug("[GOD MODE] Nim stealth_prober failed (non-fatal): %s", _nim_exc)
+
+
         self._result = {
             "recon_ok": self.recon is not None,
             "app_model_ok": self.app_model is not None,
+            "waf_vendor": session.waf_vendor,
+            "waf_bypass_ready": bool(session.waf_bypass_payloads),
         }
 
 
@@ -338,10 +803,12 @@ class FoundationMission(Mission):
 class FullScanMission(Mission):
     """Runs the canonical 10-phase pipeline via run_canonical_pipeline()."""
 
-    def __init__(self, foundation: FoundationMission, auth_config: dict = None):
+    def __init__(self, foundation: FoundationMission, auth_config: dict = None,
+                 findings_pipeline_cb=None):
         super().__init__("full_scan")
         self._foundation = foundation
         self._auth_config = auth_config or {}
+        self._findings_pipeline_cb = findings_pipeline_cb
 
     def _run(self, session: GodModeSession) -> None:
         from oneinfinity.pipeline.executor import run_canonical_pipeline
@@ -349,6 +816,9 @@ class FullScanMission(Mission):
         log.info("[GOD MODE] FullScanMission: starting canonical pipeline for %s", session.target)
         if self._auth_config and any(self._auth_config.values()):
             log.info("[GOD MODE] FullScanMission: authenticated scan mode active")
+        if session.waf_vendor:
+            log.info("[GOD MODE] FullScanMission: WAF bypass mode active — vendor=%s, bypass_types=%s",
+                     session.waf_vendor, list(session.waf_bypass_payloads.keys()))
 
         # Output dir: ~/.oneinfinity/<scan_id>/full_scan/
         out_dir = str(GOD_MODE_DIR / session.scan_id / "full_scan")
@@ -358,6 +828,81 @@ class FullScanMission(Mission):
         def _on_progress(phase: str, pct: int, msg: str) -> None:
             log.info("[GOD MODE] full_scan [%d%%] [%s] %s", pct, phase, msg)
 
+        # Build waf_profile from session so pipeline uses bypass mode and
+        # rate-limits correctly for detected WAF vendor
+        waf_profile = None
+        if session.waf_vendor:
+            # Bypass403Engine: run header + path bypass tests — council-approved call
+            _bypass_report = None
+            try:
+                from oneinfinity.attack.bypass_403_engine import Bypass403Engine
+                _bypass_engine = Bypass403Engine(
+                    waf_vendor=session.waf_vendor,
+                    delay_between_requests=0.3,
+                    max_requests=100,        # cap: security council requirement
+                )
+                _target_url = (session.target if session.target.startswith("http")
+                               else f"https://{session.target}")
+                _bypass_report = _bypass_engine.test(_target_url)
+                log.info("[GOD MODE] Bypass403Engine: %d bypasses found (%d techniques tested) for %s",
+                         _bypass_report.bypasses_found, _bypass_report.techniques_tested,
+                         session.waf_vendor)
+            except Exception as _be:
+                log.debug("[GOD MODE] Bypass403Engine test failed (non-fatal): %s", _be)
+            waf_profile = {
+                "waf_detected": True,
+                "waf_name": session.waf_vendor,
+                "rate_limit_rps": 5 if session.waf_vendor == "cloudflare" else 8,
+                "jitter_ms": 300 if session.waf_vendor == "cloudflare" else 200,
+                "bypass_payloads": session.waf_bypass_payloads,
+                "bypass_403_findings": [
+                    {"technique": r.technique, "category": r.category,
+                     "status_code": r.status_code, "bypassed": r.bypassed,
+                     "evidence": r.evidence}
+                    for r in (_bypass_report.findings if _bypass_report else [])
+                    if r.bypassed or r.is_significant
+                ],
+            }
+            if waf_profile.get("bypass_403_findings"):
+                session.add_findings(len(waf_profile["bypass_403_findings"]))
+
+        # ── AdaptivePlanner: vocabulary adapter + phase wiring ─────────────────
+        # Maps old planner phase names to canonical pipeline phase names.
+        _PLANNER_TO_CANONICAL: dict = {
+            "recon":        "deep_recon",
+            "scan_nuclei":  "vuln_scan",
+            "triage":       None,
+            "scan_xss":     "active_testing",
+            "scan_sqli":    "active_testing",
+            "scan_ssrf":    "active_testing",
+            "scan_secrets": "deep_recon",
+            "exploit":      "exploit_chains",
+            "validate":     "exploit_validation",
+            "report":       None,
+        }
+        _adaptive_focus_vulns: list = []
+        _adaptive_skip_phases: list = []
+        try:
+            from oneinfinity.learning.adaptive_planner import AdaptivePlanner
+            from oneinfinity.learning.neo4j_knowledge_base import Neo4jKnowledgeBase
+            _ap_kb = Neo4jKnowledgeBase()
+            _planner = AdaptivePlanner(_ap_kb)
+            _app_model = self._foundation.app_model if self._foundation else None
+            _tech = list(getattr(_app_model, "tech_stack", None) or []) if _app_model else None
+            _plan = _planner.plan(session.target, tech_stack=_tech)
+            _adaptive_focus_vulns = _plan.focus_vuln_types or []
+            # Translate old vocabulary to canonical phase names
+            _adaptive_skip_phases = list({
+                _PLANNER_TO_CANONICAL[p]
+                for p in (_plan.skip_phases or [])
+                if _PLANNER_TO_CANONICAL.get(p)
+            })
+            log.info("[GOD MODE] AdaptivePlanner: focus_vulns=%s skip=%s rationale=%s",
+                     _adaptive_focus_vulns[:5], _adaptive_skip_phases,
+                     (_plan.rationale or [])[:2])
+        except Exception as _ap_exc:
+            log.debug("[GOD MODE] AdaptivePlanner skipped (non-fatal — requires Neo4j KB): %s", _ap_exc)
+
         # Uses Foundation recon results (seeded via prior_results_dir) to speed up deep_recon phase
         result = run_canonical_pipeline(
             target=session.target,
@@ -366,6 +911,10 @@ class FullScanMission(Mission):
             on_progress=_on_progress,
             prior_results_dir=recon_dir if self._foundation.recon else None,
             auth_config=self._auth_config if self._auth_config else None,
+            waf_profile=waf_profile,
+            skip_phases=_adaptive_skip_phases if _adaptive_skip_phases else None,
+            # Double phase timeouts when WAF is active — bypass payloads add latency
+            timeout_multiplier=2.0 if waf_profile else 1.0,
         )
 
         # Update session finding count
@@ -396,6 +945,17 @@ class FullScanMission(Mission):
                         bus.publish(EventType.NEW_VULNERABILITY, fd, source="god-mode-full-scan")
             except Exception as exc:
                 log.warning("[GOD MODE] FullScanMission event bus publish failed: %s", exc)
+
+        # Apply confidence scoring + confirmation pipeline per-phase
+        if self._findings_pipeline_cb is not None and result and result.findings:
+            try:
+                _fds = [
+                    f if isinstance(f, dict) else (f.__dict__ if hasattr(f, "__dict__") else {})
+                    for f in result.findings if f
+                ]
+                self._findings_pipeline_cb(_fds, scan_id=session.scan_id)
+            except Exception as _cb_exc:
+                log.warning("[GOD MODE] FullScanMission findings_pipeline_cb failed: %s", _cb_exc)
 
         log.info("[GOD MODE] FullScanMission complete — %d findings", new_count)
         self._result = {"findings": new_count, "output_dir": out_dir}
@@ -467,6 +1027,14 @@ class SwarmMission(Mission):
         if session.auth_config:
             ctx["auth_sessions"] = [session.auth_config]
 
+        # Wire WAF bypass payloads into swarm context so each agent uses
+        # bypass-encoded variants instead of plain payloads when WAF detected
+        if session.waf_vendor and session.waf_bypass_payloads:
+            ctx["waf_vendor"] = session.waf_vendor
+            ctx["waf_bypass_payloads"] = session.waf_bypass_payloads
+            log.info("[GOD MODE] SwarmMission: WAF bypass context injected — vendor=%s types=%s",
+                     session.waf_vendor, list(session.waf_bypass_payloads.keys()))
+
         # Inject discovered endpoints from recon so agents test real attack surface
         # rather than just the root URL.
         _endpoints: list[str] = []
@@ -487,12 +1055,26 @@ class SwarmMission(Mission):
         else:
             log.warning("[GOD MODE] SwarmMission: no recon endpoints found — agents will probe root URL only")
 
-        result = _asyncio.run(run_swarm(
-            target=session.target,
-            context=ctx,
-            concurrency=4,
-            agent_types=None,   # all 8 agent types
-        ))
+        # Run with a hard timeout (default 20 min) so a hung agent can't block the pipeline
+        SWARM_TIMEOUT = 1200  # 20 minutes
+        try:
+            result = _asyncio.run(
+                _asyncio.wait_for(
+                    run_swarm(
+                        target=session.target,
+                        context=ctx,
+                        concurrency=4,
+                        agent_types=None,
+                    ),
+                    timeout=SWARM_TIMEOUT,
+                )
+            )
+        except _asyncio.TimeoutError:
+            log.warning("[GOD MODE] SwarmMission timed out after %ds — continuing with partial results", SWARM_TIMEOUT)
+            result = None
+        except Exception as _exc:
+            log.warning("[GOD MODE] SwarmMission run_swarm error (non-fatal): %s", _exc)
+            result = None
 
         new_count = len(result.findings) if result and hasattr(result, "findings") else 0
         session.add_findings(new_count)
@@ -621,6 +1203,547 @@ class ChainsMission(Mission):
         self._result = {"chains": chain_count}
 
 
+# ── AIRedTeamMission ───────────────────────────────────────────────────────────
+
+class AIRedTeamMission(Mission):
+    """
+    Runs the full AI/LLM red-team battery against AI-type targets.
+    Wraps: MultiTurnChainer (6 strategies), RAGPoisoningEngine, LLMDoSEngine,
+    LLMSupplyChainScanner, AgentHijackHarness.
+
+    Unlock condition: _is_ai_target() at startup OR NEW_ENDPOINT event
+    matching AI API path patterns.
+    """
+
+    _AI_PATH_HINTS = (
+        "/v1/chat", "/api/chat", "/completions", "/llm/",
+        "/inference", "/generate", "/ai/",
+    )
+
+    def __init__(self, auth_header: str = "", findings_pipeline_cb=None) -> None:
+        super().__init__("ai_red_team")
+        self._auth_header = auth_header
+        self._findings_pipeline_cb = findings_pipeline_cb
+
+    def _run(self, session: GodModeSession) -> None:
+        import asyncio as _asyncio
+        target = session.target
+        auth = self._auth_header or ""
+        if session.auth_config:
+            token = (session.auth_config.get("token") or
+                     session.auth_config.get("bearer") or
+                     session.auth_config.get("bearer_token") or "")
+            if token:
+                auth = f"Bearer {token}"
+
+        log.info("[GOD MODE] AIRedTeamMission: starting AI red-team battery against %s", target)
+        all_findings: list = []
+        TIMEOUT_PER_ENGINE = 120  # seconds per async engine call
+
+        async def _run_async_engines():
+            _results = []
+            # 1. Multi-turn chaining across 6 strategies
+            try:
+                from oneinfinity.ai_security.multi_turn_chainer import (
+                    MultiTurnChainer, ChainStrategy,
+                )
+                chainer = MultiTurnChainer(target_url=target)
+                for strategy in ChainStrategy:
+                    try:
+                        result = await _asyncio.wait_for(
+                            chainer.run_chain(
+                                strategy=strategy,
+                                max_turns=5,
+                                auth_header=auth,
+                                stop_on_success=False,
+                            ),
+                            timeout=90,
+                        )
+                        if getattr(result, "finding", None):
+                            _results.append(result.finding)
+                        for turn in getattr(result, "turns", []) or []:
+                            if getattr(turn, "success", False) and getattr(turn, "score", 0) >= 0.5:
+                                _results.append({
+                                    "vuln_type": "llm_jailbreak",
+                                    "sub_type": strategy.value,
+                                    "severity": "high",
+                                    "endpoint": target,
+                                    "payload": str(getattr(turn, "prompt", ""))[:400],
+                                    "evidence": f"Multi-turn {strategy.value}: turn {getattr(turn, 'turn_num', 0)} (score={getattr(turn, 'score', 0):.2f})",
+                                    "confidence": float(getattr(turn, "score", 0.85)),
+                                    "source_type": "ai_red_team",
+                                    "tool": "multi_turn_chainer",
+                                })
+                    except _asyncio.TimeoutError:
+                        log.debug("[GOD MODE] AIRedTeamMission: strategy %s timed out", strategy.value)
+                    except Exception as _se:
+                        log.debug("[GOD MODE] AIRedTeamMission: strategy %s error: %s", strategy.value, _se)
+            except ImportError:
+                log.debug("[GOD MODE] AIRedTeamMission: MultiTurnChainer not available")
+            except Exception as _ce:
+                log.warning("[GOD MODE] AIRedTeamMission: MultiTurnChainer failed: %s", _ce)
+
+            # 2. RAG Poisoning
+            try:
+                from oneinfinity.ai_security.rag_poisoning_engine import RAGPoisoningEngine
+                rag = RAGPoisoningEngine(auth_header=auth, timeout=30)
+                rag_findings = await _asyncio.wait_for(rag.scan(target), timeout=TIMEOUT_PER_ENGINE)
+                _results.extend(rag_findings or [])
+            except _asyncio.TimeoutError:
+                log.debug("[GOD MODE] AIRedTeamMission: RAGPoisoningEngine timed out")
+            except ImportError:
+                log.debug("[GOD MODE] AIRedTeamMission: RAGPoisoningEngine not available")
+            except Exception as _re:
+                log.debug("[GOD MODE] AIRedTeamMission: RAGPoisoningEngine error: %s", _re)
+
+            # 3. LLM DoS
+            try:
+                from oneinfinity.ai_security.llm_dos_engine import LLMDoSEngine
+                dos = LLMDoSEngine(auth_header=auth, timeout=60)
+                dos_findings = await _asyncio.wait_for(dos.scan(target), timeout=TIMEOUT_PER_ENGINE)
+                _results.extend(dos_findings or [])
+            except _asyncio.TimeoutError:
+                log.debug("[GOD MODE] AIRedTeamMission: LLMDoSEngine timed out")
+            except ImportError:
+                log.debug("[GOD MODE] AIRedTeamMission: LLMDoSEngine not available")
+            except Exception as _de:
+                log.debug("[GOD MODE] AIRedTeamMission: LLMDoSEngine error: %s", _de)
+
+            # 4. LLM Supply Chain Scanner
+            try:
+                from oneinfinity.ai_security.llm_supply_chain_scanner import LLMSupplyChainScanner
+                supply = LLMSupplyChainScanner(auth_header=auth, timeout=30)
+                supply_findings = await _asyncio.wait_for(supply.scan(target), timeout=TIMEOUT_PER_ENGINE)
+                _results.extend(supply_findings or [])
+            except _asyncio.TimeoutError:
+                log.debug("[GOD MODE] AIRedTeamMission: LLMSupplyChainScanner timed out")
+            except ImportError:
+                log.debug("[GOD MODE] AIRedTeamMission: LLMSupplyChainScanner not available")
+            except Exception as _sce:
+                log.debug("[GOD MODE] AIRedTeamMission: LLMSupplyChainScanner error: %s", _sce)
+
+
+            # 5. ModelExtractionEngine (system prompt / architecture / boundary probes)
+            try:
+                from oneinfinity.ai.model_extraction_engine import ModelExtractionEngine
+                extractor = ModelExtractionEngine(target_url=target, auth_header=auth, timeout=60)
+                extraction_findings = await _asyncio.wait_for(
+                    extractor.scan(), timeout=TIMEOUT_PER_ENGINE
+                )
+                _results.extend(extraction_findings or [])
+            except _asyncio.TimeoutError:
+                log.debug("[GOD MODE] AIRedTeamMission: ModelExtractionEngine timed out")
+            except ImportError:
+                log.debug("[GOD MODE] AIRedTeamMission: ModelExtractionEngine not available")
+            except Exception as _mee:
+                log.debug("[GOD MODE] AIRedTeamMission: ModelExtractionEngine error: %s", _mee)
+            return _results
+
+        # Run async engines via asyncio.run()
+        try:
+            all_findings = _asyncio.run(
+                _asyncio.wait_for(_run_async_engines(), timeout=600)
+            )
+        except _asyncio.TimeoutError:
+            log.warning("[GOD MODE] AIRedTeamMission: async battery timed out after 600s")
+        except Exception as exc:
+            log.warning("[GOD MODE] AIRedTeamMission: async run error: %s", exc)
+
+        # 5. AgentHijackHarness (synchronous .scan())
+        try:
+            from oneinfinity.ai.agent_hijack_harness import AgentHijackHarness
+            api_key = session.auth_config.get("api_key", "") if session.auth_config else ""
+            harness = AgentHijackHarness()
+            harness_findings = harness.scan(target_url=target, api_key=api_key, timeout=120)
+            all_findings.extend(harness_findings or [])
+        except ImportError:
+            log.debug("[GOD MODE] AIRedTeamMission: AgentHijackHarness not available")
+        except Exception as exc:
+            log.warning("[GOD MODE] AIRedTeamMission: AgentHijackHarness error: %s", exc)
+
+        # Ingest findings
+        new_count = len(all_findings)
+        session.add_findings(new_count)
+        session.phases_complete.append("ai_red_team")
+        if all_findings:
+            try:
+                from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
+                bus = get_ingestion_engine()
+                for f in all_findings:
+                    fd = f if isinstance(f, dict) else (f.__dict__ if hasattr(f, "__dict__") else {})
+                    if fd:
+                        # Normalise: all AI red-team findings use ai_-prefixed vuln_type in PG
+                        fd = dict(fd)
+                        _vt = fd.get("vuln_type") or ""
+                        if not _vt.startswith("ai_"):
+                            fd["vuln_type"] = f"ai_{_vt}" if _vt else "ai_finding"
+                        # Severity derived from confidence / jailbreak success rate when absent
+                        if not fd.get("severity"):
+                            _conf = float(fd.get("confidence", 0) or 0)
+                            fd["severity"] = (
+                                "critical" if _conf >= 0.8 else
+                                "high"     if _conf >= 0.5 else
+                                "medium"
+                            )
+                        bus.ingest(RawResult(scan_id=session.scan_id, source="god-mode-ai-red-team", raw=fd))
+            except Exception as exc:
+                log.warning("[GOD MODE] AIRedTeamMission ingestion failed: %s", exc)
+
+        # Apply confidence scoring + confirmation pipeline per-phase
+        if self._findings_pipeline_cb is not None and all_findings:
+            try:
+                _fds = [
+                    f if isinstance(f, dict) else (f.__dict__ if hasattr(f, "__dict__") else {})
+                    for f in all_findings if f
+                ]
+                self._findings_pipeline_cb(_fds, scan_id=session.scan_id)
+            except Exception as _cb_exc:
+                log.warning("[GOD MODE] AIRedTeamMission findings_pipeline_cb failed: %s", _cb_exc)
+
+        log.info("[GOD MODE] AIRedTeamMission complete — %d findings", new_count)
+        self._result = {"findings": new_count, "tools_run": [
+            "multi_turn_chainer", "rag_poisoning", "llm_dos",
+            "llm_supply_chain", "model_extraction", "agent_hijack",
+        ]}
+
+
+# ── AICouncilMission ───────────────────────────────────────────────────────────
+
+class AICouncilMission(Mission):
+    """
+    Runs the full Autonomous Vulnerability Discovery Council pipeline:
+    SensorAgent → ReasoningAgent → AdaptationAgent → StepwiseExploitRunner
+    → MCPSurfaceScanner → LLMGuidedPostExploit → ScribeAgent → save_council_run.
+
+    Conditional on _is_ai_target() — only starts for AI-type endpoints.
+    Every sub-step is independently try/except wrapped; the mission never raises.
+    """
+
+    def __init__(self, foundation: "FoundationMission", auth_config: dict = None) -> None:
+        super().__init__("ai_council")
+        self._foundation = foundation
+        self._auth_config = auth_config or {}
+
+    def _run(self, session: GodModeSession) -> None:  # noqa: C901
+        import asyncio as _asyncio
+        target   = session.target
+        scan_id  = session.scan_id
+        auth_cfg = self._auth_config or {}
+
+        auth_headers: dict = {}
+        _bearer = (
+            auth_cfg.get("bearer_token") or
+            auth_cfg.get("token") or
+            auth_cfg.get("bearer") or ""
+        )
+        if _bearer:
+            if not _bearer.startswith("Bearer "):
+                _bearer = f"Bearer {_bearer}"
+            auth_headers["Authorization"] = _bearer
+
+        log.info("[GOD MODE] AICouncilMission starting for %s", target)
+
+        surface_profile = None
+        # ── Step 1: SensorAgent surface profiling ──────────────────────────
+        try:
+            from oneinfinity.ai.sensor_agent import SensorAgent
+            auth_header_str = auth_headers.get("Authorization", "")
+            sensor = SensorAgent(auth_header=auth_header_str)
+            surface_profile = sensor.run(target, scan_id)
+            log.info("[AICouncilMission] SensorAgent complete — profile=%r", type(surface_profile).__name__)
+        except Exception as exc:
+            log.warning("[AICouncilMission] SensorAgent failed (non-fatal): %s", exc)
+
+        exploit_plan = None
+        # ── Step 2: ReasoningAgent — build exploit plan ────────────────────
+        try:
+            from oneinfinity.ai.reasoning_agent import ReasoningAgent
+            profile_dict = {}
+            if surface_profile is not None:
+                profile_dict = (
+                    surface_profile.to_dict()
+                    if hasattr(surface_profile, "to_dict")
+                    else surface_profile.__dict__
+                )
+            profile_dict.setdefault("target", target)
+            exploit_plan = ReasoningAgent(surface_profile=profile_dict).build_plan()
+            log.info("[AICouncilMission] ReasoningAgent complete — plan=%r", type(exploit_plan).__name__)
+        except Exception as exc:
+            log.warning("[AICouncilMission] ReasoningAgent failed (non-fatal): %s", exc)
+
+        # ── Step 3: AdaptationAgent instantiation ─────────────────────────
+        adaptation_agent = None
+        try:
+            from oneinfinity.ai.adaptation_agent import AdaptationAgent
+            adaptation_agent = AdaptationAgent(surface_profile=surface_profile)
+            log.info("[AICouncilMission] AdaptationAgent instantiated")
+        except Exception as exc:
+            log.warning("[AICouncilMission] AdaptationAgent init failed (non-fatal): %s", exc)
+
+        exploit_trace = None
+        # ── Step 4: StepwiseExploitRunner ─────────────────────────────────
+        try:
+            from oneinfinity.ai.stepwise_runner import StepwiseExploitRunner
+            runner = StepwiseExploitRunner(
+                exploit_plan,
+                target,
+                adaptation_agent=adaptation_agent,
+            )
+            exploit_trace = runner.run()
+            log.info("[AICouncilMission] StepwiseExploitRunner complete — trace=%r", type(exploit_trace).__name__)
+        except Exception as exc:
+            log.warning("[AICouncilMission] StepwiseExploitRunner failed (non-fatal): %s", exc)
+
+        # ── Step 5: Ingest ExploitTrace findings ──────────────────────────
+        try:
+            if exploit_trace is not None:
+                from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
+                bus = get_ingestion_engine()
+                steps = getattr(exploit_trace, "steps", []) or []
+                for step in steps:
+                    fd = step if isinstance(step, dict) else (step.__dict__ if hasattr(step, "__dict__") else {})
+                    if fd:
+                        bus.ingest(RawResult(scan_id=scan_id, source="god-mode-ai-council", raw=fd))
+                log.info("[AICouncilMission] Ingested %d exploit trace steps", len(steps))
+        except Exception as exc:
+            log.warning("[AICouncilMission] ExploitTrace ingestion failed (non-fatal): %s", exc)
+
+        mcp_result = None
+        # ── Step 6: MCPSurfaceScanner ─────────────────────────────────────
+        try:
+            from oneinfinity.ai_security.mcp_surface_scanner import MCPSurfaceScanner
+            mcp_result = MCPSurfaceScanner().scan(target, scan_id)
+            log.info("[AICouncilMission] MCPSurfaceScanner complete — result=%r", type(mcp_result).__name__)
+        except ImportError:
+            log.debug("[AICouncilMission] MCPSurfaceScanner not available")
+        except Exception as exc:
+            log.warning("[AICouncilMission] MCPSurfaceScanner failed (non-fatal): %s", exc)
+
+        post_exploit_report = None
+        # ── Step 7: LLMGuidedPostExploit (only if overall_success) ────────
+        try:
+            overall_success = bool(
+                exploit_trace is not None and
+                getattr(exploit_trace, "overall_success", False)
+            )
+            if overall_success:
+                from oneinfinity.attack.post_exploit_engine import LLMGuidedPostExploit, PostExploitContext
+                pe_findings = []
+                if exploit_trace is not None:
+                    steps = getattr(exploit_trace, "steps", []) or []
+                    for s in steps:
+                        pe_findings.append(
+                            s if isinstance(s, dict) else (s.__dict__ if hasattr(s, "__dict__") else {})
+                        )
+                pec = PostExploitContext(target=target)
+                pe = LLMGuidedPostExploit(target=target, findings=pe_findings)
+                post_exploit_report = pe.run_llm_guided(pec)
+                log.info("[AICouncilMission] LLMGuidedPostExploit complete")
+        except Exception as exc:
+            log.warning("[AICouncilMission] LLMGuidedPostExploit failed (non-fatal): %s", exc)
+
+        report = None
+        # ── Step 8: ScribeAgent — generate report ─────────────────────────
+        try:
+            from oneinfinity.agents.scribe_agent import ScribeAgent
+            sp_d  = (surface_profile.to_dict() if hasattr(surface_profile, "to_dict")
+                     else (surface_profile.__dict__ if surface_profile else {}))
+            ep_d  = (exploit_plan.to_dict() if hasattr(exploit_plan, "to_dict")
+                     else (exploit_plan.__dict__ if exploit_plan else {}))
+            et_d  = (exploit_trace.to_dict() if hasattr(exploit_trace, "to_dict")
+                     else (exploit_trace.__dict__ if exploit_trace else {}))
+            per_d = (post_exploit_report.to_dict() if hasattr(post_exploit_report, "to_dict")
+                     else (post_exploit_report.__dict__ if post_exploit_report else {}))
+            report = ScribeAgent().write(sp_d, ep_d, et_d, per_d, {}, scan_id=scan_id)
+            log.info("[AICouncilMission] ScribeAgent report generated (%d chars)", len(report) if report else 0)
+        except Exception as exc:
+            log.warning("[AICouncilMission] ScribeAgent failed (non-fatal): %s", exc)
+
+        # ── Step 9: Persist to council_runs ───────────────────────────────
+        try:
+            from oneinfinity.core.pg_client import save_council_run
+            sp_d  = (surface_profile.to_dict() if hasattr(surface_profile, "to_dict")
+                     else (surface_profile.__dict__ if surface_profile else {}))
+            ep_d  = (exploit_plan.to_dict() if hasattr(exploit_plan, "to_dict")
+                     else (exploit_plan.__dict__ if exploit_plan else {}))
+            et_d  = (exploit_trace.to_dict() if hasattr(exploit_trace, "to_dict")
+                     else (exploit_trace.__dict__ if exploit_trace else {}))
+            overall_ok = bool(exploit_trace is not None and getattr(exploit_trace, "overall_success", False))
+            success_n  = int(getattr(exploit_trace, "success_count", 0) if exploit_trace else 0)
+            try:
+                _asyncio.run(save_council_run(
+                    scan_id=scan_id, target=target,
+                    surface_profile=sp_d, exploit_plan=ep_d,
+                    exploit_trace=et_d,
+                    overall_success=overall_ok,
+                    findings_count=success_n,
+                ))
+            except RuntimeError:
+                # already in a running loop (background thread edge case) — fire-and-forget
+                import threading as _t
+                _t.Thread(
+                    target=lambda: _asyncio.run(save_council_run(
+                        scan_id=scan_id, target=target,
+                        surface_profile=sp_d, exploit_plan=ep_d,
+                        exploit_trace=et_d,
+                        overall_success=overall_ok,
+                        findings_count=success_n,
+                    )),
+                    daemon=True,
+                ).start()
+            log.info("[AICouncilMission] council_run persisted scan_id=%s", scan_id)
+        except Exception as exc:
+            log.warning("[AICouncilMission] save_council_run failed (non-fatal): %s", exc)
+
+        # ── Step 10: add findings to session ──────────────────────────────
+        try:
+            success_count = int(getattr(exploit_trace, "success_count", 0) if exploit_trace else 0)
+            session.add_findings(success_count)
+        except Exception as exc:
+            log.warning("[AICouncilMission] add_findings failed (non-fatal): %s", exc)
+
+        # ── Step 11: mark phase complete ──────────────────────────────────
+        session.phases_complete.append("ai_council")
+        log.info("[GOD MODE] AICouncilMission complete — target=%s", target)
+        self._result = {
+            "surface_profile": bool(surface_profile),
+            "exploit_plan":    bool(exploit_plan),
+            "exploit_trace":   bool(exploit_trace),
+            "mcp_result":      bool(mcp_result),
+            "post_exploit":    bool(post_exploit_report),
+            "report":          bool(report),
+        }
+
+
+# ── ZeroHypothesisMission ──────────────────────────────────────────────────────
+
+class ZeroHypothesisMission(Mission):
+    """
+    Generates zero-day vulnerability hypotheses from the attack graph AFTER
+    FullScanMission completes. Polls full_scan.is_done() before running.
+
+    Starts alongside FullScanMission but blocks internally until FullScan completes.
+    """
+
+    def __init__(self, full_scan: "FullScanMission", foundation: "FoundationMission") -> None:
+        super().__init__("zero_hypothesis")
+        self._full_scan = full_scan
+        self._foundation = foundation
+
+    def _run(self, session: GodModeSession) -> None:
+        import time as _time
+        # Wait for FullScanMission to complete (or stop event)
+        log.info("[GOD MODE] ZeroHypothesisMission: waiting for FullScanMission to complete")
+        while not self._full_scan.is_done() and not self._stop_event.is_set():
+            _time.sleep(5)
+
+        if self._full_scan.status != "done":
+            log.warning("[GOD MODE] ZeroHypothesisMission: FullScanMission did not complete (status=%s) — skipping",
+                        self._full_scan.status)
+            self._result = {"hypotheses": 0, "skipped": True}
+            return
+
+        log.info("[GOD MODE] ZeroHypothesisMission: FullScan done — generating hypotheses for %s", session.target)
+
+        hypotheses = []
+        try:
+            from oneinfinity.intelligence.zero_day_hypothesis import ZeroDayHypothesisEngine
+            engine = ZeroDayHypothesisEngine()
+            hypotheses = engine.generate(target=session.target, top_n=25) or []
+        except ImportError:
+            log.debug("[GOD MODE] ZeroHypothesisMission: ZeroDayHypothesisEngine not available")
+        except Exception as exc:
+            log.warning("[GOD MODE] ZeroHypothesisMission: hypothesis generation failed: %s", exc)
+
+        count = len(hypotheses)
+        log.info("[GOD MODE] ZeroHypothesisMission: generated %d hypotheses", count)
+        session.phases_complete.append("zero_hypothesis")
+
+        if hypotheses:
+            session.add_findings(count)
+            try:
+                from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
+                bus = get_ingestion_engine()
+                for h in hypotheses:
+                    fd = h.to_dict() if hasattr(h, "to_dict") else (h.__dict__ if hasattr(h, "__dict__") else {})
+                    if fd:
+                        bus.ingest(RawResult(scan_id=session.scan_id, source="god-mode-zero-hypothesis", raw=fd))
+            except Exception as exc:
+                log.warning("[GOD MODE] ZeroHypothesisMission ingestion failed: %s", exc)
+
+            # Emit events so ResearchMission can act on hypotheses
+            try:
+                from oneinfinity.orchestration.event_bus import get_bus, EventType
+                ebus = get_bus()
+                for h in hypotheses:
+                    fd = h.to_dict() if hasattr(h, "to_dict") else {}
+                    if fd:
+                        ebus.publish(EventType.NEW_VULNERABILITY, fd, source="god-mode-zero-hypothesis")
+            except Exception as exc:
+                log.warning("[GOD MODE] ZeroHypothesisMission event publish failed: %s", exc)
+
+        self._result = {"hypotheses": count}
+
+
+# ── AdvancedScanMission ─────────────────────────────────────────────────────────
+
+class AdvancedScanMission(Mission):
+    """
+    Runs UnifiedAdvancedScanner as a parallel 'second opinion' mission
+    alongside FullScanMission. Always-on — starts immediately with FullScan.
+    """
+
+    def __init__(self, foundation: "FoundationMission", auth_config: dict = None) -> None:
+        super().__init__("advanced_scan_mission")
+        self._foundation = foundation
+        self._auth_config = auth_config or {}
+
+    def _run(self, session: GodModeSession) -> None:
+        import asyncio as _asyncio
+
+        log.info("[GOD MODE] AdvancedScanMission: starting 17-phase scanner for %s", session.target)
+        out_dir = str(GOD_MODE_DIR / session.scan_id / "advanced_mission")
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+        result = None
+        try:
+            from oneinfinity.scan.unified_advanced_scanner import UnifiedAdvancedScanner
+            scanner = UnifiedAdvancedScanner(target=session.target)
+            result = _asyncio.run(
+                _asyncio.wait_for(
+                    scanner.run_full_scan(account_configs=None, oob_domain=None),
+                    timeout=1800,
+                )
+            )
+        except _asyncio.TimeoutError:
+            log.warning("[GOD MODE] AdvancedScanMission: timed out after 1800s — using partial results")
+        except ImportError:
+            log.debug("[GOD MODE] AdvancedScanMission: UnifiedAdvancedScanner not available")
+        except Exception as exc:
+            log.warning("[GOD MODE] AdvancedScanMission: run_full_scan error (non-fatal): %s", exc)
+
+        new_count = 0
+        if result is not None:
+            raw = result.to_dict() if hasattr(result, "to_dict") else {}
+            findings = raw.get("idor_findings", []) + raw.get("race_findings", []) + raw.get("bypass_findings", [])
+            # Quick count — detailed breakdown written by Phase 2 pipeline phase
+            new_count = raw.get("total_findings", len(findings))
+            session.add_findings(new_count)
+            if findings:
+                try:
+                    from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
+                    bus = get_ingestion_engine()
+                    for f in findings:
+                        if isinstance(f, dict):
+                            bus.ingest(RawResult(scan_id=session.scan_id, source="god-mode-advanced-mission", raw=f))
+                except Exception as exc:
+                    log.warning("[GOD MODE] AdvancedScanMission ingestion failed: %s", exc)
+
+        session.phases_complete.append("advanced_scan_mission")
+        log.info("[GOD MODE] AdvancedScanMission complete — %d findings", new_count)
+        self._result = {"findings": new_count, "output_dir": out_dir}
+
+
 # ── ReportMission ──────────────────────────────────────────────────────────────
 
 class ReportMission(Mission):
@@ -722,8 +1845,55 @@ class GodModeConductor:
         self._endpoint_count: int = 0
         self._research_iters_done: int = 0
 
+        # Phase C+F: auth-tier state (guarded by _lock)
+        self._auth_ctx_registry: dict = {}       # session_id → AuthSessionContext
+        self._spawned_auth_tiers: set = set()    # session_ids already spawned (dedup guard)
+        self._tested_endpoints: dict = {}        # session_id → set[str] (anti-retesting)
+        self._idor_engine = None                 # MultiAccountIDOREngine (lazy-init on first cred)
+        self._idor_accounts: list = []           # AccountContext objects accumulated
+
         # Event bus unsubscribe handles
         self._bus_handlers: list = []
+
+        # Findings pipeline components (wired in after each phase)
+        try:
+            from oneinfinity.findings.confirmed_pipeline import ConfirmationCoordinator
+            self._confirmation_coordinator = ConfirmationCoordinator()
+        except Exception as _e:
+            log.warning("[GOD MODE] ConfirmationCoordinator unavailable: %s", _e)
+            self._confirmation_coordinator = None
+
+        try:
+            from oneinfinity.findings.confidence_engine import ConfidenceEngine
+            self._confidence_engine = ConfidenceEngine(auto_upgrade=True)
+        except Exception as _e:
+            log.warning("[GOD MODE] ConfidenceEngine unavailable: %s", _e)
+            self._confidence_engine = None
+
+        try:
+            from oneinfinity.findings.result_aggregator import ResultAggregator
+            self._result_aggregator = ResultAggregator()
+        except Exception as _e:
+            log.warning("[GOD MODE] ResultAggregator unavailable: %s", _e)
+            self._result_aggregator = None
+
+        # Learning stack — wired at conductor construction
+        self._learner = None
+        try:
+            from oneinfinity.learning.realtime_learner import RealtimeLearner
+            self._learner = RealtimeLearner()
+            self._learner.start()
+            log.info("[GOD MODE] RealtimeLearner started")
+        except Exception as _le:
+            log.debug("[GOD MODE] RealtimeLearner unavailable (non-fatal): %s", _le)
+
+        # Orchestrator integration — activates ModelOrchestrator + EventDrivenEngine + GraphTriggerEngine
+        try:
+            from oneinfinity.orchestration.orchestrator_integration import activate as _orchestrator_activate
+            _orchestrator_activate()
+            log.info("[GOD MODE] ModelOrchestrator + EventDrivenEngine + GraphTriggerEngine activated")
+        except Exception as _oa_exc:
+            log.debug("[GOD MODE] orchestrator_integration.activate failed (non-fatal — requires Redis/Neo4j): %s", _oa_exc)
 
     # ── Event bus ─────────────────────────────────────────────────────────────
 
@@ -746,15 +1916,75 @@ class GodModeConductor:
                 if count == EVENT_UNLOCK_ENDPOINT_THRESHOLD:
                     log.info("[GOD MODE] %d endpoints → unlocking SwarmMission", count)
                     self._unlock_mission("swarm")
+                # Also unlock AIRedTeamMission if a new endpoint looks like an AI API
+                _event_url = (event.data or {}).get("url", "")
+                if any(hint in _event_url.lower() for hint in AIRedTeamMission._AI_PATH_HINTS):
+                    log.info("[GOD MODE] AI endpoint detected (%s) → unlocking AIRedTeamMission", _event_url)
+                    self._unlock_mission("ai_red_team")
+
+            def _on_credential_acquired(event) -> None:
+                """Phase C: spawn scoped auth-tiered recon + Phase F: feed IDOR engine."""
+                data = event.data or {}
+                session_id = data.get("session_id", "")
+                target = data.get("target") or (self._session.target if self._session else "")
+                scan_id = data.get("scan_id", "")
+                auth_tier = data.get("auth_tier", 1)
+                username = data.get("username", "unknown")
+                if not session_id or not self._session:
+                    return
+                with self._lock:
+                    if session_id in self._spawned_auth_tiers:
+                        log.debug("[GOD MODE] CREDENTIAL_ACQUIRED duplicate skipped for session %s", session_id)
+                        return
+                    self._spawned_auth_tiers.add(session_id)
+                log.info("[GOD MODE] CREDENTIAL_ACQUIRED — username=%s tier=%d — spawning scoped recon",
+                         username, auth_tier)
+                # Spawn scoped recon in a daemon thread (PE2: sync handler, no await)
+                threading.Thread(
+                    target=self._run_scoped_auth_recon,
+                    args=(target, session_id, auth_tier, scan_id),
+                    daemon=True,
+                    name=f"auth-recon-tier{auth_tier}-{session_id[:8]}",
+                ).start()
+                # Phase F: feed MultiAccountIDOREngine
+                threading.Thread(
+                    target=self._feed_idor_engine,
+                    args=(session_id, data.get("role_hint", "attacker"), target, scan_id),
+                    daemon=True,
+                    name=f"idor-feed-{session_id[:8]}",
+                ).start()
+
+            def _on_surface_enriched(event) -> None:
+                """Run AuthenticatedTestSuite on newly discovered auth-tier endpoints."""
+                data = event.data or {}
+                new_urls = data.get("new_urls", [])
+                session_id = data.get("source_session_id", "")
+                target = data.get("target", "")
+                scan_id = data.get("scan_id", "")
+                if not new_urls or not session_id:
+                    return
+                auth_ctx = self._auth_ctx_registry.get(session_id)
+                if not auth_ctx:
+                    return
+                threading.Thread(
+                    target=self._run_auth_test_suite,
+                    args=(target, new_urls, auth_ctx, session_id, scan_id),
+                    daemon=True,
+                    name=f"auth-test-{session_id[:8]}",
+                ).start()
 
             bus = get_bus()
             bus.on(EventType.NEW_VULNERABILITY, _on_vuln)
             bus.on(EventType.NEW_ENDPOINT, _on_endpoint)
+            bus.on(EventType.CREDENTIAL_ACQUIRED, _on_credential_acquired)
+            bus.on(EventType.SURFACE_ENRICHED, _on_surface_enriched)
             self._bus_handlers = [
                 (EventType.NEW_VULNERABILITY, _on_vuln),
                 (EventType.NEW_ENDPOINT, _on_endpoint),
+                (EventType.CREDENTIAL_ACQUIRED, _on_credential_acquired),
+                (EventType.SURFACE_ENRICHED, _on_surface_enriched),
             ]
-            log.info("[GOD MODE] Event bus subscriptions active")
+            log.info("[GOD MODE] Event bus subscriptions active (incl. CREDENTIAL_ACQUIRED)")
         except Exception as exc:
             log.warning("[GOD MODE] Event bus subscription failed (non-fatal): %s", exc)
 
@@ -770,6 +2000,203 @@ class GodModeConductor:
         except Exception as exc:
             log.warning("[GOD MODE] Event bus unsubscribe failed: %s", exc)
         self._bus_handlers = []
+
+    def _run_scoped_auth_recon(self, target: str, session_id: str,
+                                auth_tier: int, scan_id: str) -> None:
+        """Phase C: Run AdaptiveReconEngine scoped to a new auth tier.
+        Copies tier-0 artifacts so phases 1-3 are skipped; only the
+        auth-aware Playwright crawl adds new surface.
+        DA2 design: output_dir namespacing + set-diff for SURFACE_ENRICHED.
+        """
+        try:
+            from oneinfinity.auth.session_manager import SessionManager
+            from oneinfinity.auth.auth_session_context import AuthSessionContext
+            from oneinfinity.recon.adaptive_recon_engine import AdaptiveReconEngine
+            from oneinfinity.orchestration.event_bus import get_bus, EventType
+            import shutil
+
+            session = (SessionManager().load(name=f"spray_{session_id}") or
+                       SessionManager().load(name=session_id))
+            if not session:
+                log.warning("[GOD MODE] _run_scoped_auth_recon: session %s not found", session_id)
+                return
+
+            auth_ctx = AuthSessionContext(session)
+            with self._lock:
+                self._auth_ctx_registry[session_id] = auth_ctx
+
+            # Scoped output dir (DA2: separate from tier-0 to avoid cache collision)
+            scoped_out = GOD_MODE_DIR / scan_id / f"recon_tier{auth_tier}_{session_id[:8]}"
+            scoped_out.mkdir(parents=True, exist_ok=True)
+
+            # Copy tier-0 artifacts so _load_existing_recon() skips phases 1-3
+            tier0_dir = GOD_MODE_DIR / scan_id / "recon"
+            for fname in ("subdomains.json", "alive_hosts.json", "urls.json"):
+                src = tier0_dir / fname
+                dst = scoped_out / fname
+                if src.exists() and not dst.exists():
+                    shutil.copy2(src, dst)
+
+            # Load tier-0 URL set for delta computation
+            tier0_urls: set = set()
+            urls_file = tier0_dir / "urls.json"
+            if urls_file.exists():
+                import json as _j
+                tier0_urls = set(_j.loads(urls_file.read_text()))
+
+            log.info("[GOD MODE] Scoped auth recon starting — tier=%d session=%s", auth_tier, session_id[:8])
+            engine = AdaptiveReconEngine(
+                target=target,
+                output_dir=str(scoped_out),
+                depth="standard",
+                auth_context=auth_ctx,
+            )
+            intel = engine.run()
+
+            # Compute new surface vs tier-0
+            auth_urls = set(intel.all_urls) if intel and intel.all_urls else set()
+            new_urls = auth_urls - tier0_urls
+            log.info("[GOD MODE] Scoped auth recon complete — %d total URLs, %d new vs tier-0",
+                     len(auth_urls), len(new_urls))
+
+            if new_urls:
+                # Emit SURFACE_ENRICHED with delta URLs
+                get_bus().publish(
+                    EventType.SURFACE_ENRICHED,
+                    {
+                        "target": target,
+                        "auth_tier": auth_tier,
+                        "new_urls": sorted(new_urls),
+                        "all_urls": sorted(auth_urls),
+                        "source_session_id": session_id,
+                        "scan_id": scan_id,
+                        "endpoints_found": len(new_urls),
+                    },
+                    source="auth-recon",
+                    correlation_id=scan_id,
+                )
+            # Emit AUTH_TIER_UNLOCKED for convergence tracking
+            get_bus().publish(
+                EventType.AUTH_TIER_UNLOCKED,
+                {"auth_tier": auth_tier, "target": target, "scan_id": scan_id,
+                 "endpoints_found": len(auth_urls)},
+                source="auth-recon",
+            )
+        except Exception as exc:
+            log.warning("[GOD MODE] _run_scoped_auth_recon failed (non-fatal): %s", exc, exc_info=True)
+
+    def _run_auth_test_suite(self, target: str, new_urls: list, auth_ctx,
+                              session_id: str, scan_id: str) -> None:
+        """Run AuthenticatedTestSuite on newly discovered auth-tier endpoints.
+        RTL2 anti-retesting: skip endpoints already tested for this session.
+        """
+        try:
+            from oneinfinity.auth.authenticated_test_suite import AuthenticatedTestSuite
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
+
+            # Anti-retesting: filter endpoints already tested for this session
+            already_tested = self._tested_endpoints.get(session_id, set())
+            fresh_eps = [ep for ep in new_urls if ep not in already_tested]
+            if not fresh_eps:
+                log.debug("[GOD MODE] AuthTestSuite: no new endpoints for session %s", session_id[:8])
+                return
+
+            # Limit to 200 endpoints per run (RTL2 recommendation)
+            fresh_eps = fresh_eps[:200]
+            log.info("[GOD MODE] AuthTestSuite running %d endpoints for session %s",
+                     len(fresh_eps), session_id[:8])
+
+            suite = AuthenticatedTestSuite(target=target, endpoints=fresh_eps, auth_context=auth_ctx)
+            findings = suite.run_all()
+
+            # Mark tested
+            with self._lock:
+                self._tested_endpoints.setdefault(session_id, set()).update(fresh_eps)
+
+            # Ingest findings
+            if findings:
+                ie = get_ingestion_engine()
+                for f in findings:
+                    try:
+                        ie.ingest(RawResult(
+                            scan_id=scan_id,
+                            source="auth-test-scoped",
+                            raw=f.to_dict() if hasattr(f, "to_dict") else f.__dict__,
+                        ))
+                    except Exception as _ie:
+                        log.debug("[GOD MODE] AuthTestSuite ingest error: %s", _ie)
+                log.info("[GOD MODE] AuthTestSuite complete — %d findings ingested", len(findings))
+                if self._session:
+                    self._session.add_findings(len(findings))
+        except Exception as exc:
+            log.warning("[GOD MODE] _run_auth_test_suite failed (non-fatal): %s", exc, exc_info=True)
+
+    def _feed_idor_engine(self, session_id: str, role: str, target: str, scan_id: str) -> None:
+        """Phase F: Feed MultiAccountIDOREngine with new credential.
+        RTL2: buffer accounts, trigger test when ≥2 accounts available.
+        """
+        try:
+            from oneinfinity.auth.session_manager import SessionManager
+            from oneinfinity.auth.multi_account_idor_engine import (
+                MultiAccountIDOREngine, AccountContext, get_multi_account_idor_engine
+            )
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
+            import asyncio as _asyncio
+
+            session = (SessionManager().load(name=f"spray_{session_id}") or
+                       SessionManager().load(name=session_id))
+            if not session:
+                log.warning("[GOD MODE] _feed_idor_engine: session %s not found", session_id)
+                return
+
+            account = AccountContext(role=role, session=session)
+            engine = get_multi_account_idor_engine(target)
+            engine.add_account_from_session(role=role, session=session)
+
+            with self._lock:
+                self._idor_accounts.append(account)
+                account_count = len(self._idor_accounts)
+
+            log.info("[GOD MODE] IDOR engine: %d accounts loaded (need ≥2 to run)", account_count)
+
+            # Need at least 2 accounts for cross-account IDOR testing
+            if account_count < 2:
+                # Add anonymous baseline account if none exists yet (OR2 recommendation)
+                from oneinfinity.auth.session_manager import LoginSession
+                import uuid as _uuid, time as _time
+                anon_session = LoginSession(
+                    session_id=f"anon_{scan_id[:8]}",
+                    target=target,
+                    login_url=target,
+                    cookies=[], auth_headers={}, local_storage={},
+                    session_storage={}, indexeddb_snapshot={},
+                    har_path="", recorder="anon_baseline",
+                )
+                engine.add_account_from_session(role="victim_anon", session=anon_session)
+                with self._lock:
+                    self._idor_accounts.append(AccountContext(role="victim_anon", session=anon_session))
+                log.info("[GOD MODE] IDOR engine: added anonymous baseline account")
+
+            # Run IDOR tests
+            log.info("[GOD MODE] Triggering MultiAccountIDOREngine for target %s", target)
+            idor_findings = _asyncio.run(engine.test_all_captured_traffic())
+
+            if idor_findings:
+                ie = get_ingestion_engine()
+                for f in idor_findings:
+                    try:
+                        ie.ingest(RawResult(
+                            scan_id=scan_id,
+                            source="idor-engine",
+                            raw=f.to_dict() if hasattr(f, "to_dict") else (f.__dict__ if hasattr(f, "__dict__") else {}),
+                        ))
+                    except Exception as _ie:
+                        log.debug("[GOD MODE] IDOR ingest error: %s", _ie)
+                log.info("[GOD MODE] IDOR engine complete — %d findings", len(idor_findings))
+                if self._session:
+                    self._session.add_findings(len(idor_findings))
+        except Exception as exc:
+            log.warning("[GOD MODE] _feed_idor_engine failed (non-fatal): %s", exc, exc_info=True)
 
     def _unlock_mission(self, name: str) -> None:
         """Start a mission by name if it's still pending."""
@@ -827,15 +2254,110 @@ class GodModeConductor:
         self._wakeup.set()
         return True
 
+    # ── Findings pipeline helpers ──────────────────────────────────────────────
+
+    def _apply_findings_pipeline(self, findings: list, scan_id: str = "") -> list:
+        """
+        Score confidence on all findings, store updated scores in PostgreSQL,
+        then dispatch ConfirmationCoordinator.process() for confirmed findings.
+        Returns the updated findings list.
+        """
+        if not findings:
+            return findings
+
+        # 1. Re-score confidence
+        if self._confidence_engine is not None:
+            try:
+                findings = self._confidence_engine.score_all(findings)
+                log.info("[GOD MODE] confidence_engine.score_all: %d findings re-scored", len(findings))
+            except Exception as _ce:
+                log.warning("[GOD MODE] confidence_engine.score_all failed: %s", _ce)
+
+        # 2. Persist updated confidence to PostgreSQL
+        self._pg_update_confidence(findings, scan_id)
+
+        # 3. Run ConfirmationCoordinator post-confirmation actions
+        if self._confirmation_coordinator is not None:
+            try:
+                confirmed = self._confirmation_coordinator.process(findings)
+                log.info("[GOD MODE] ConfirmationCoordinator processed %d confirmed findings", confirmed)
+            except Exception as _cc:
+                log.warning("[GOD MODE] ConfirmationCoordinator.process failed: %s", _cc)
+
+        return findings
+
+    def _pg_update_confidence(self, findings: list, scan_id: str) -> None:
+        """Upsert finding confidence scores into PostgreSQL findings table."""
+        if not findings:
+            return
+        try:
+            import asyncio as _asyncio
+            from oneinfinity.core.db_manager import get_db_manager_sync
+
+            async def _upsert_all():
+                mgr = get_db_manager_sync()
+                if not mgr:
+                    return
+                for f in findings:
+                    fid  = f.get("finding_id") or f.get("id")
+                    conf = f.get("confidence")
+                    sev  = f.get("severity")
+                    if not fid or conf is None:
+                        continue
+                    try:
+                        await mgr.execute(
+                            """
+                            UPDATE findings
+                               SET confidence        = $1,
+                                   severity          = $2,
+                                   confidence_breakdown = $3,
+                                   updated_at        = NOW()
+                             WHERE finding_id = $4
+                                OR id          = $4
+                            """,
+                            conf,
+                            sev or f.get("severity", "info"),
+                            f.get("confidence_breakdown", ""),
+                            str(fid),
+                        )
+                    except Exception as _row_exc:
+                        log.debug("[GOD MODE] _pg_update_confidence row %s: %s", fid, _row_exc)
+
+            try:
+                _asyncio.run(_upsert_all())
+            except RuntimeError:
+                # Already inside an event loop
+                import concurrent.futures as _cf
+                with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+                    _ex.submit(_asyncio.run, _upsert_all()).result(timeout=10)
+        except Exception as exc:
+            log.debug("[GOD MODE] _pg_update_confidence failed: %s", exc)
+
     # ── Logging setup ─────────────────────────────────────────────────────────
 
     def _setup_logging(self, scan_id: str) -> str:
         """Set up file logging for GOD MODE session. Returns log path."""
+        import re as _re
+
+        class _TokenRedactFilter(logging.Filter):
+            """Redact Bearer tokens and API keys from all log records."""
+            _BEARER_RE = _re.compile(r'Bearer\s+[A-Za-z0-9._\-]{20,}', _re.I)
+            _APIKEY_RE = _re.compile(r'(api[_-]?key|x-api-key|authorization)[=:\s]+[A-Za-z0-9._\-]{16,}', _re.I)
+
+            def filter(self, record: logging.LogRecord) -> bool:
+                msg = record.getMessage()
+                msg = self._BEARER_RE.sub('Bearer [REDACTED]', msg)
+                msg = self._APIKEY_RE.sub(r'\1=[REDACTED]', msg)
+                record.msg = msg
+                record.args = ()
+                return True
+
         GOD_MODE_LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = str(GOD_MODE_LOG_DIR / f"god-mode-{scan_id}.log")
         fh = logging.FileHandler(log_path, encoding="utf-8")
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        fh.addFilter(_TokenRedactFilter())
         logging.getLogger("oneinfinity").addHandler(fh)
         self._log_handler = fh
         return log_path
@@ -888,6 +2410,16 @@ class GodModeConductor:
                 log.info("[GOD MODE] Convergence detected — finalizing")
                 return "convergence"
 
+            # max_time guard (0 = unlimited)
+            if session.max_time > 0 and session.elapsed() >= session.max_time:
+                log.info("[GOD MODE] Max time %ds reached — finalizing", session.max_time)
+                return "time"
+
+            # max_findings guard (0 = unlimited)
+            if session.max_findings > 0 and session.finding_count >= session.max_findings:
+                log.info("[GOD MODE] Max findings cap %d reached — finalizing", session.max_findings)
+                return "cap"
+
             # Fallback unlock: event bus fires from subprocesses can race with shutdown.
             # Re-check unlock thresholds directly from session finding/endpoint counts.
             with self._lock:
@@ -906,6 +2438,12 @@ class GodModeConductor:
                     self._endpoint_count = EVENT_UNLOCK_ENDPOINT_THRESHOLD
                 log.info("[GOD MODE] Fallback unlock: findings found — triggering SwarmMission")
                 self._unlock_mission("swarm")
+
+            # Reap missions whose thread exited without updating status (crash/kill)
+            for m in self._missions:
+                if m.status == "running" and m._thread is not None and not m._thread.is_alive():
+                    log.warning("[GOD MODE] Mission '%s' thread dead but status still 'running' — marking done", m.name)
+                    m.status = "done"
 
             # All missions done naturally
             active = [m for m in self._missions if m.status == "running"]
@@ -929,6 +2467,9 @@ class GodModeConductor:
         report_fmt: str = "markdown",
         auth_config: dict = None,
         _override_scan_id: str = None,
+        app_context: str = "",
+        max_time: int = 0,
+        max_findings: int = 0,
     ) -> GodModeSession:
         """
         Run GOD MODE against target.
@@ -944,6 +2485,9 @@ class GodModeConductor:
             log_path=log_path,
             background=background,
             auth_config=auth_config or {},
+            app_context=app_context or "",
+            max_time=int(max_time or 0),
+            max_findings=int(max_findings or 0),
         )
         self._session = session
         self._state_file = GodModeStateFile(scan_id)
@@ -953,6 +2497,12 @@ class GodModeConductor:
         print(f"\n[*] GOD MODE — Session: {scan_id}")
         print(f"    Target:    {target}")
         print(f"    Log:       {log_path}")
+        if session.app_context:
+            print(f"    Context:   {session.app_context[:120]}")
+        if session.max_time:
+            print(f"    Max time:  {session.max_time}s")
+        if session.max_findings:
+            print(f"    Max finds: {session.max_findings}")
 
         # ── Stage 1: Foundation (blocking) ─────────────────────────────────
         print(f"\n[*] Stage 1: Foundation...")
@@ -1038,15 +2588,60 @@ class GodModeConductor:
         """Stages 2-5: pipeline + event missions + convergence + report."""
 
         # ── Build mission list ─────────────────────────────────────────────
-        full_scan = FullScanMission(foundation, auth_config=session.auth_config)
+        full_scan = FullScanMission(foundation, auth_config=session.auth_config,
+                                    findings_pipeline_cb=self._apply_findings_pipeline)
         research = ResearchMission(self._convergence) if not no_research else None
         swarm = SwarmMission() if not no_swarm else None
         auth_test = AuthTestMission(getattr(session, "auth_context", None))
         chains = ChainsMission()
         report = ReportMission(report_fmt)
 
-        self._missions = [m for m in [full_scan, research, swarm, auth_test, chains, report] if m is not None]
+        # ── Phase 4 missions ──────────────────────────────────────────────
+        # AIRedTeamMission: conditional on AI target detection
+        _ai_target = _is_ai_target(session.target, session.app_context, foundation.recon)
+        _auth_bearer = ""
+        if session.auth_config:
+            _auth_bearer = (session.auth_config.get("bearer_token") or
+                            session.auth_config.get("token") or
+                            session.auth_config.get("bearer") or "")
+            if _auth_bearer and not _auth_bearer.startswith("Bearer "):
+                _auth_bearer = f"Bearer {_auth_bearer}"
+        ai_red_team = (AIRedTeamMission(auth_header=_auth_bearer,
+                                         findings_pipeline_cb=self._apply_findings_pipeline)
+                       if _ai_target else None)
+        # AICouncilMission: full council pipeline, conditional on AI target
+        ai_council = AICouncilMission(foundation, auth_config=session.auth_config) if _ai_target else None
+        # ZeroHypothesisMission: polls until FullScan done
+        zero_hypothesis = ZeroHypothesisMission(full_scan, foundation)
+        # AdvancedScanMission: parallel cross-validation scanner (always-on)
+        advanced_scan_mission = AdvancedScanMission(foundation, auth_config=session.auth_config)
+
+        self._missions = [m for m in [
+            full_scan, advanced_scan_mission, zero_hypothesis, ai_red_team,
+            ai_council, research, swarm, auth_test, chains, report
+        ] if m is not None]
         self._update_session_missions()
+
+        # ── Intelligence Daemon: start autonomous OSINT workers ───────────
+        try:
+            from oneinfinity.intelligence.intelligence_daemon import IntelligenceDaemon
+            _intel_daemon = IntelligenceDaemon()
+            _intel_daemon.start(target=session.target)
+            log.info("[GOD MODE] IntelligenceDaemon started — 9 autonomous OSINT workers active for %s", session.target)
+        except Exception as _id_exc:
+            log.debug("[GOD MODE] IntelligenceDaemon start failed (non-fatal): %s", _id_exc)
+
+        # ── Orchestrator integration + learner scan init ──────────────────
+        try:
+            from oneinfinity.orchestration.orchestrator_integration import activate
+            activate()
+        except Exception as _act_exc:
+            log.debug("[GOD MODE] orchestrator_integration.activate failed (non-fatal): %s", _act_exc)
+        if self._learner is not None:
+            try:
+                self._learner.start_scan(scan_id=session.scan_id, target=session.target)
+            except Exception as _ls_exc:
+                log.debug("[GOD MODE] RealtimeLearner.start_scan failed (non-fatal): %s", _ls_exc)
 
         # ── Stage 2: subscribe to event bus + launch FullScanMission ──────
         print(f"\n[*] Stage 2: Full scan + event bus active")
@@ -1064,6 +2659,25 @@ class GodModeConductor:
 
         try:
             full_scan.start(session)
+
+            # ── Phase 4 mission starts ─────────────────────────────────────────────
+            # AdvancedScanMission: always-on parallel cross-validation
+            advanced_scan_mission.start(session)
+            log.info("[GOD MODE] AdvancedScanMission started in parallel with FullScanMission")
+
+            # ZeroHypothesisMission: starts now, blocks internally until full_scan.is_done()
+            zero_hypothesis.start(session)
+            log.info("[GOD MODE] ZeroHypothesisMission started — will wait for FullScan completion")
+
+            # AIRedTeamMission: only if AI target was detected
+            if ai_red_team is not None:
+                ai_red_team.start(session)
+                log.info("[GOD MODE] AI target detected — AIRedTeamMission launched immediately")
+
+            # AICouncilMission: only if AI target was detected
+            if ai_council is not None:
+                ai_council.start(session)
+                log.info("[GOD MODE] AI target detected — AICouncilMission launched immediately")
 
             # Fire NEW_ENDPOINT events from Foundation recon so SwarmMission can unlock
             try:
@@ -1114,7 +2728,79 @@ class GodModeConductor:
                 if chains._thread is not None:
                     chains._thread.join(timeout=120)  # wait up to 2 min for chains
 
+            # ── Attack-graph chain suggestions (AttackGraphBuilder.suggest_chains) ──
+            # Build an AttackGraph from all accumulated findings, run BFS chain
+            # detection, write suggestions to JSON, and surface the file path via
+            # the findings-pipeline waf_profile dict so ReportMission can embed it.
+            try:
+                from oneinfinity.attack_graph_core.builder import AttackGraphBuilder
+                from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine as _sgie
+                import json as _sc_json
+                _sc_findings = _sgie().get_findings() or []
+                _sc_builder = AttackGraphBuilder(target=session.target)
+                for _scf in _sc_findings:
+                    if isinstance(_scf, dict):
+                        _sc_builder._add_finding(_scf)
+                _sc_suggestions = _sc_builder.suggest_chains()
+                if _sc_suggestions:
+                    _sc_out_dir = GOD_MODE_DIR / session.scan_id
+                    _sc_out_dir.mkdir(parents=True, exist_ok=True)
+                    _sc_file = _sc_out_dir / "suggested_chains.json"
+                    _sc_file.write_text(_sc_json.dumps(_sc_suggestions, indent=2))
+                    # Surface path via waf_profile-style ctx dict so downstream
+                    # phases (severity_followup, report) can locate it.
+                    session.phases_complete.append("suggest_chains")
+                    log.info("[GOD MODE] suggest_chains: %d chain suggestions → %s",
+                             len(_sc_suggestions), _sc_file)
+                else:
+                    log.debug("[GOD MODE] suggest_chains: no chain suggestions (graph likely sparse)")
+            except Exception as _sc_exc:
+                log.debug("[GOD MODE] suggest_chains skipped (non-fatal): %s", _sc_exc)
+
+
             self._unsubscribe_from_event_bus()
+
+            # ── Findings pipeline: score + confirm + aggregate ─────────────────
+            # Pull all ingested findings from the engine, run confidence scoring,
+            # ConfirmationCoordinator (all 6 post-confirm actions), then aggregate
+            # into a single deduped set before ReportMission.
+            try:
+                from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
+                _all_findings = get_ingestion_engine().get_findings() or []
+                if _all_findings:
+                    _all_findings = self._apply_findings_pipeline(
+                        _all_findings, scan_id=session.scan_id
+                    )
+                    # Consolidate via ResultAggregator for dedup + graph update
+                    if self._result_aggregator is not None:
+                        _task_results = [{"findings": _all_findings,
+                                          "worker_id": "god-mode-aggregator"}]
+                        _agg_result = self._result_aggregator.aggregate(
+                            _task_results, target=session.target
+                        )
+                        self._result_aggregator.store_result(_agg_result)
+                        log.info(
+                            "[GOD MODE] ResultAggregator: %d unique findings "
+                            "(risk=%.1f) stored for ReportMission",
+                            _agg_result.total_findings, _agg_result.risk_score,
+                        )
+                        # Re-ingest deduped findings so ReportMission sees the consolidated set
+                        try:
+                            from oneinfinity.findings.result_ingestion_engine import (
+                                get_ingestion_engine as _gie, RawResult,
+                            )
+                            _eng = _gie()
+                            for _f in _agg_result.findings:
+                                if isinstance(_f, dict) and _f:
+                                    _eng.ingest(RawResult(
+                                        scan_id=session.scan_id,
+                                        source="god-mode-aggregated",
+                                        raw=_f,
+                                    ))
+                        except Exception as _ri:
+                            log.debug("[GOD MODE] Aggregated re-ingest failed: %s", _ri)
+            except Exception as _fp:
+                log.warning("[GOD MODE] Findings pipeline (score+confirm+aggregate) failed: %s", _fp)
 
             # Stage 5: ReportMission (always)
             print(f"\n[*] Stage 5: Finalization...")

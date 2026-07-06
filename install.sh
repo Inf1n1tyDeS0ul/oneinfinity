@@ -2361,6 +2361,7 @@ build_custom_go_binaries() {
         "oi-crawler:oi-crawler:./oi-crawler/cmd/"
         "oi-oob-listener:oi-oob-listener:./oi-oob-listener/"
         "oi-lateral-portscan:oi-lateral-portscan:./oi-lateral-portscan/"
+        "http2_rapid_reset:http2_rapid_reset:./http2_rapid_reset/"
     )
     # oi-ebpf-trace: Linux-only (uses BPF syscall; skipped on macOS where DTrace is used)
     if [[ "${OS_TYPE:-}" == "linux" ]]; then
@@ -3040,6 +3041,44 @@ build_rust_jwt_crack() {
         warn "oi-jwt-crack cargo build failed — check $ONEINFINITY_LOG (non-fatal)"
     fi
 }
+
+# ---------------------------------------------------------------------------
+# build_rust_payload_fuzzer
+# Build the payload-fuzzer binary (Tokio/reqwest fast async payload fuzzer)
+# ---------------------------------------------------------------------------
+build_rust_payload_fuzzer() {
+    section "Rust payload-fuzzer (async HTTP payload fuzzer)"
+
+    local fuzzer_dir="$REPO_DIR/src/rust/payload_fuzzer"
+
+    if [[ ! -d "$fuzzer_dir" ]]; then
+        warn "payload_fuzzer directory not found: $fuzzer_dir — skipping"
+        return 0
+    fi
+
+    if ! command -v cargo &>/dev/null; then
+        warn "cargo not found — skipping payload-fuzzer build"
+        return 0
+    fi
+
+    local out_dir="$HOME/.local/bin"
+    mkdir -p "$out_dir"
+
+    step "Building payload-fuzzer (release)"
+    if (cd "$fuzzer_dir" && \
+        cargo build --release 2>&1 | tee -a "$ONEINFINITY_LOG"); then
+        if [[ -f "$fuzzer_dir/target/release/payload-fuzzer" ]]; then
+            cp "$fuzzer_dir/target/release/payload-fuzzer" "$out_dir/payload-fuzzer"
+            chmod +x "$out_dir/payload-fuzzer"
+            ok "payload-fuzzer built → $out_dir/payload-fuzzer"
+        else
+            warn "payload-fuzzer binary not found after build — check $ONEINFINITY_LOG"
+        fi
+    else
+        warn "payload-fuzzer cargo build failed — check $ONEINFINITY_LOG (non-fatal)"
+    fi
+}
+
 
 # ---------------------------------------------------------------------------
 # update_rust_core  (update mode — rebuild in place)
@@ -3962,6 +4001,7 @@ _build_nim_binaries() {
         "oi-bypass-gen:oi-bypass-gen.nim"
         "oi-post-exploit:oi-post-exploit.nim"
         "oi-shell-gen:oi-shell-gen.nim"
+        "stealth_prober:stealth_prober.nim"
     )
 
     local built=0 failed=0
@@ -4069,12 +4109,12 @@ _compile_ebpf_programs() {
         return 0
     fi
 
-    info "Compiling eBPF programs (ssl_intercept, net_capture, key_extract, syscall_trace, process_inject_detect)..."
+    info "Compiling eBPF programs (ssl_intercept, net_capture, key_extract, syscall_trace, syscall_tracer, process_inject_detect)..."
     local arch
     arch=$(uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/')
 
     # Compile each BPF object: clang -O2 -target bpf -D__TARGET_ARCH_<arch>
-    local -a bpf_sources=("ssl_intercept.bpf.c" "net_capture.bpf.c" "key_extract.bpf.c" "syscall_trace.bpf.c" "process_inject_detect.bpf.c")
+    local -a bpf_sources=("ssl_intercept.bpf.c" "net_capture.bpf.c" "key_extract.bpf.c" "syscall_trace.bpf.c" "syscall_tracer.bpf.c" "process_inject_detect.bpf.c")
     local compiled=0 failed=0
 
     for src in "${bpf_sources[@]}"; do
@@ -4733,6 +4773,7 @@ do_fresh_install() {
     build_rust_core        # Section I: PyO3 Rust core (oneinfinity_core)
     build_rust_fuzzer      # Section I: LibAFL fuzzer binary (oi-fuzzer)
     build_rust_jwt_crack   # Section I: Rust JWT brute-forcer (oi-jwt-crack)
+    build_rust_payload_fuzzer  # Section I: Rust async payload fuzzer (payload-fuzzer)
     # ── Web frontend dependencies ──────────────────────────────────────────
     step "Installing web/frontend npm dependencies"
     if command -v npm &>/dev/null; then
@@ -4764,6 +4805,7 @@ do_update() {
     build_rust_core
     build_rust_fuzzer      # LibAFL fuzzer binary
     build_rust_jwt_crack   # Rust JWT brute-forcer
+    build_rust_payload_fuzzer  # Rust async payload fuzzer
     update_docker_images
     init_all_databases     # re-apply schema/migrations in case of new tables
     _build_nim_binaries    # rebuild Nim binaries from updated source

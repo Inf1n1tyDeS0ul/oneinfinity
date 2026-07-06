@@ -32,11 +32,20 @@ echo -e "${BLUE}[1/3] Checking Databases...${NC}"
 
 services=("redis" "postgresql@14" "neo4j")
 for service in "${services[@]}"; do
-    if brew services list | grep "$service" | grep -q "started"; then
+    brew_status=$(brew services list 2>/dev/null | grep "^$service " | awk '{print $2}')
+    # neo4j manages its own daemon and may show 'error' in brew even when running
+    if [ "$brew_status" = "started" ]; then
         echo -e "${GREEN}  ✓ $service is already running${NC}"
+    elif [ "$service" = "neo4j" ] && neo4j status 2>/dev/null | grep -q "running"; then
+        echo -e "${GREEN}  ✓ neo4j is running (self-managed daemon)${NC}"
     else
         echo -e "  → Starting $service..."
-        brew services start "$service"
+        brew services start "$service" 2>&1 || true
+        # For neo4j, fall back to direct start if brew fails
+        if [ "$service" = "neo4j" ]; then
+            sleep 2
+            neo4j status 2>/dev/null | grep -q "running" || neo4j start 2>/dev/null || true
+        fi
     fi
 done
 

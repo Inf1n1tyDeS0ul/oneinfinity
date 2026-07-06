@@ -189,10 +189,12 @@ class HeadlessBrowserEngine:
         Directory where results are written.
     """
 
-    def __init__(self, target: str, output_dir: str = ".") -> None:
+    def __init__(self, target: str, output_dir: str = ".",
+                 auth_context: Optional[Any] = None) -> None:
         self.target = target.rstrip("/")
         self.output_dir = output_dir
         self._playwright_ok: Optional[bool] = None  # lazily set
+        self._auth_context = auth_context  # Optional[AuthSessionContext]
 
     # ------------------------------------------------------------------ #
     # Playwright availability check
@@ -256,14 +258,60 @@ class HeadlessBrowserEngine:
                 user_agent="OneInfinity-HeadlessBrowser/1.0",
             )
 
-            # Intercept network requests
+            # Phase B: inject auth session into Playwright context if provided.
+            # Must happen AFTER new_context() but BEFORE any page.goto() call.
+            # AuthSessionContext.inject_playwright() sets cookies + local/session storage.
+            if self._auth_context is not None:
+                try:
+                    self._auth_context.inject_playwright(context)
+                    log.debug("HeadlessBrowserEngine: auth context injected into Playwright context")
+                except Exception as _auth_exc:
+                    log.warning("HeadlessBrowserEngine: auth injection failed (non-fatal): %s", _auth_exc)
+
+            # Intercept network requests (URLs) and XHR response bodies for secret scanning
             intercepted: List[str] = []
+            xhr_response_secrets: List[dict] = []
 
             def _on_request(req):
                 intercepted.append(req.url)
 
+            def _on_response(resp):
+                # Scan XHR/fetch response bodies for tokens/secrets (OR2 recommendation)
+                try:
+                    rt = resp.request.resource_type
+                    if rt in ("xhr", "fetch") and "application/json" in (resp.headers.get("content-type") or ""):
+                        body = resp.body()
+                        if body:
+                            xhr_response_secrets.extend(
+                                self._scan_text_for_secrets(body.decode("utf-8", errors="ignore"), resp.url)
+                            )
+                except Exception:
+                    pass
+
             context.on("request", _on_request)
+            context.on("response", _on_response)
+
+            # Intercept SPA route registration via history.pushState (OR2 lazy-route recommendation)
+            spa_routes: List[str] = []
+
             page = context.new_page()
+            # Inject SPA route tracker before first navigation
+            try:
+                page.add_init_script("""
+                    window.__oi_spa_routes = [];
+                    const _origPush = history.pushState;
+                    history.pushState = function(state, title, url) {
+                        if (url) window.__oi_spa_routes.push(String(url));
+                        return _origPush.apply(this, arguments);
+                    };
+                    const _origReplace = history.replaceState;
+                    history.replaceState = function(state, title, url) {
+                        if (url) window.__oi_spa_routes.push(String(url));
+                        return _origReplace.apply(this, arguments);
+                    };
+                """)
+            except Exception:
+                pass
 
             while queue and len(visited) < max_pages:
                 current = queue.pop(0)
@@ -323,6 +371,16 @@ class HeadlessBrowserEngine:
                 except Exception:
                     pass
 
+            # Collect SPA routes discovered via pushState/replaceState interception
+            try:
+                spa_routes = page.evaluate("window.__oi_spa_routes || []")
+                for route in spa_routes:
+                    if route and isinstance(route, str):
+                        full = urljoin(start_url, route)
+                        all_urls.add(full)
+            except Exception:
+                pass
+
             # XHR calls = intercepted - navigations
             for r in intercepted:
                 r_parsed = urlparse(r)
@@ -335,11 +393,16 @@ class HeadlessBrowserEngine:
 
             browser.close()
 
+        # Merge XHR response secrets into js_secrets list
+        js_secrets.extend(xhr_response_secrets)
+
         return {
             "urls": sorted(all_urls),
             "forms": all_forms,
             "xhr_calls": sorted(set(xhr_calls)),
             "js_secrets": js_secrets,
+            "spa_routes": list(set(spa_routes)) if spa_routes else [],
+            "authenticated": self._auth_context is not None,
         }
 
     def _crawl_static(self, url: str) -> dict:
@@ -352,13 +415,24 @@ class HeadlessBrowserEngine:
         all_forms: List[dict] = []
         js_secrets: List[dict] = []
 
+        # Phase B: build an authenticated session if auth_context provided
+        session = requests.Session()
+        session.verify = False
+        session.headers.update({"User-Agent": "OneInfinity-HeadlessBrowser/1.0"})
+        if self._auth_context is not None:
+            try:
+                self._auth_context.inject_requests(session)
+                log.debug("HeadlessBrowserEngine._crawl_static: auth context injected into requests.Session")
+            except Exception as _ae:
+                log.warning("HeadlessBrowserEngine._crawl_static: auth injection failed (non-fatal): %s", _ae)
+
         try:
-            resp = requests.get(url, timeout=10, verify=False,
-                                headers={"User-Agent": "OneInfinity-HeadlessBrowser/1.0"})
+            resp = session.get(url, timeout=10)
             html = resp.text
         except Exception as exc:
             log.warning("Static crawl request failed for %s: %s", url, exc)
-            return {"urls": [], "forms": [], "xhr_calls": [], "js_secrets": []}
+            return {"urls": [], "forms": [], "xhr_calls": [], "js_secrets": [],
+                    "spa_routes": [], "authenticated": False}
 
         try:
             from bs4 import BeautifulSoup
@@ -389,11 +463,12 @@ class HeadlessBrowserEngine:
                     js_secrets.extend(self._scan_text_for_secrets(text, url))
 
             # Script src URLs
+            # Script src URLs — use authenticated session for JS bundle fetch
             for script in soup.find_all("script", src=True):
                 script_url = urljoin(url, script["src"])
                 all_urls.add(script_url)
                 try:
-                    sr = requests.get(script_url, timeout=8, verify=False)
+                    sr = session.get(script_url, timeout=8)
                     js_secrets.extend(self._scan_text_for_secrets(sr.text, script_url))
                 except Exception:
                     pass
@@ -410,6 +485,8 @@ class HeadlessBrowserEngine:
             "forms": all_forms,
             "xhr_calls": [],
             "js_secrets": js_secrets,
+            "spa_routes": [],
+            "authenticated": self._auth_context is not None,
         }
 
     # ------------------------------------------------------------------ #

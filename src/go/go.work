@@ -11,5 +11,6 @@ use (
 	./oi-service-cve-mapper
 	./oi-ssrf
 	./oi-lateral-portscan
-	./oi-target-disc
+	./mcp_scanner
+	./http2_rapid_reset
 )

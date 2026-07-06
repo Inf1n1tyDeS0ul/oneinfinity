@@ -2,7 +2,7 @@
 
 > **AI-Powered Offensive Security Research Framework**
 > Autonomous vulnerability discovery, exploit chaining, mobile security, AI pentesting, web3 security, and bug bounty automation — all from a single tool.
-> **Version 2.0.0 — 2026-06-29**
+> **Version 2.2.0 — 2026-06-30** | [Changelog](CHANGELOG.md)
 
 ---
 
@@ -57,6 +57,7 @@
    - [3.40 MCP Integration](#340-mcp-integration)
    - [3.41 God Mode](#341-god-mode)
    - [3.42 CI/CD Vulnerability Scanner](#342-cicd-vulnerability-scanner)
+   - [3.43 Auth-Tiered Recon & Credential Loop](#343-auth-tiered-recon--credential-loop)
 4. [Target Setup Guides](#4-target-setup-guides)
 5. [Advanced Features](#5-advanced-features)
 6. [CLI Reference](#6-cli-reference)
@@ -1680,6 +1681,107 @@ Access the CI/CD security dashboard at `http://localhost:3000/cicd-center`.
 
 ---
 
+## 3.43 Auth-Tiered Recon & Credential Loop
+
+### Overview
+
+Auth-tiered recon converts each discovered credential into a new, scoped recon pass that runs concurrently with the credential spray. This exposes authenticated-only surface (post-login routes, API endpoints guarded by session cookies, SPA lazy-loaded routes) that tier-0 recon cannot reach.
+
+### How CREDENTIAL_ACQUIRED Fires and What It Triggers
+
+`GoCredentialSpray.run()` emits `CREDENTIAL_ACQUIRED` for each valid credential **inside** the streaming response loop — not after the full spray completes. This means scoped auth recon for credential #1 may be 50% complete before credential #2 is found.
+
+```
+GoCredentialSpray streams responses from oi-credential-spray gRPC sidecar
+  │
+  ├─ valid credential found
+  │     builds LoginSession from CredentialFinding
+  │     saves LoginSession to SessionManager
+  │     emits CREDENTIAL_ACQUIRED event
+  │
+GodModeConductor._on_credential_acquired() (subscribed handler)
+  ├─ dedup via _spawned_auth_tiers (no double-spawn per credential)
+  ├─ feeds MultiAccountIDOREngine.add_account_from_session()
+  └─ spawns _run_scoped_auth_recon(auth_context) as daemon thread
+```
+
+`run_sync()` uses `asyncio.run()` (not `get_event_loop().run_until_complete()`) to avoid deadlock when called from EventBus worker threads.
+
+### Configuring Auth Sessions (SessionManager)
+
+Sessions can be created three ways:
+
+**1. Recorded interactively (browser automation):**
+```bash
+python run.py auth record --url https://target.com/login \
+  --username user@example.com --password pass --output session.json
+```
+
+**2. Injected via cookie/token:**
+```bash
+python run.py simulate-workflow target.com \
+  --cookie "session=abc123; csrf=xyz" --token "Bearer eyJ..."
+```
+
+**3. Auto-discovered by GoCredentialSpray:**
+Sessions are built automatically from `CredentialFinding` objects when `go_credential_spray` finds valid credentials. No manual action required.
+
+Sessions are stored in `SessionManager` and keyed by `session_id`. `GodModeConductor._auth_ctx_registry` maps `session_id → AuthSessionContext` for downstream engines.
+
+### What SURFACE_ENRICHED Means for Operators
+
+`SURFACE_ENRICHED` is emitted when an auth-tiered recon pass finds URLs that were **not present in the tier-0 surface**. Each event carries:
+
+| Field | Meaning |
+|---|---|
+| `target` | The target domain |
+| `auth_tier` | Credential username/role that unlocked this surface |
+| `new_urls` | Delta URL list — authenticated-only endpoints |
+| `scan_id` | Correlates back to the originating God Mode scan |
+| `auth_context_id` | Session context ID, reusable for replay |
+| `source_session_id` | The `GoCredentialSpray` session that produced the credential |
+
+Operators can treat `new_urls` as a high-priority attack surface: these endpoints were unreachable before authentication. `AuthenticatedTestSuite` is automatically dispatched against them via `_run_auth_test_suite()`. The `_tested_endpoints` dict prevents re-testing the same endpoint with the same session.
+
+If only one credential is found, `GodModeConductor` adds an anonymous baseline account to `MultiAccountIDOREngine`, ensuring at least two accounts for cross-account IDOR testing.
+
+### Validation Pipeline (Phase E) and FP Impact
+
+`ResultIngestionEngine.ingest()` applies validation before a finding is written to the database:
+
+**Synchronous pre-filter** (blocks storage):
+- Types: `xss`, `sqli`, `ssti`, `lfi`, `open_redirect`, `xxe`
+- `FindingValidationEngine.validate()` is called inline
+- Confirmed false positives are suppressed — they never reach the database
+
+**Async fire-and-forget** (non-blocking):
+- Types: `ssrf`, `cmdi`, `rce`, `auth_bypass`, `idor`
+- Finding is stored immediately with `status=unverified`
+- Background task re-validates and updates status when complete
+- Slow or out-of-band checks (callback listeners, OOB endpoints) don't block the ingestion pipeline
+
+**URL deduplication normalization:**
+`_normalize_url_for_dedup()` strips numeric, UUID, and hex path segments before computing the dedup hash:
+- `/users/123` → `/users/{id}`
+- `/orders/abc-def-456-789` → `/orders/{uuid}`
+- `/assets/3f9a2c` → `/assets/{hex}`
+
+This eliminates duplicate findings for the same injection point across different object IDs — a common source of noise in authenticated testing where many user/object IDs are exercised.
+
+**Fail-open**: a validation engine exception lets the finding through unchanged. TP preservation takes priority over FP suppression.
+
+### Practical Effect
+
+Before v2.1.0, a God Mode scan with `--auth-session` would run tier-0 recon, then authenticated testing as a separate stage. Now:
+1. Credential spray and tier-0 recon run in Stage 1
+2. Each valid credential immediately spawns an auth-tier recon pass (concurrent)
+3. Authenticated-only URLs flow into `AuthenticatedTestSuite` as they are discovered
+4. IDOR engine accumulates accounts across all credentials in real time
+5. Total scan time is reduced because auth-tier recon overlaps with spray duration rather than following it
+
+---
+
+
 (Continued in sections 4–9 below)
 
 ---
@@ -2311,6 +2413,33 @@ python run.py cache stats
 | Attack graph Neo4j backend | Shipped |
 | Differential scanner + race condition engine | Shipped |
 
+
+## Shipped in v2.2.0
+
+| Feature | Status |
+|---|---|
+| Phase 0: CORS + JWT agents active in pipeline mode (cors/jwt added to swarm-scan CLI choices) | Shipped |
+| Phase 0: Bearer token redaction filter in god mode debug logs | Shipped |
+| Phase 0: JWT vuln_type dedup alignment (JWTAgent → JWTVulnerabilityScanner canonical names) | Shipped |
+| Phase 0: Bypass403Engine .test() call with max_requests=100 cap + ScopeValidator guard | Shipped |
+| Phase 0: AIRTWrapper registered in AISecurityEngine with guarded import + exfil gate | Shipped |
+| Phase 1: CustomTestEngine auth_config forwarding — research loop runs authenticated | Shipped |
+| Phase 1: CORSScanner + JWTVulnerabilityScanner + BlindXSSEngine wired into active_testing | Shipped |
+| Phase 1: DNSSecurityScanner (zone transfer, dangling CNAME, amplification) in deep_recon | Shipped |
+| Phase 1: LLMBusinessLogicAnalyzer in business_logic phase | Shipped |
+| Phase 1: DifferentialScanner in exploit_validation (auth-gated, finds auth bypass when HTTP 200==200) | Shipped |
+| Phase 1: BrowserReasoningAgent (LLM SPA analysis) in browser_analysis | Shipped |
+| Phase 1: GitHub OSINT Step 5 in Foundation (GITHUB_TOKEN-gated, capped max_repos) | Shipped |
+| Phase 2: `advanced_scan` phase — 32 scanners in parallel via UnifiedAdvancedScanner | Shipped |
+| Phase 3: `cicd_scan` phase — GitHub Actions workflow injection, secrets, OIDC misconfiguration | Shipped |
+| Phase 3: `container_scan` phase — Kubernetes/Docker escape and privilege escalation detection | Shipped |
+| Phase 3: `grpc_scan` phase — gRPC reflection abuse, proto fuzzing, auth bypass | Shipped |
+| Phase 4: AIRedTeamMission (MultiTurnChainer 6 strategies + RAGPoison + LLMDoS + AgentHijack) | Shipped |
+| Phase 4: ZeroHypothesisMission (post-FullScan graph-clustering hypothesis generation) | Shipped |
+| Phase 4: AdvancedScanMission (parallel cross-validation always-on mission) | Shipped |
+| Phase 5: run_garak + run_pyrit stubs replaced with real AISecurityEngine delegation | Shipped |
+| Phase 5: AdaptivePlanner wired (informational — focus_vuln_types logged for operator awareness) | Shipped |
+
 ## Shipped in v1.2.0
 
 | Feature | Status |
@@ -2342,6 +2471,6 @@ python run.py cache stats
 
 ---
 
-*Documentation v2.0.0 — 2026-06-29*
+*Documentation v2.2.0 — 2026-06-30*
 *GitHub: https://github.com/Inf1n1tyDeS0ul/oneinfinity*
 *Contact: infosec.dev.367@gmail.com*

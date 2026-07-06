@@ -200,12 +200,15 @@ class Bypass403Engine:
         follow_redirects: bool = True,
         waf_vendor: str = "",
         delay_between_requests: float = 0.2,
+        max_requests: int = 100,
     ) -> None:
         self.base_headers: Dict[str, str] = dict(headers or {})
         self.timeout = timeout
         self.follow_redirects = follow_redirects
         self.waf_vendor = waf_vendor.lower()
         self.delay = delay_between_requests
+        self.max_requests = max_requests
+        self._request_count: int = 0
 
     # ------------------------------------------------------------------ #
     #  Public API
@@ -213,6 +216,22 @@ class Bypass403Engine:
 
     def test(self, url: str) -> BypassReport:
         """Run all bypass techniques against *url*. Returns BypassReport."""
+        # Scope enforcement — refuse to probe out-of-scope targets
+        try:
+            from oneinfinity.core.scope_validator import ScopeValidator
+            _sv = ScopeValidator()
+            _sv.add_in_scope(urllib.parse.urlparse(url).netloc or url)
+            if not _sv.check(url):
+                log.warning("Bypass403Engine: %s is out of scope — aborting test", url)
+                return BypassReport(target_url=url, baseline_status=0,
+                                    techniques_tested=0, bypasses_found=0,
+                                    waf_detected="scope_violation")
+        except ImportError:
+            pass  # ScopeValidator not available — proceed without check
+        except Exception as _sv_exc:
+            log.debug("Bypass403Engine scope check failed: %s", _sv_exc)
+
+        self._request_count = 0  # reset counter for this run
         t0 = time.monotonic()
         parsed = urllib.parse.urlparse(url)
         path = parsed.path or "/"
@@ -225,38 +244,53 @@ class Bypass403Engine:
 
         # --- Header bypasses ---
         for name, cat, hdr in _HEADER_BYPASSES:
+            if self._request_count >= self.max_requests:
+                log.debug("Bypass-403: max_requests=%d reached, stopping header bypasses", self.max_requests)
+                break
             r = self._test_variant(url, "GET", hdr, name, cat, baseline_status, baseline_len)
             results.append(r)
+            self._request_count += 1
             time.sleep(self.delay)
 
         # --- Method bypasses ---
         for name, cat, method in _METHOD_BYPASSES:
+            if self._request_count >= self.max_requests:
+                break
             r = self._test_variant(url, method, {}, name, cat, baseline_status, baseline_len)
             results.append(r)
+            self._request_count += 1
             time.sleep(self.delay)
 
         # --- Method override bypasses ---
         for name, cat, hdr in _METHOD_OVERRIDE_BYPASSES:
+            if self._request_count >= self.max_requests:
+                break
             r = self._test_variant(url, "POST", hdr, name, cat, baseline_status, baseline_len)
             results.append(r)
+            self._request_count += 1
             time.sleep(self.delay)
 
         # --- Path manipulation bypasses ---
         path_variants = self._build_path_variants(path, base_url, parsed)
         for name, cat, variant_url in path_variants:
+            if self._request_count >= self.max_requests:
+                break
             r = self._test_variant(variant_url, "GET", {}, name, cat, baseline_status, baseline_len)
             results.append(r)
+            self._request_count += 1
             time.sleep(self.delay)
 
         # --- WAF-specific bypasses ---
         waf_vendor = self.waf_vendor or self._detect_waf(url)
         if waf_vendor and waf_vendor in _WAF_SPECIFIC:
             for name, hdr in _WAF_SPECIFIC[waf_vendor]:
+                if self._request_count >= self.max_requests:
+                    break
                 r = self._test_variant(url, "GET", hdr, name, f"waf_{waf_vendor}",
                                        baseline_status, baseline_len)
                 results.append(r)
+                self._request_count += 1
                 time.sleep(self.delay)
-
         bypasses = [r for r in results if r.bypassed]
 
         # --- Nim-generated polymorphic bypass payloads (oi-bypass-gen) ---

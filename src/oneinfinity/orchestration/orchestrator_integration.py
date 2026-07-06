@@ -271,18 +271,23 @@ def activate(quiet: bool = False) -> dict:
             return {"status": "already_active"}
         _activated = True
 
-    results = {
-        "ede":     _wire_ede(),
-        "triggers": _wire_triggers(),
-        "fabric":  _wire_fabric(),
-        "daemon":  _patch_daemon_workers(),
-    }
-
-    active = sum(1 for v in results.values() if v)
-    if not quiet:
-        log.info("Orchestrator integration: %d/%d systems wired: %s",
-                 active, len(results),
-                 {k: "ok" if v else "skip" for k, v in results.items()})
+    results: dict = {}
+    try:
+        results = {
+            "ede":     _wire_ede(),
+            "triggers": _wire_triggers(),
+            "fabric":  _wire_fabric(),
+            "daemon":  _patch_daemon_workers(),
+        }
+        active = sum(1 for v in results.values() if v)
+        if not quiet:
+            log.info("Orchestrator integration: %d/%d systems wired: %s",
+                     active, len(results),
+                     {k: "ok" if v else "skip" for k, v in results.items()})
+    except Exception as _exc:
+        # Neo4j / Redis / service unavailable — degrade gracefully
+        log.debug("Orchestrator integration wiring failed (Neo4j/Redis unavailable?): %s", _exc)
+        results = {"error": str(_exc)}
     return {"status": "activated", "wired": results}
 
 

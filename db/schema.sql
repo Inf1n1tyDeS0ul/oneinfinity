@@ -31,10 +31,13 @@ CREATE TABLE IF NOT EXISTS findings (
     vuln_type    TEXT,
     url          TEXT,
     tool         TEXT,
+    source_tool  TEXT DEFAULT '',
     confidence   DOUBLE PRECISION DEFAULT 0.8,
     cvss         DOUBLE PRECISION DEFAULT 0.0,
     status       TEXT NOT NULL DEFAULT 'new',
     source_type  TEXT DEFAULT 'tool',
+    chain_id     TEXT DEFAULT '',
+    evidence     TEXT DEFAULT '',
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     data         JSONB NOT NULL DEFAULT '{}'
 );
@@ -42,6 +45,8 @@ CREATE INDEX IF NOT EXISTS idx_findings_scan_id    ON findings(scan_id);
 CREATE INDEX IF NOT EXISTS idx_findings_severity   ON findings(severity);
 CREATE INDEX IF NOT EXISTS idx_findings_target     ON findings(target);
 CREATE INDEX IF NOT EXISTS idx_findings_created_at ON findings(created_at);
+CREATE INDEX IF NOT EXISTS idx_findings_chain_id   ON findings(chain_id);
+CREATE INDEX IF NOT EXISTS idx_findings_source_tool ON findings(source_tool);
 CREATE INDEX IF NOT EXISTS idx_findings_data       ON findings USING GIN(data);
 -- Dedup constraint: same (scan_id, vuln_type, url) is a duplicate within a scan.
 -- Enables ON CONFLICT (scan_id, vuln_type, url) DO NOTHING RETURNING finding_id.
@@ -584,3 +589,48 @@ CREATE TABLE IF NOT EXISTS vuln_candidates (
     created_at   TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_vuln_candidates_session ON vuln_candidates(session_id);
+
+-- ============================================================
+-- Council Runs: stores outputs from AICouncilMission
+-- ============================================================
+CREATE TABLE IF NOT EXISTS council_runs (
+    id SERIAL PRIMARY KEY,
+    scan_id VARCHAR(64) NOT NULL,
+    target TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    surface_profile JSONB,
+    exploit_plan JSONB,
+    exploit_trace JSONB,
+    mutation_report JSONB,
+    post_exploit_report JSONB,
+    validated_finding JSONB,
+    overall_success BOOLEAN DEFAULT FALSE,
+    objective_artifact TEXT,
+    finding_count INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_council_runs_scan_id ON council_runs(scan_id);
+CREATE INDEX IF NOT EXISTS idx_council_runs_target ON council_runs(target);
+CREATE INDEX IF NOT EXISTS idx_council_runs_success ON council_runs(overall_success);
+
+-- Council findings: individual findings from council run, links to main findings table
+CREATE TABLE IF NOT EXISTS council_findings (
+    id SERIAL PRIMARY KEY,
+    council_run_id INTEGER REFERENCES council_runs(id) ON DELETE CASCADE,
+    scan_id VARCHAR(64) NOT NULL,
+    finding_id VARCHAR(64),
+    vuln_type VARCHAR(64),
+    severity VARCHAR(16),
+    owasp_llm_category TEXT,
+    mitre_atlas_technique TEXT,
+    cvss_score FLOAT,
+    cvss_vector TEXT,
+    ai_impact_statement TEXT,
+    reproduction_steps JSONB,
+    confirmed BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_council_findings_scan_id ON council_findings(scan_id);
+CREATE INDEX IF NOT EXISTS idx_council_findings_confirmed ON council_findings(confirmed);

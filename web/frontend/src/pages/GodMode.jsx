@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  RefreshCw, Terminal, 
-  CheckCircle2, 
+  RefreshCw, Terminal,
+  CheckCircle2,
   Activity, Flame,
-  Zap, X, Radar, Menu
+  Zap, X, Radar, Menu, Shield
 } from 'lucide-react'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
@@ -15,6 +15,7 @@ import LaunchPad from '../components/GodMode/LaunchPad'
 import VitalSignsHUD from '../components/GodMode/VitalSignsHUD'
 import MissionPipeline from '../components/GodMode/MissionPipeline'
 import InsightFeed from '../components/GodMode/InsightFeed'
+import VulnChainGraph from '../components/Graph/VulnChainGraph'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -93,6 +94,10 @@ export default function GodMode() {
     graph_risk_analyzer: { enabled: false, intensity: 'medium' },
     ai_validation:       { enabled: false, intensity: 'medium' },
     poc_generator:       { enabled: false, intensity: 'medium' },
+    // Phase 4 scan engines
+    advanced_scan:       { enabled: false, intensity: 'medium' },
+    ai_redteam:          { enabled: false, intensity: 'medium' },
+    credential_spray:    { enabled: false, intensity: 'medium' },
   })
 
   // Session state
@@ -103,6 +108,9 @@ export default function GodMode() {
   const [selectedSessionId, setSelectedSessionId] = useState(null)
   const [stopping, setStopping]             = useState(false)
   const [tab, setTab]                       = useState('status')
+  const [councilData, setCouncilData]       = useState(null)
+  const [councilLoading, setCouncilLoading] = useState(false)
+  const [liveFindingsCount, setLiveFindingsCount] = useState(0)
 
   const logBottomRef = useRef(null)
   const pollRef      = useRef(null)
@@ -196,6 +204,51 @@ export default function GodMode() {
   useEffect(() => {
     logBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [logs])
+
+  // ── Council data fetch — only when ai_council phase appears ───────────────
+  const fetchCouncilData = async (scanId) => {
+    if (!scanId || councilLoading || councilData) return
+    setCouncilLoading(true)
+    try {
+      const r = await endpoints.councilGet(scanId)
+      setCouncilData(r.data)
+    } catch (e) {
+      // 404 = council not stored yet; silently ignore
+    } finally {
+      setCouncilLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    const phases = session?.phases_complete || []
+    if (phases.includes('ai_council') && session?.scan_id && !councilData) {
+      fetchCouncilData(session.scan_id)
+    }
+  }, [session?.phases_complete?.length, session?.scan_id])
+
+
+  // ── Live findings count — polls /api/scan/{id}/findings while scan is active ─
+  useEffect(() => {
+    const id = selectedSessionId
+    if (!id || !session || session.terminated_by) {
+      setLiveFindingsCount(0)
+      return
+    }
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const r = await endpoints.scanFindings(id)
+        if (!cancelled) {
+          const items = Array.isArray(r.data) ? r.data : []
+          setLiveFindingsCount(items.length)
+        }
+      } catch (_) {}
+    }
+    poll()
+    const timer = setInterval(poll, 10000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [selectedSessionId, session?.terminated_by])
+
 
   useEffect(() => {
     endpoints.authListSessions()
@@ -545,6 +598,23 @@ export default function GodMode() {
                           </div>
                        </div>
 
+                       {/* Live Finding Count — real-time update from /api/scan/{id}/findings */}
+                       {isRunning && (
+                         <div className="flex items-center justify-between p-3 rounded-xl bg-accent-primary/5 border border-accent-primary/20">
+                           <div className="flex items-center gap-2 text-accent-primary">
+                             <Activity size={12} className="animate-pulse" />
+                             <span className="text-[10px] font-bold uppercase tracking-widest">Live Findings</span>
+                           </div>
+                           <div className="flex items-baseline gap-1">
+                             <span className="text-xl font-black font-mono text-accent-primary tabular-nums">
+                               {liveFindingsCount || session?.finding_count || 0}
+                             </span>
+                             <span className="text-[9px] text-slate-500 uppercase tracking-wide">found</span>
+                           </div>
+                         </div>
+                       )}
+
+
                        <div className="flex-1 overflow-y-auto scrollbar-thin pr-2">
                           <div className="flex flex-col gap-4">
                              <div className="flex flex-col gap-1">
@@ -579,6 +649,99 @@ export default function GodMode() {
                                   </div>
                                </div>
                              )}
+
+                             {/* ── AI Council Results — shown inline when ai_council phase ran ── */}
+                             {(session.phases_complete || []).includes('ai_council') && (
+                               <div className="mt-4 p-4 rounded-xl bg-accent-purple/5 border border-accent-purple/30 animate-fade-in">
+                                 <div className="flex items-center justify-between mb-3">
+                                   <div className="flex items-center gap-2 text-accent-purple">
+                                     <Shield size={14} />
+                                     <span className="text-xs font-bold uppercase tracking-widest">AI Council Results</span>
+                                   </div>
+                                   {!councilData && !councilLoading && (
+                                     <button
+                                       onClick={() => fetchCouncilData(session.scan_id)}
+                                       className="text-[9px] font-bold text-accent-purple hover:underline uppercase tracking-tighter flex items-center gap-1"
+                                     >
+                                       <RefreshCw size={9} /> Load
+                                     </button>
+                                   )}
+                                 </div>
+
+                                 {councilLoading && (
+                                   <div className="flex items-center gap-2 text-slate-500 text-[10px]">
+                                     <RefreshCw size={10} className="animate-spin" /> Fetching council data...
+                                   </div>
+                                 )}
+
+                                 {councilData && (() => {
+                                   const surface = councilData.surface_profile || {}
+                                   const plan    = councilData.exploit_plan    || {}
+                                   const trace   = councilData.exploit_trace   || {}
+                                   const steps   = plan.steps || []
+                                   return (
+                                     <div className="flex flex-col gap-3">
+                                       {/* Surface Profile */}
+                                       <div className="grid grid-cols-2 gap-2 text-[10px]">
+                                         <div className="p-2 rounded-lg bg-bg-primary/40 border border-bg-border">
+                                           <div className="text-slate-600 font-bold uppercase tracking-wider mb-1">Output Type</div>
+                                           <div className="text-slate-300 font-mono">{surface.output_type || '—'}</div>
+                                         </div>
+                                         <div className="p-2 rounded-lg bg-bg-primary/40 border border-bg-border">
+                                           <div className="text-slate-600 font-bold uppercase tracking-wider mb-1">Model Hint</div>
+                                           <div className="text-slate-300 font-mono truncate">{surface.model_hint || '—'}</div>
+                                         </div>
+                                         <div className="p-2 rounded-lg bg-bg-primary/40 border border-bg-border">
+                                           <div className="text-slate-600 font-bold uppercase tracking-wider mb-1">Blocked KWs</div>
+                                           <div className="text-slate-300 font-mono">{(surface.blocked_keywords || []).length}</div>
+                                         </div>
+                                         <div className="p-2 rounded-lg bg-bg-primary/40 border border-bg-border">
+                                           <div className="text-slate-600 font-bold uppercase tracking-wider mb-1">Tools Found</div>
+                                           <div className="text-slate-300 font-mono">{(surface.tool_list || []).length}</div>
+                                         </div>
+                                       </div>
+
+                                       {/* Exploit Plan steps */}
+                                       {steps.length > 0 && (
+                                         <div>
+                                           <div className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mb-2">
+                                             Exploit Plan — {steps.length} step{steps.length !== 1 ? 's' : ''}
+                                           </div>
+                                           <div className="flex flex-col gap-1 max-h-32 overflow-y-auto scrollbar-thin">
+                                             {steps.map((s, i) => (
+                                               <div key={s.step_id || i} className="flex items-start gap-2 text-[9px] p-1.5 rounded bg-bg-primary/30 border border-bg-border/50">
+                                                 <span className="text-accent-purple font-mono font-bold shrink-0">{String(i + 1).padStart(2, '0')}</span>
+                                                 <span className="text-slate-400 truncate">{s.action}</span>
+                                               </div>
+                                             ))}
+                                           </div>
+                                         </div>
+                                       )}
+
+                                       {/* Trace summary */}
+                                       <div className="flex items-center gap-3 pt-1">
+                                         <span className={clsx(
+                                           'px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border',
+                                           trace.overall_success
+                                             ? 'bg-accent-success/10 border-accent-success/30 text-accent-success'
+                                             : 'bg-red-500/10 border-red-500/30 text-red-400'
+                                         )}>
+                                           {trace.overall_success ? 'Exploited' : 'No Exploit'}
+                                         </span>
+                                         <span className="text-[9px] text-slate-500">
+                                           {trace.success_count ?? 0}/{trace.total_steps ?? 0} steps succeeded
+                                         </span>
+                                         {councilData.findings_count > 0 && (
+                                           <span className="text-[9px] text-accent-warn font-bold">
+                                             {councilData.findings_count} finding{councilData.findings_count !== 1 ? 's' : ''}
+                                           </span>
+                                         )}
+                                       </div>
+                                     </div>
+                                   )
+                                 })()}
+                               </div>
+                             )}
                           </div>
                        </div>
                      </>
@@ -586,6 +749,19 @@ export default function GodMode() {
                 </div>
              </div>
           </div>
+
+          {/* Exploit Chain Graph — appears once a session is selected */}
+          {session && (
+            <div className={clsx(
+              "transition-all duration-700 delay-200",
+              session ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"
+            )}>
+              <div className="bg-bg-secondary/20 backdrop-blur-sm border border-bg-border rounded-2xl p-4">
+                <VulnChainGraph scanId={selectedSessionId} height={320} />
+              </div>
+            </div>
+          )}
+
         </div>
 
         {/* Live Logs Slide-out Overlay */}

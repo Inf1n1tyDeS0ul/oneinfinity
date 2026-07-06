@@ -168,8 +168,6 @@ class ScanOrchestrator:
         return get_engine().scan_async(
             target=target,
             on_progress=on_progress,
-            scan_config=scan_config,
-            scan_id=scan_id,
         )
 
     def stop(self, scan_id: str) -> bool:
@@ -198,8 +196,6 @@ class ScanOrchestrator:
             session = get_engine().scan(
                 target=target,
                 on_progress=on_progress,
-                scan_config=cfg,
-                scan_id=scan_id,
             )
             return self._session_to_result(session)
         except Exception as exc:

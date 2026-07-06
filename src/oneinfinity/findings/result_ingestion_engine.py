@@ -361,8 +361,37 @@ class ResultIngestionEngine:
     # Public API
     # ------------------------------------------------------------------
 
+    # Phase E: vuln types that trigger synchronous pre-store validation (low FP, fast probe)
+    _SYNC_VALIDATE_TYPES = frozenset({"xss", "sqli", "ssti", "lfi", "open_redirect", "xxe"})
+    # Async validation (fire-and-forget; too slow/risky to block ingest)
+    _ASYNC_VALIDATE_TYPES = frozenset({"ssrf", "cmdi", "rce", "auth_bypass", "idor"})
+
+    def _normalize_url_for_dedup(self, url: str, vuln_type: str) -> str:
+        """Path-template normalization for semantic dedup (MLR2).
+        /api/v1/users/123 → /api/v1/users/{id}
+        /api/v1/users/abc-def-ghi → /api/v1/users/{uuid}
+        Prevents storing N findings for the same injection point tested on N IDs.
+        """
+        import re as _re
+        try:
+            from urllib.parse import urlparse, urlencode, parse_qs
+            p = urlparse(url)
+            # Normalize path segments
+            path = _re.sub(r'/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', '/{uuid}', p.path)
+            path = _re.sub(r'/[0-9a-fA-F]{24,}', '/{hex}', path)
+            path = _re.sub(r'/\d+', '/{id}', path)
+            # Normalize query param values (keep keys, replace values)
+            params = parse_qs(p.query)
+            norm_params = {k: ["{val}"] for k in params}
+            norm_query = urlencode(norm_params, doseq=True) if norm_params else ""
+            return f"{p.scheme}://{p.netloc}{path}?{norm_query}" if norm_query else f"{p.scheme}://{p.netloc}{path}"
+        except Exception:
+            return url
+
     def ingest(self, result: RawResult, confidence_threshold: float = 0.5) -> Optional[NormalizedFinding]:
-        """Parse → filter → dedup → store → graph → broadcast."""
+        """Parse → validate → semantic-dedup → filter → store → graph → broadcast.
+        Phase E: FindingValidationEngine pre-filter + AI confidence rescoring.
+        """
         try:
             finding = self._parse(result)
         except Exception as exc:
@@ -378,7 +407,59 @@ class ResultIngestionEngine:
                      finding.confidence, confidence_threshold, finding.vuln_type)
             return None
 
-        # 2. Check-then-store
+        # Phase E-1: Synchronous validation for fast-probe vuln types (OR2/RTL2)
+        # Blocks ingest only for types where re-probe is <500ms and FP rate is high.
+        if finding.vuln_type in self._SYNC_VALIDATE_TYPES:
+            try:
+                from oneinfinity.findings.finding_validation_engine import FindingValidationEngine
+                vr = FindingValidationEngine().validate(
+                    finding.url, finding.vuln_type, finding.payload
+                )
+                if not vr.validated:
+                    log.info("ingest: validation failed → false_positive suppressed [%s @ %s]",
+                             finding.vuln_type, finding.url)
+                    finding.status = "false_positive"
+                    return None   # do not store confirmed FPs
+                # Boost confidence on validated finding
+                finding.confidence = max(finding.confidence, min(0.95, vr.confidence))
+                finding.status = "confirmed"
+                log.debug("ingest: validated [%s] confidence → %.2f", finding.vuln_type, finding.confidence)
+            except Exception as _ve:
+                log.debug("ingest: sync validation error (fail-open): %s", _ve)
+                # Fail-open: let finding through if validator errors (PE2/RTL2 TP preservation)
+
+        # Phase E-2: Async validation for slow/risky types (fire-and-forget, non-blocking)
+        elif finding.vuln_type in self._ASYNC_VALIDATE_TYPES and finding.confidence >= 0.7:
+            import threading as _threading
+            _f_copy = finding  # closure capture
+            def _async_validate():
+                try:
+                    from oneinfinity.findings.finding_validation_engine import FindingValidationEngine
+                    vr = FindingValidationEngine().validate(
+                        _f_copy.url, _f_copy.vuln_type, _f_copy.payload
+                    )
+                    if vr.validated:
+                        _f_copy.confidence = max(_f_copy.confidence, min(0.95, vr.confidence))
+                        _f_copy.status = "confirmed"
+                    else:
+                        _f_copy.status = "needs_review"
+                    log.debug("ingest async-validate: [%s] → %s (%.2f)",
+                              _f_copy.vuln_type, _f_copy.status, _f_copy.confidence)
+                except Exception as _ae:
+                    log.debug("ingest: async validation error: %s", _ae)
+            _threading.Thread(target=_async_validate, daemon=True,
+                               name=f"async-val-{finding.finding_id[:8]}").start()
+
+        # Phase E-3: Path-template semantic dedup (MLR2)
+        # Normalize URL before DB dedup to catch same-injection-point findings
+        # that differ only in path parameter values.
+        normalized_url = self._normalize_url_for_dedup(finding.url, finding.vuln_type)
+        if normalized_url != finding.url:
+            log.debug("ingest: normalized URL for dedup [%s] %s → %s",
+                      finding.vuln_type, finding.url, normalized_url)
+            finding.url = normalized_url
+
+        # 2. Check-then-store (dedup by scan_id+vuln_type+normalized_url)
         try:
             stored = self._check_and_store(finding)
         except Exception as exc:

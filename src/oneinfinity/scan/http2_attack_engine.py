@@ -16,6 +16,10 @@ Uses raw socket-level HTTP/2 framing; falls back to aiohttp for high-level probe
 """
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import subprocess
 import asyncio
 import logging
 import socket
@@ -23,7 +27,7 @@ import ssl
 import struct
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 try:
@@ -527,16 +531,19 @@ class HTTP2AttackEngine:
         """
         CVE-2023-44487: HTTP/2 Rapid Reset Attack.
 
-        Send many HEADERS frames immediately followed by RST_STREAM to
-        exhaust server-side stream processing without triggering
-        MAX_CONCURRENT_STREAMS limits.
+        Tries the Go binary probe first (more accurate); falls back to the
+        built-in Python socket probe.
 
         Detection: server closes connection prematurely, returns 503,
         or exhibits latency indicative of resource exhaustion.
         """
-        scheme, host, port, use_tls = self._parse_target(target)
-        url = f"{scheme}://{host}/"
+        # Prefer Go binary — it has precise stream-level analysis
+        go_result = self._go_rapid_reset_probe(target)
+        if go_result is not None:
+            return go_result
 
+        # Fallback: built-in Python probe
+        scheme, host, port, use_tls = self._parse_target(target)
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None, self._rapid_reset_probe, host, port, use_tls, scheme,
@@ -622,6 +629,67 @@ class HTTP2AttackEngine:
         except (socket.error, ssl.SSLError, OSError) as exc:
             log.debug("Rapid reset probe failed for %s: %s", url, exc)
         return None
+
+    # ── Go binary rapid-reset probe (CVE-2023-44487) ──────────────────────────
+
+    @staticmethod
+    def _go_binary_path() -> str | None:
+        """Locate the http2_rapid_reset Go binary."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        repo_root = os.path.normpath(os.path.join(here, "..", "..", ".."))
+        local = os.path.join(repo_root, "src", "go", "http2_rapid_reset", "http2_rapid_reset")
+        if os.path.isfile(local) and os.access(local, os.X_OK):
+            return local
+        found = shutil.which("http2_rapid_reset")
+        if found:
+            return found
+        local_bin = os.path.join(os.path.expanduser("~"), ".local", "bin", "http2_rapid_reset")
+        if os.path.isfile(local_bin) and os.access(local_bin, os.X_OK):
+            return local_bin
+        return None
+
+    def _go_rapid_reset_probe(self, target: str) -> Optional[dict]:
+        """Call the Go http2_rapid_reset binary for a precise CVE-2023-44487 probe."""
+        binary = self._go_binary_path()
+        if not binary:
+            return None
+        scan_id = uuid.uuid4().hex[:16]
+        try:
+            proc = subprocess.run(
+                [binary, "--target", target, "--streams", "100",
+                 "--timeout", str(self.timeout), "--scan-id", scan_id],
+                capture_output=True, text=True, timeout=self.timeout + 5,
+            )
+            if proc.returncode != 0:
+                log.debug("http2_rapid_reset binary error: %s", proc.stderr[:200])
+                return None
+            result = json.loads(proc.stdout.strip())
+        except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as exc:
+            log.debug("http2_rapid_reset binary failed: %s", exc)
+            return None
+
+        if not result.get("rapid_reset_vulnerable"):
+            return None
+
+        return _make_finding(
+            vuln_type="h2_rapid_reset_cve_2023_44487",
+            severity=result.get("severity", "high"),
+            url=target,
+            payload=f"HTTP/2 HEADERS+RST_STREAM burst x{result.get('reset_streams_accepted', 100)}",
+            evidence=(
+                f"[Go probe] {result.get('evidence', '')} — "
+                f"h2_supported={result.get('h2_supported')}, "
+                f"concurrent_limit={result.get('concurrent_limit', 0)}, "
+                f"streams_accepted={result.get('reset_streams_accepted', 0)}"
+            ),
+            extra={
+                "cve": "CVE-2023-44487",
+                "stream_count": result.get("reset_streams_accepted", 0),
+                "concurrent_limit": result.get("concurrent_limit", 0),
+                "technique": "rapid_reset",
+                "probe_tool": "go:http2_rapid_reset",
+            },
+        )
 
     # ── Continuation Flood (CVE-2024-27316) ──────────────────────────────────
 

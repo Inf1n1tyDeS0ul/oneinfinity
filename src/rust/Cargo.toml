@@ -1,5 +1,5 @@
 [workspace]
-members = ["oi-fuzzer", "oi-jwt-crack"]
+members = ["oi-fuzzer", "oi-jwt-crack", "payload_encoder", "payload_fuzzer"]
 resolver = "2"
 
 [profile.release]

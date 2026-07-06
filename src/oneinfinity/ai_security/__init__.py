@@ -11,19 +11,26 @@ Entrypoints (root-level wrappers):
 """
 
 from .vulnerability_detector import AIVulnFinding, VulnerabilityDetector
-from .payload_mutator import PayloadMutator
+from .payload_mutator import PayloadMutator, BytesEncodingMutator, FilterReverseEngineer, OutputAdapter, OutputAdaptationStrategy
 from .prompt_generator import PromptGenerator
 from .response_analyzer import ResponseAnalyzer
 from .campaign_manager import CampaignManager, CampaignMode
 from .adversarial_prompt_evolution import AdversarialPromptEvolution
+from .mcp_surface_scanner import MCPSurfaceScanner, MCPScanResult
 
 __all__ = [
     "AIVulnFinding",
     "VulnerabilityDetector",
     "PayloadMutator",
+    "BytesEncodingMutator",
+    "FilterReverseEngineer",
+    "OutputAdapter",
+    "OutputAdaptationStrategy",
     "PromptGenerator",
     "ResponseAnalyzer",
     "CampaignManager",
     "CampaignMode",
     "AdversarialPromptEvolution",
+    "MCPSurfaceScanner",
+    "MCPScanResult",
 ]

@@ -27,6 +27,10 @@ const ALL_MODULES = [
   { id: 'graph_risk_analyzer', label: 'Graph Risk',       icon: GitMerge,   desc: 'Neo4j attack graph risk scoring and cross-scan pattern analysis' },
   { id: 'ai_validation',      label: 'AI Validation',    icon: CheckCircle2, desc: 'LLM false-positive elimination with semantic diff tiebreaker' },
   { id: 'poc_generator',      label: 'PoC Generator',    icon: FileText,   desc: 'Auto-generate proof-of-concept scripts for confirmed findings' },
+  // Phase 4 scan engines
+  { id: 'advanced_scan',      label: 'Advanced Scan',    icon: Zap,        desc: 'Full-suite advanced scan: nuclei-advanced, ffuf, param discovery, tech-specific exploits' },
+  { id: 'ai_redteam',         label: 'AI Red Team',      icon: Bot,        desc: 'Multi-agent adversarial red team — AI vs AI offensive campaign with mutation feedback loop' },
+  { id: 'credential_spray',   label: 'Cred Spray',       icon: Lock,       desc: 'Distributed credential stuffing and password-spraying against discovered login surfaces' },
 ]
 
 const PRESETS = [

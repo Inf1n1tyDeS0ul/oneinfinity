@@ -1045,3 +1045,375 @@ def get_brain() -> AttackGraphBrain:
             if _brain is None:
                 _brain = AttackGraphBrain()
     return _brain
+
+
+# ── Exploit Planning Dataclasses ──────────────────────────────────────────────
+
+@dataclass
+class ExploitStep:
+    """A single step in an ordered exploit chain."""
+    step_id:          str
+    action:           str
+    payload_template: str
+    expected_outcome: str
+    fallback:         str
+    success_condition: str
+    metadata:         dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {
+            "step_id":           self.step_id,
+            "action":            self.action,
+            "payload_template":  self.payload_template,
+            "expected_outcome":  self.expected_outcome,
+            "fallback":          self.fallback,
+            "success_condition": self.success_condition,
+            "metadata":          self.metadata,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict, step_id: Optional[str] = None) -> "ExploitStep":
+        return cls(
+            step_id=step_id or d.get("step_id", str(uuid.uuid4())[:8]),
+            action=d.get("action", ""),
+            payload_template=d.get("payload_template", d.get("payload", "")),
+            expected_outcome=d.get("expected_outcome", ""),
+            fallback=d.get("fallback", ""),
+            success_condition=d.get("success_condition", ""),
+            metadata=d.get("metadata", {}),
+        )
+
+
+@dataclass
+class ExploitPlan:
+    """An ordered exploit chain targeting a specific surface."""
+    target:               str
+    steps:                List[ExploitStep]
+    surface_profile_path: str = ""
+    created_at:           float = field(default_factory=time.time)
+    plan_id:              str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    def to_dict(self) -> dict:
+        return {
+            "plan_id":             self.plan_id,
+            "target":              self.target,
+            "surface_profile_path": self.surface_profile_path,
+            "created_at":          self.created_at,
+            "steps":               [s.to_dict() for s in self.steps],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ExploitPlan":
+        steps = [ExploitStep.from_dict(s) for s in d.get("steps", [])]
+        return cls(
+            target=d.get("target", ""),
+            steps=steps,
+            surface_profile_path=d.get("surface_profile_path", ""),
+            created_at=d.get("created_at", time.time()),
+            plan_id=d.get("plan_id", str(uuid.uuid4())),
+        )
+
+
+# ── ExploitPlanBuilder ─────────────────────────────────────────────────────────
+
+class ExploitPlanBuilder:
+    """
+    Builds a ranked, chain-of-thought exploit plan using AttackGraphBrain context
+    and an LLM (via ModelOrchestrator) for step-by-step reasoning.
+
+    Usage::
+        from oneinfinity.intelligence.attack_graph_brain import ExploitPlanBuilder, get_brain
+        from oneinfinity.orchestration.model_orchestrator import get_orchestrator
+
+        builder = ExploitPlanBuilder(brain=get_brain(), model_orchestrator=get_orchestrator())
+        plan = builder.build_plan(surface_profile=profile_dict, target="example.com")
+    """
+
+    _SYSTEM_PROMPT = (
+        "You are an expert offensive security researcher performing authorized penetration testing. "
+        "Analyze the provided target surface profile and past techniques, then reason step by step "
+        "about the highest-probability exploit chain. "
+        "Return ONLY a JSON array of exploit steps — no prose before or after."
+    )
+
+    _MIN_STEPS = 3
+    _MAX_STEPS = 8
+
+    def __init__(
+        self,
+        brain: "AttackGraphBrain",
+        model_orchestrator=None,
+    ) -> None:
+        self._brain = brain
+        self._orch  = model_orchestrator  # resolved lazily if None
+
+    # ── Public API ─────────────────────────────────────────────────────────────
+
+    def build_plan(self, surface_profile, target: str) -> ExploitPlan:
+        """
+        Build an ordered ExploitPlan from a surface profile and graph knowledge.
+
+        Args:
+            surface_profile: dict or object with .to_dict() / .__dict__ describing the attack surface
+            target:          target identifier (hostname, IP, URL prefix)
+
+        Returns:
+            ExploitPlan with 3-8 ordered ExploitStep objects.
+        """
+        profile_dict = self._normalize_profile(surface_profile)
+        past         = self._query_past_successes(profile_dict)
+        prompt       = self._build_chain_prompt(profile_dict, past)
+
+        orch = self._get_orchestrator()
+        output = orch.execute(
+            task={
+                "prompt":     prompt,
+                "agent_type": "exploit_planner",
+                "importance": "CRITICAL",
+                "complexity": "HIGH",
+                "target":     target,
+                "context":    {"profile": profile_dict, "past_techniques": past},
+            },
+        )
+
+        steps = self._parse_steps(output.content if output else "")
+        log.info(
+            "[ExploitPlanBuilder] Built plan for '%s': %d steps (model=%s conf=%.3f)",
+            target,
+            len(steps),
+            output.model_id if output else "none",
+            output.confidence if output else 0.0,
+        )
+
+        surface_path = profile_dict.get("path", profile_dict.get("source", ""))
+        return ExploitPlan(
+            target=target,
+            steps=steps,
+            surface_profile_path=str(surface_path),
+        )
+
+    def save(self, plan: ExploitPlan, scan_id: str) -> str:
+        """
+        Persist plan to ~/.oneinfinity/<scan_id>/reasoning/plan.json.
+
+        Returns the absolute path string of the saved file.
+        """
+        import json as _json
+        import os as _os
+
+        base = Path(_os.path.expanduser("~/.oneinfinity")) / scan_id / "reasoning"
+        base.mkdir(parents=True, exist_ok=True)
+        dest = base / "plan.json"
+        dest.write_text(_json.dumps(plan.to_dict(), indent=2), encoding="utf-8")
+        log.info("[ExploitPlanBuilder] Plan saved: %s", dest)
+        return str(dest)
+
+    # ── Internal helpers ───────────────────────────────────────────────────────
+
+    def _get_orchestrator(self):
+        if self._orch is None:
+            from oneinfinity.orchestration.model_orchestrator import get_orchestrator
+            self._orch = get_orchestrator()
+        return self._orch
+
+    @staticmethod
+    def _normalize_profile(surface_profile) -> dict:
+        """Coerce surface_profile to a plain dict."""
+        if isinstance(surface_profile, dict):
+            return surface_profile
+        if hasattr(surface_profile, "to_dict"):
+            return surface_profile.to_dict()
+        if hasattr(surface_profile, "__dict__"):
+            return vars(surface_profile)
+        return {"raw": str(surface_profile)}
+
+    def _query_past_successes(self, profile: dict) -> List[dict]:
+        """
+        Mine the brain's graph and decision history for techniques that
+        succeeded against targets resembling this profile.
+        """
+        results: List[dict] = []
+        try:
+            target_hint = (
+                profile.get("target")
+                or profile.get("host")
+                or profile.get("domain")
+                or profile.get("url", "")
+            )
+
+            # 1. Attack paths from graph
+            if target_hint:
+                paths = self._brain.attack_paths(str(target_hint))
+                for p in paths[:5]:
+                    results.append({
+                        "source": "attack_path",
+                        "detail": p,
+                    })
+
+            # 2. Recent decisions that succeeded (high confidence)
+            decisions = self._brain.decision_history(limit=100)
+            for d in decisions:
+                if float(d.get("confidence", 0)) >= 0.70:
+                    results.append({
+                        "source":     "decision_history",
+                        "agent_type": d.get("action", {}).get("agent_type", ""),
+                        "node_type":  d.get("action", {}).get("node_type", ""),
+                        "target":     d.get("target", ""),
+                        "reasoning":  d.get("reasoning", ""),
+                        "confidence": d.get("confidence", 0),
+                    })
+                if len(results) >= 20:
+                    break
+
+            # 3. Top-priority nodes for context
+            top_nodes = self._brain.top_priority_nodes(n=10)
+            for rec in top_nodes:
+                results.append({
+                    "source":     "top_node",
+                    "node_id":    rec.node_id,
+                    "node_type":  rec.node_type,
+                    "node_label": rec.node_label,
+                    "priority":   rec.priority,
+                    "target":     rec.target,
+                })
+        except Exception as exc:
+            log.debug("[ExploitPlanBuilder] _query_past_successes error: %s", exc)
+
+        return results[:30]  # cap to keep prompt manageable
+
+    def _build_chain_prompt(self, profile: dict, past: List[dict]) -> str:
+        """Construct the chain-of-thought prompt for the LLM."""
+        import json as _json
+
+        profile_str = _json.dumps(profile, indent=2, default=str)
+        past_str    = _json.dumps(past,    indent=2, default=str)
+
+        return (
+            f"Given this target profile:\n{profile_str}\n\n"
+            f"Past successful techniques:\n{past_str}\n\n"
+            "Reason step by step about the highest-probability exploit chain. "
+            f"For each step provide: action, payload_template, expected_outcome, "
+            f"fallback, success_condition. "
+            f"Return a JSON array of {self._MIN_STEPS}-{self._MAX_STEPS} steps. "
+            "Each element must have exactly these keys: "
+            '"action", "payload_template", "expected_outcome", "fallback", "success_condition".'
+        )
+
+    def _parse_steps(self, content: str) -> List[ExploitStep]:
+        """
+        Extract a JSON array of steps from raw LLM output.
+        Falls back to a single-step skeleton if parsing fails.
+        """
+        import json as _json
+        import re as _re
+
+        raw: List[dict] = []
+        content = (content or "").strip()
+
+        # Try direct parse
+        if content.startswith("["):
+            try:
+                raw = _json.loads(content)
+            except _json.JSONDecodeError:
+                pass
+
+        # Try extracting the first JSON array from prose
+        if not raw:
+            m = _re.search(r"\[.*?\]", content, _re.DOTALL)
+            if m:
+                try:
+                    raw = _json.loads(m.group())
+                except _json.JSONDecodeError:
+                    pass
+
+        # Try wrapped object {"steps": [...]}
+        if not raw and (content.startswith("{") or '"steps"' in content):
+            try:
+                obj = _json.loads(content)
+                raw = obj.get("steps", [])
+            except _json.JSONDecodeError:
+                pass
+
+        if not isinstance(raw, list):
+            raw = []
+
+        steps: List[ExploitStep] = []
+        for i, item in enumerate(raw):
+            if not isinstance(item, dict):
+                continue
+            steps.append(ExploitStep.from_dict(item, step_id=f"step-{i+1:02d}"))
+
+        # Clamp to [_MIN_STEPS, _MAX_STEPS]
+        steps = steps[:self._MAX_STEPS]
+
+        # If LLM returned nothing useful, insert a placeholder so callers always get a list
+        if not steps:
+            log.warning("[ExploitPlanBuilder] LLM returned no parseable steps; using skeleton")
+            steps = [
+                ExploitStep(
+                    step_id="step-01",
+                    action="manual_review",
+                    payload_template="",
+                    expected_outcome="Identify exploitable entry point",
+                    fallback="Enumerate further",
+                    success_condition="Entry point confirmed",
+                    metadata={"auto_generated": True, "reason": "llm_parse_failure"},
+                )
+            ]
+
+        return steps
+
+
+# ── Exploit Execution Dataclasses ─────────────────────────────────────────────
+
+@dataclass
+class StepResult:
+    """Result of executing one ExploitStep."""
+    step_id:        str
+    success:        bool
+    score:          float          # 0.0–1.0
+    response:       str
+    context_update: dict = field(default_factory=dict)
+    error:          str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "step_id":        self.step_id,
+            "success":        self.success,
+            "score":          self.score,
+            "response":       self.response[:500] if self.response else "",
+            "context_update": self.context_update,
+            "error":          self.error,
+        }
+
+
+@dataclass
+class ExploitTrace:
+    """Full record of a StepwiseExploitRunner run."""
+    plan_id:    str
+    target:     str
+    results:    List[StepResult] = field(default_factory=list)
+    created_at: float = field(default_factory=time.time)
+
+    @property
+    def success_count(self) -> int:
+        return sum(1 for r in self.results if r.success)
+
+    @property
+    def total_steps(self) -> int:
+        return len(self.results)
+
+    @property
+    def overall_success(self) -> bool:
+        return self.success_count > 0
+
+    def to_dict(self) -> dict:
+        return {
+            "plan_id":         self.plan_id,
+            "target":          self.target,
+            "results":         [r.to_dict() for r in self.results],
+            "success_count":   self.success_count,
+            "total_steps":     self.total_steps,
+            "overall_success": self.overall_success,
+            "created_at":      self.created_at,
+        }

