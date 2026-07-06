@@ -146,3 +146,44 @@ web/frontend/build/
 .claude-flow/
 oi-sync
 /.oneinfinity/sync*.log
+
+# ── DATA ISOLATION — findings/DB NEVER sync between environments ──────────────
+# Each environment (laptop, EC2) keeps its own independent database and findings.
+# NOTHING below this line should ever appear in git history.
+
+# Scan findings and outputs
+findings_fallback.jsonl
+unified_findings.json
+pipeline_report.json
+advanced_findings.json
+auth_findings.json
+graphql_findings.json
+browser_findings.json
+swarm_findings.json
+attack_simulation.json
+validation_results.json
+chains.json
+attack_graph.json
+zero_day.json
+cicd_findings.json
+container_findings.json
+grpc_findings.json
+smuggling_findings.json
+oob_findings.json
+target_registration.json
+adaptive_recon.json
+swarm_partial.json
+suggested_chains.json
+
+# Scan session state
+god-mode-*.json
+god-mode-*.stop
+
+# Runtime DB / storage
+*.jsonl
+web/backend/data/
+web/backend/reports/
+screenshots/
+
+# Local scan workspaces (laptop)
+~/.oneinfinity/
