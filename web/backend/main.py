@@ -82,6 +82,7 @@ import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException, UploadFile, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 _API_KEY: str = os.environ.get("ONEINFINITY_API_KEY", "")
@@ -8444,35 +8445,46 @@ async def learning_plan(body: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+# ── Tool-endpoint response caches (TTL = 30 s) ───────────────────────────────
+_tools_status_cache:  dict = {"data": None, "ts": 0.0}
+_tools_capmap_cache:  dict = {"data": None, "ts": 0.0}
+_TOOLS_CACHE_TTL = 30.0
+
 @app.get("/api/tools/status", dependencies=[Depends(_require_auth)])
 async def tools_status():
-    """Return installation status for every registered security tool."""
-    try:
-        import sys as _sys
-        _sys.path.insert(0, str(ROOT))
+    """Return installation status for every registered security tool (cached 30 s)."""
+    now = time.time()
+    if _tools_status_cache["data"] is not None and now - _tools_status_cache["ts"] < _TOOLS_CACHE_TTL:
+        return _tools_status_cache["data"]
+    def _compute():
         from oneinfinity.modules.tool_wrappers import ToolRegistry
         reg = ToolRegistry()
         status = reg.check_all()
         cats: dict = {}
         for name, info_d in status.items():
             cats.setdefault(info_d["category"], []).append(name)
-        total = len(status)
-        available = sum(1 for v in status.values() if v["available"])
-        return {"tools": status, "categories": cats, "total": total, "available": available}
+        return {"tools": status, "categories": cats,
+                "total": len(status),
+                "available": sum(1 for v in status.values() if v["available"])}
+    try:
+        result = await asyncio.to_thread(_compute)
+        _tools_status_cache.update({"data": result, "ts": time.time()})
+        return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/api/tools/capmap", dependencies=[Depends(_require_auth)])
 async def tools_capmap():
-    """Return the full capability map with vuln coverage per tool."""
-    try:
-        import sys as _sys
-        _sys.path.insert(0, str(ROOT))
+    """Return full capability map with vuln coverage per tool (cached 30 s)."""
+    now = time.time()
+    if _tools_capmap_cache["data"] is not None and now - _tools_capmap_cache["ts"] < _TOOLS_CACHE_TTL:
+        return _tools_capmap_cache["data"]
+    def _compute():
         from oneinfinity.modules.capability_map import CAPABILITIES
         from oneinfinity.modules.tool_wrappers import is_available
         conf_map = {"high": 1.0, "medium": 0.6, "low": 0.3}
-        all_vulns = set()
+        all_vulns: set = set()
         for cap in CAPABILITIES.values():
             if hasattr(cap, "detects"):
                 all_vulns.update(cap.detects)
@@ -8492,9 +8504,12 @@ async def tools_capmap():
                 "available": is_available(name),
             }
         return {"tools": result, "total": len(result), "total_vuln_classes": total_vulns}
+    try:
+        result = await asyncio.to_thread(_compute)
+        _tools_capmap_cache.update({"data": result, "ts": time.time()})
+        return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-
 
 @app.get("/api/tools/metrics", dependencies=[Depends(_require_auth)])
 async def tools_metrics():
@@ -10474,3 +10489,21 @@ async def get_scan_chain_graph(scan_id: str):
         "finding_count": len(findings),
         "chain_count":   len(chain_groups),
     }
+
+# ── Static frontend serving ───────────────────────────────────────────────────
+# Serve the production Vite build from web/frontend/dist/ on the same port as
+# the API (8000).  All /api/* routes are registered above so they take priority.
+# Anything else falls through to index.html (SPA client-side routing).
+_DIST_DIR = Path(__file__).parent.parent / "frontend" / "dist"
+
+if _DIST_DIR.is_dir():
+    # Mount static assets (JS, CSS, images) at /assets — Vite puts them there
+    app.mount("/assets", StaticFiles(directory=str(_DIST_DIR / "assets")), name="spa_assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        """Serve index.html for every non-API path so React Router works."""
+        index = _DIST_DIR / "index.html"
+        return HTMLResponse(content=index.read_text(), status_code=200)
+else:
+    log.warning("Frontend dist/ not found at %s — run 'npm run build' in web/frontend/", _DIST_DIR)
