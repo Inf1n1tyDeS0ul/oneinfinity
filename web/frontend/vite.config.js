@@ -21,23 +21,6 @@ export default defineConfig({
     },
   },
   build: {
-    chunkSizeWarningLimit: 1500,
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          // React core — no circular deps, safe to isolate, cached forever
-          if (id.includes('node_modules/react/') ||
-              id.includes('node_modules/react-dom/') ||
-              id.includes('node_modules/react-router') ||
-              id.includes('node_modules/scheduler/')) {
-            return 'vendor-react'
-          }
-          // All other node_modules → single vendor chunk (avoids circular splits)
-          if (id.includes('node_modules/')) {
-            return 'vendor'
-          }
-        },
-      },
-    },
+    chunkSizeWarningLimit: 2000,
   },
 })
