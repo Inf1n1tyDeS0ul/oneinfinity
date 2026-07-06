@@ -344,23 +344,28 @@ export default function LaunchPad({
                 ) : authType === 'cookie' ? (
                   <div className="flex flex-col gap-2">
                     <p className="text-[9px] text-slate-500 font-mono leading-relaxed">
-                      In browser DevTools console, run:<br/>
-                      <span className="text-accent-primary select-all">document.cookie</span><br/>
-                      then paste the output below.
+                      In browser DevTools (F12) → Console, run:<br/>
+                      <span className="text-accent-primary font-bold select-all">document.cookie</span><br/>
+                      Copy the output and paste it below.
                     </p>
                     <textarea
-                      rows={3}
+                      rows={4}
                       className="w-full bg-bg-primary border border-bg-border rounded-lg px-2 py-1.5 text-[10px] font-mono text-accent-primary outline-none focus:border-accent-primary transition-all resize-none placeholder-slate-600 scrollbar-thin"
-                      placeholder={'session=abc123; csrf=xyz; token=eyJ...'}
+                      placeholder={'_ga=GA1.1.xxx; session=abc123; csrf=xyz...'}
                       value={authValue}
                       onChange={e => setAuthValue(e.target.value)}
                     />
+                    {!target.trim() && authValue.trim() && (
+                      <p className="text-[9px] text-amber-400 font-mono flex items-center gap-1">
+                        ⚠ Enter the target URL above first, then save.
+                      </p>
+                    )}
                     <button
                       className={clsx(
                         'btn-primary text-[10px] py-2 flex items-center justify-center gap-2',
-                        (!target.trim() || !authValue.trim() || cookieSaving) && 'opacity-50 cursor-not-allowed'
+                        (!authValue.trim() || cookieSaving) && 'opacity-50 cursor-not-allowed'
                       )}
-                      disabled={!target.trim() || !authValue.trim() || cookieSaving}
+                      disabled={!authValue.trim() || cookieSaving}
                       onClick={handleSaveCookie}
                     >
                       {cookieSaving
@@ -369,7 +374,7 @@ export default function LaunchPad({
                       }
                     </button>
                     <p className="text-[8px] text-slate-600 font-mono">
-                      Saved sessions appear in Active Personas below and are reused across scans.
+                      Saved sessions appear in Active Personas below — click one to attach it to your next scan.
                     </p>
                   </div>
                 ) : authType === 'bearer' ? (

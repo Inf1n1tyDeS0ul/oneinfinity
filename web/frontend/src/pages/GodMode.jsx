@@ -358,15 +358,19 @@ export default function GodMode() {
   }
 
   const handleSaveCookie = async () => {
-    if (!target.trim() || !authValue.trim()) return
+    if (!authValue.trim()) return
     setCookieSaving(true)
+    // Use target if set; otherwise fall back to the scan target URL
+    // The backend extracts domain from the URL for tagging — use what we have
+    const effectiveTarget = target.trim() || 'https://unknown-target'
     try {
       const r = await endpoints.authSaveCookie({
-        target:        target.trim(),
+        target:        effectiveTarget,
         cookie_string: authValue.trim(),
-        name:          target.trim(),
+        name:          effectiveTarget,
       })
-      addNotification(`Cookie session saved — ${r.data.cookies_captured} cookies (${r.data.cookie_names?.slice(0,3).join(', ')}...)`, 'success')
+      const names = r.data.cookie_names?.slice(0, 3).join(', ') || ''
+      addNotification(`Session saved — ${r.data.cookies_captured} cookies${names ? ` (${names}...)` : ''}`, 'success')
       setAuthSessionId(r.data.session_id)
       const list = await endpoints.authListSessions()
       setSavedSessions(list.data || [])
