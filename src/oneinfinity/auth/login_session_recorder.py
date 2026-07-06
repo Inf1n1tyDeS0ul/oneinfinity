@@ -40,14 +40,15 @@ class LoginSessionRecorder:
         credentials: Optional[Tuple[str, str]],
         har_dir: Path = _HAR_DIR,
     ):
-        """Auto-fill form with credentials. Returns LoginSession or None."""
+        """Auto-fill form with credentials. SPA-aware: waits for JS render, tries multiple selectors.
+        Returns LoginSession or None."""
         if not credentials:
             log.info("LoginSessionRecorder.record_auto: no credentials provided — skipping")
             return None
 
         username, password = credentials
         try:
-            from playwright.sync_api import sync_playwright
+            from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
         except ImportError:
             log.error("LoginSessionRecorder: Playwright not installed")
             return None
@@ -56,6 +57,41 @@ class LoginSessionRecorder:
         har_dir.mkdir(parents=True, exist_ok=True)
         har_path = har_dir / f"{session_id}.har"
 
+        _EMAIL_SELECTORS = [
+            f'[name="{login_form.username_field}"]' if login_form.username_field else None,
+            'input[type="email"]', 'input[name="email"]', 'input[name="username"]',
+            'input[type="text"][name*="user"]', 'input[type="text"][name*="email"]',
+            'input[placeholder*="email" i]', 'input[placeholder*="username" i]',
+            'input[autocomplete="email"]', 'input[autocomplete="username"]',
+            'input[id*="email" i]', 'input[id*="user" i]', 'input[type="text"]',
+        ]
+        _PASS_SELECTORS = [
+            f'[name="{login_form.password_field}"]' if login_form.password_field else None,
+            'input[type="password"]', 'input[name="password"]',
+            'input[id*="pass" i]', 'input[placeholder*="password" i]',
+        ]
+        _SUBMIT_SELECTORS = [
+            'button[type="submit"]', 'input[type="submit"]',
+            'button:has-text("Sign in")', 'button:has-text("Log in")',
+            'button:has-text("Login")', 'button:has-text("Continue")',
+            'button:has-text("Next")', '[data-testid*="submit"]',
+            '[data-testid*="login"]', '[data-testid*="sign"]',
+        ]
+
+        def _fill(page, selectors, value, field_name):
+            for sel in (s for s in selectors if s):
+                try:
+                    el = page.locator(sel).first
+                    if el.count() > 0:
+                        el.click(timeout=2000)
+                        el.fill(value, timeout=2000)
+                        log.info("record_auto: filled %s with selector '%s'", field_name, sel)
+                        return sel
+                except Exception:
+                    continue
+            log.warning("record_auto: could not fill %s", field_name)
+            return None
+
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
@@ -63,30 +99,39 @@ class LoginSessionRecorder:
                     record_har_path=str(har_path),
                     record_har_mode="full",
                     ignore_https_errors=True,
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 )
                 page = context.new_page()
-                page.goto(login_form.login_url, timeout=15000)
+                try:
+                    page.goto(login_form.login_url, timeout=30000, wait_until="networkidle")
+                except PWTimeout:
+                    page.goto(login_form.login_url, timeout=30000, wait_until="domcontentloaded")
+                    time.sleep(2)  # SPA render time
 
-                if login_form.username_field:
+                time.sleep(1)  # Extra wait for React to mount
+                _fill(page, _EMAIL_SELECTORS, username, "username/email")
+                _fill(page, _PASS_SELECTORS, password, "password")
+
+                submitted = False
+                for sel in _SUBMIT_SELECTORS:
                     try:
-                        page.fill(f'[name="{login_form.username_field}"]', username)
+                        el = page.locator(sel).first
+                        if el.count() > 0:
+                            el.click(timeout=4000)
+                            submitted = True
+                            break
                     except Exception:
-                        try:
-                            page.fill('input[type="text"]', username)
-                            page.fill('input[type="email"]', username)
-                        except Exception:
-                            pass
+                        continue
+                if not submitted:
+                    try:
+                        page.locator('input[type="password"]').first.press("Enter", timeout=2000)
+                    except Exception:
+                        page.keyboard.press("Enter")
 
                 try:
-                    page.fill(f'[name="{login_form.password_field}"]', password)
+                    page.wait_for_load_state("networkidle", timeout=15000)
                 except Exception:
-                    try:
-                        page.fill('input[type="password"]', password)
-                    except Exception:
-                        pass
-
-                page.keyboard.press("Enter")
-                page.wait_for_load_state("networkidle", timeout=8000)
+                    time.sleep(3)
 
                 session = self._extract_session(context, page, session_id, login_form.login_url, str(har_path))
                 context.close()
@@ -95,6 +140,7 @@ class LoginSessionRecorder:
         except Exception as exc:
             log.warning("LoginSessionRecorder.record_auto failed: %s", exc)
             return None
+
 
     def record_interactive(
         self,

@@ -62,6 +62,9 @@ export default function GodMode() {
   const [showAuth, setShowAuth]   = useState(false)
   const [authType, setAuthType]   = useState('none')
   const [authValue, setAuthValue] = useState('')
+  const [loginUsername, setLoginUsername] = useState('')
+  const [loginPassword, setLoginPassword] = useState('')
+  const [loginLoading, setLoginLoading]   = useState(false)
   const [savedSessions, setSavedSessions]         = useState([])
   const [authSessionId, setAuthSessionId]         = useState('')
   const [appContext, setAppContext]               = useState('')
@@ -326,6 +329,34 @@ export default function GodMode() {
     }
   }
 
+  const handleLoginWithCreds = async () => {
+    if (!target.trim() || !loginUsername.trim() || !loginPassword.trim()) return
+    setLoginLoading(true)
+    try {
+      const r = await endpoints.authLogin({
+        target:   target.trim(),
+        username: loginUsername.trim(),
+        password: loginPassword,
+        name:     target.trim(),
+      })
+      const warning = r.data.warning || ''
+      if (warning) {
+        addNotification('Login captured with warning: ' + warning, 'warning')
+      } else {
+        addNotification(`Login captured — ${r.data.cookies_captured} cookies saved`, 'success')
+      }
+      setAuthSessionId(r.data.session_id)
+      const list = await endpoints.authListSessions()
+      setSavedSessions(list.data || [])
+      setLoginPassword('')
+    } catch (e) {
+      addNotification('Login failed: ' + (e.response?.data?.detail || e.message), 'error')
+    } finally {
+      setLoginLoading(false)
+    }
+  }
+
+
   const handleLaunch = async () => {
     if (!target.trim()) return
     if (preset === 'custom') {
@@ -472,6 +503,9 @@ export default function GodMode() {
           appContext={appContext} setAppContext={setAppContext}
           isRecording={isRecording} handleRecordSession={handleRecordSession} handleRecordDone={handleRecordDone} handleRecordCancel={handleRecordCancel}
           recordingWarning={recordingWarning} loginFormDetected={loginFormDetected}
+          loginUsername={loginUsername} setLoginUsername={setLoginUsername}
+          loginPassword={loginPassword} setLoginPassword={setLoginPassword}
+          loginLoading={loginLoading} handleLoginWithCreds={handleLoginWithCreds}
           sessions={sessions} selectedSessionId={selectedSessionId} setSelectedSessionId={setSelectedSessionId} setSession={setSession} setTab={setTab}
           handleDelete={handleDelete}
         />

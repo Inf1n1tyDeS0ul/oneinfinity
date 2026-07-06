@@ -6764,6 +6764,200 @@ async def auth_detect(request: Request):
         return {"has_login_form": False, "error": str(exc)}
 
 
+@app.post("/api/auth/login", dependencies=[Depends(_require_auth)])
+async def auth_login_with_credentials(request: Request):
+    """
+    Headless Playwright auto-login: navigate to login URL, fill username+password,
+    capture session cookies. Works with React/Vue SPAs where form tags aren't in static HTML.
+    Returns {session_id, cookies_captured, warning}.
+    """
+    import threading as _threading
+    import asyncio as _asyncio
+    data = await request.json()
+    target   = (data.get("target") or "").strip()
+    username = (data.get("username") or "").strip()
+    password = (data.get("password") or "").strip()
+    name     = (data.get("name") or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="target is required")
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="username and password are required")
+    target = _validate_target(target)
+
+    result: dict = {}
+    done_event = _threading.Event()
+
+    def _do_login():
+        try:
+            from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+            from pathlib import Path as _Path
+            import uuid as _uuid, json as _json, time as _time
+
+            _sessions_dir = _Path.home() / ".oneinfinity" / "sessions"
+            _sessions_dir.mkdir(parents=True, exist_ok=True)
+            session_id = _uuid.uuid4().hex[:8]
+            har_path = _sessions_dir / f"{session_id}.har"
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(
+                    record_har_path=str(har_path),
+                    record_har_mode="full",
+                    ignore_https_errors=True,
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                )
+                page = context.new_page()
+
+                try:
+                    page.goto(target, timeout=30000, wait_until="networkidle")
+                except PWTimeout:
+                    page.goto(target, timeout=30000, wait_until="domcontentloaded")
+
+                # SPA-aware fill: try multiple selector strategies in priority order
+                _EMAIL_SELECTORS = [
+                    'input[type="email"]',
+                    'input[name="email"]',
+                    'input[name="username"]',
+                    'input[type="text"][name*="user"]',
+                    'input[type="text"][name*="email"]',
+                    'input[placeholder*="email" i]',
+                    'input[placeholder*="username" i]',
+                    'input[autocomplete="email"]',
+                    'input[autocomplete="username"]',
+                    'input[id*="email" i]',
+                    'input[id*="user" i]',
+                ]
+                _PASS_SELECTORS = [
+                    'input[type="password"]',
+                    'input[name="password"]',
+                    'input[name="pass"]',
+                    'input[id*="pass" i]',
+                    'input[placeholder*="password" i]',
+                ]
+                _SUBMIT_SELECTORS = [
+                    'button[type="submit"]',
+                    'input[type="submit"]',
+                    'button:has-text("Sign in")',
+                    'button:has-text("Log in")',
+                    'button:has-text("Login")',
+                    'button:has-text("Continue")',
+                    'button:has-text("Next")',
+                    '[data-testid*="submit"]',
+                    '[data-testid*="login"]',
+                    '[data-testid*="sign"]',
+                ]
+
+                def _fill(selectors, value, field_name):
+                    for sel in selectors:
+                        try:
+                            el = page.locator(sel).first
+                            if el.count() > 0:
+                                el.click(timeout=3000)
+                                el.fill(value, timeout=3000)
+                                log.info("auth_login: filled %s with selector %s", field_name, sel)
+                                return sel
+                        except Exception:
+                            continue
+                    log.warning("auth_login: could not find %s field", field_name)
+                    return None
+
+                # Wait for form to render (SPA may take a moment)
+                _time.sleep(1)
+
+                _fill(_EMAIL_SELECTORS, username, "username/email")
+                _fill(_PASS_SELECTORS, password, "password")
+
+                # Try clicking submit
+                _submitted = False
+                for sel in _SUBMIT_SELECTORS:
+                    try:
+                        el = page.locator(sel).first
+                        if el.count() > 0:
+                            el.click(timeout=5000)
+                            _submitted = True
+                            log.info("auth_login: submitted with %s", sel)
+                            break
+                    except Exception:
+                        continue
+                if not _submitted:
+                    # Fallback: press Enter in the password field
+                    try:
+                        page.locator('input[type="password"]').first.press("Enter", timeout=3000)
+                        _submitted = True
+                    except Exception:
+                        pass
+
+                # Wait for navigation / session establishment
+                try:
+                    page.wait_for_load_state("networkidle", timeout=15000)
+                except Exception:
+                    _time.sleep(3)
+
+                final_url = page.url
+                on_login_page = any(k in final_url.lower() for k in
+                                    ("/login", "/sign-in", "/signin", "/auth/login"))
+                warning = ""
+                if on_login_page:
+                    warning = "Still on login page after submit — credentials may be wrong or MFA is required."
+
+                # Capture cookies + localStorage
+                cookies = context.cookies()
+                local_storage = {}
+                try:
+                    local_storage = page.evaluate("Object.entries(localStorage).reduce((a,[k,v])=>({...a,[k]:v}),{})")
+                except Exception:
+                    pass
+
+                context.close()
+                browser.close()
+
+            # Persist as a LoginSession
+            from oneinfinity.auth import SessionManager, LoginSession
+            ls = LoginSession(
+                session_id=session_id,
+                target=target,
+                login_url=target,
+                name=name or target,
+                recorder="auto_headless",
+                recorded_at=_time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                cookies=[{"name": c["name"], "value": c["value"], "domain": c.get("domain",""),
+                          "path": c.get("path","/"), "secure": c.get("secure",False),
+                          "httpOnly": c.get("httpOnly",False)} for c in cookies],
+                auth_headers={},
+                local_storage=local_storage,
+                har_path=str(har_path) if har_path.exists() else "",
+                warning=warning,
+            )
+            SessionManager().save(ls, name=name or target)
+
+            result["session_id"] = session_id
+            result["cookies_captured"] = len(cookies)
+            result["final_url"] = final_url
+            result["warning"] = warning
+            result["status"] = "ok"
+        except Exception as exc:
+            log.exception("auth_login error: %s", exc)
+            result["error"] = str(exc)
+            result["status"] = "error"
+        finally:
+            done_event.set()
+
+    t = _threading.Thread(target=_do_login, daemon=True, name="auth-login")
+    t.start()
+    # Block async event loop cheaply — timeout 60s
+    for _ in range(120):
+        if done_event.is_set():
+            break
+        await _asyncio.sleep(0.5)
+
+    if result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("error", "Login failed"))
+    if not result:
+        raise HTTPException(status_code=504, detail="Login timed out")
+    return result
+
+
+
 @app.post("/api/auth/record", dependencies=[Depends(_require_auth)])
 async def auth_record_start(request: Request):
     """

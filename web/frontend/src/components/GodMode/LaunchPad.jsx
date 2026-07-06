@@ -118,6 +118,9 @@ export default function LaunchPad({
   authSessionId, setAuthSessionId,
   isRecording, handleRecordSession, handleRecordDone, handleRecordCancel,
   recordingWarning, loginFormDetected,
+  loginUsername, setLoginUsername,
+  loginPassword, setLoginPassword,
+  loginLoading, handleLoginWithCreds,
   sessions, selectedSessionId, setSelectedSessionId, setSession, setTab,
   handleDelete,
   appContext, setAppContext,
@@ -276,15 +279,53 @@ export default function LaunchPad({
                   onChange={e => { setAuthType(e.target.value); setAuthValue('') }}
                 >
                   <option value="none">UNAUTHENTICATED</option>
+                  <option value="creds">🔑 LOGIN WITH CREDENTIALS</option>
                   <option value="record">⏺ RECORD SESSION</option>
                   <option value="cookie">SESSION COOKIE</option>
                   <option value="bearer">BEARER TOKEN</option>
                 </select>
 
+                {authType === 'creds' && (
+                  <div className="flex flex-col gap-2">
+                    <input
+                      type="text"
+                      className="w-full bg-bg-primary border border-bg-border rounded-lg px-2 py-1.5 text-[10px] font-mono text-slate-200 outline-none focus:border-accent-primary transition-all placeholder-slate-600"
+                      placeholder="Username / Email"
+                      value={loginUsername}
+                      onChange={e => setLoginUsername(e.target.value)}
+                      autoComplete="off"
+                    />
+                    <input
+                      type="password"
+                      className="w-full bg-bg-primary border border-bg-border rounded-lg px-2 py-1.5 text-[10px] font-mono text-slate-200 outline-none focus:border-accent-primary transition-all placeholder-slate-600"
+                      placeholder="Password"
+                      value={loginPassword}
+                      onChange={e => setLoginPassword(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && loginUsername && loginPassword && !loginLoading && handleLoginWithCreds()}
+                    />
+                    <button
+                      className={clsx(
+                        'btn-primary text-[10px] py-2 flex items-center justify-center gap-2',
+                        (!target.trim() || !loginUsername.trim() || !loginPassword.trim() || loginLoading) && 'opacity-50 cursor-not-allowed'
+                      )}
+                      disabled={!target.trim() || !loginUsername.trim() || !loginPassword.trim() || loginLoading}
+                      onClick={handleLoginWithCreds}
+                    >
+                      {loginLoading
+                        ? <><RefreshCw size={10} className="animate-spin" /> Capturing session...</>
+                        : <><Shield size={10} /> Capture Session</>
+                      }
+                    </button>
+                    {!target.trim() && (
+                      <p className="text-[9px] text-amber-400/70 font-mono">Enter target URL first</p>
+                    )}
+                  </div>
+                )}
+
                 {authType === 'record' ? (
                   <div className="flex flex-col gap-2">
                     {!isRecording ? (
-                      <button 
+                      <button
                         className="btn-secondary text-[10px] py-2 flex items-center justify-center gap-2"
                         onClick={handleRecordSession}
                         disabled={!target.trim()}
@@ -299,7 +340,7 @@ export default function LaunchPad({
                       </div>
                     )}
                   </div>
-                ) : authType !== 'none' && (
+                ) : authType !== 'none' && authType !== 'creds' && (
                   <input
                     className="w-full bg-bg-primary border border-bg-border rounded-lg px-2 py-1.5 text-[10px] font-mono text-accent-primary outline-none focus:border-accent-primary transition-all"
                     placeholder="Enter credentials..."
