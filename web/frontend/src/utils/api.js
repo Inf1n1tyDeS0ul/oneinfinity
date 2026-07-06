@@ -2,18 +2,22 @@ import axios from 'axios'
 
 const api = axios.create({ baseURL: '/api', timeout: 15000 })
 
-// Auto-fetch session API key from backend and attach to all requests.
-// Stored as a Promise so the request interceptor can await it before dispatch.
-const _fetchKey = axios.get('/api/auth-token').then(r => {
-  api.defaults.headers.common['X-API-Key'] = r.data.token
-}).catch(() => {
-  // Fallback: check sessionStorage then localStorage (SystemControl saves to localStorage)
-  const stored = sessionStorage.getItem('oneinfinity_api_key')
-              || localStorage.getItem('oneinfinity_api_key')
-  if (stored) {
-    api.defaults.headers.common['X-API-Key'] = stored
+// Resolve API key: injected by server into window.__OI_API_KEY__ (production),
+// or fetched from /api/auth-token (local dev), or read from storage (manual entry).
+const _fetchKey = (() => {
+  const injected = window.__OI_API_KEY__
+  if (injected) {
+    api.defaults.headers.common['X-API-Key'] = injected
+    return Promise.resolve()
   }
-})
+  return axios.get('/api/auth-token').then(r => {
+    if (r.data.token) api.defaults.headers.common['X-API-Key'] = r.data.token
+  }).catch(() => {
+    const stored = sessionStorage.getItem('oneinfinity_api_key')
+                || localStorage.getItem('oneinfinity_api_key')
+    if (stored) api.defaults.headers.common['X-API-Key'] = stored
+  })
+})()
 
 // Wait for the key to be resolved before dispatching any request,
 // so requests fired during startup don't go out without the header.

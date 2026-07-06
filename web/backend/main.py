@@ -10504,8 +10504,15 @@ if _DIST_DIR.is_dir():
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
-        """Serve index.html for every non-API path so React Router works."""
+        """Serve index.html for every non-API path, injecting the API key so
+        the frontend can authenticate without a separate /api/auth-token call."""
         index = _DIST_DIR / "index.html"
-        return HTMLResponse(content=index.read_text(), status_code=200)
+        html = index.read_text()
+        # Inject window.__OI_API_KEY__ before the first <script> tag so the
+        # frontend's axios interceptor can read it synchronously at startup.
+        if _API_KEY:
+            inject = f'<script>window.__OI_API_KEY__="{_API_KEY}";</script>'
+            html = html.replace("<script", inject + "<script", 1)
+        return HTMLResponse(content=html, status_code=200)
 else:
     log.warning("Frontend dist/ not found at %s — run 'npm run build' in web/frontend/", _DIST_DIR)
