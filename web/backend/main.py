@@ -10513,6 +10513,13 @@ if _DIST_DIR.is_dir():
         if _API_KEY:
             inject = f'<script>window.__OI_API_KEY__="{_API_KEY}";</script>'
             html = html.replace("<script", inject + "<script", 1)
-        return HTMLResponse(content=html, status_code=200)
+        return HTMLResponse(
+            content=html,
+            status_code=200,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+                "Pragma": "no-cache",
+            },
+        )
 else:
     log.warning("Frontend dist/ not found at %s — run 'npm run build' in web/frontend/", _DIST_DIR)
