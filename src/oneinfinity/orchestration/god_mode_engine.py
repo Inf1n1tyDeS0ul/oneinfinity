@@ -981,7 +981,7 @@ class ResearchMission(Mission):
     """
     Runs the iterative research loop via ResearchModeController.
     Each completed iteration notifies the ConvergenceChecker.
-    Unlocked by: NEW_VULNERABILITY count >= 3.
+    Unlocked by: NEW_VULNERABILITY count >= 1 (EVENT_UNLOCK_VULN_THRESHOLD).
     """
 
     def __init__(self, convergence: ConvergenceChecker):
@@ -1023,7 +1023,7 @@ class ResearchMission(Mission):
 class SwarmMission(Mission):
     """
     Runs all 8 specialized swarm agents in parallel via run_swarm().
-    Unlocked by: NEW_ENDPOINT count >= 10.
+    Unlocked by: NEW_ENDPOINT count >= 5 (EVENT_UNLOCK_ENDPOINT_THRESHOLD).
     """
 
     def __init__(self):
@@ -2020,7 +2020,16 @@ class GodModeConductor:
                 scan_id = data.get("scan_id", "")
                 auth_tier = data.get("auth_tier", 1)
                 username = data.get("username", "unknown")
-                if not session_id or not self._session:
+                # Foundation CREDENTIAL_ACQUIRED events (GitHub secrets, OSINT) do not include
+                # session_id. Synthesise a stable one from (source, secret_type, repo) so
+                # Phase C + Phase F can fire for these credentials too.
+                if not session_id:
+                    _src = data.get("source", "unknown")
+                    _stype = data.get("secret_type", "unknown")
+                    _repo = data.get("repo", "")
+                    session_id = f"cred-{_src[:8]}-{_stype[:8]}-{uuid.uuid4().hex[:8]}"
+                    log.debug("[GOD MODE] CREDENTIAL_ACQUIRED: synthesised session_id=%s (source=%s)", session_id, _src)
+                if not self._session:
                     return
                 with self._lock:
                     if session_id in self._spawned_auth_tiers:
@@ -2699,6 +2708,10 @@ class GodModeConductor:
         ai_red_team = (AIRedTeamMission(auth_header=_auth_bearer,
                                          findings_pipeline_cb=self._apply_findings_pipeline)
                        if _ai_target else None)
+        if not _ai_target:
+            log.info("[GOD MODE] AIRedTeamMission + AICouncilMission SKIPPED — target %s not detected as AI/LLM endpoint. "
+                     "Set app_context='llm' or ensure recon finds /v1/chat, /completions, /ai/ etc. to enable.",
+                     session.target)
         # AICouncilMission: full council pipeline, conditional on AI target
         ai_council = AICouncilMission(foundation, auth_config=session.auth_config) if _ai_target else None
         # ZeroHypothesisMission: polls until FullScan done
