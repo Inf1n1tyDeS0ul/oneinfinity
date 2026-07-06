@@ -21,32 +21,20 @@ export default defineConfig({
     },
   },
   build: {
-    // Raise the warning threshold — we're intentionally splitting
-    chunkSizeWarningLimit: 600,
+    chunkSizeWarningLimit: 1500,
     rollupOptions: {
       output: {
         manualChunks(id) {
-          // React core — tiny, cached forever
+          // React core — no circular deps, safe to isolate, cached forever
           if (id.includes('node_modules/react/') ||
               id.includes('node_modules/react-dom/') ||
-              id.includes('node_modules/react-router')) {
+              id.includes('node_modules/react-router') ||
+              id.includes('node_modules/scheduler/')) {
             return 'vendor-react'
           }
-          // 3-D graph + Three.js — large, rarely changes
-          if (id.includes('node_modules/three') ||
-              id.includes('node_modules/react-force-graph') ||
-              id.includes('node_modules/three-spritetext')) {
-            return 'vendor-three'
-          }
-          // Recharts — medium, rarely changes
-          if (id.includes('node_modules/recharts') ||
-              id.includes('node_modules/d3') ||
-              id.includes('node_modules/victory')) {
-            return 'vendor-charts'
-          }
-          // Everything else in node_modules → shared vendor chunk
+          // All other node_modules → single vendor chunk (avoids circular splits)
           if (id.includes('node_modules/')) {
-            return 'vendor-misc'
+            return 'vendor'
           }
         },
       },
