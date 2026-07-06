@@ -65,6 +65,7 @@ export default function GodMode() {
   const [loginUsername, setLoginUsername] = useState('')
   const [loginPassword, setLoginPassword] = useState('')
   const [loginLoading, setLoginLoading]   = useState(false)
+  const [cookieSaving, setCookieSaving]   = useState(false)
   const [savedSessions, setSavedSessions]         = useState([])
   const [authSessionId, setAuthSessionId]         = useState('')
   const [appContext, setAppContext]               = useState('')
@@ -356,6 +357,28 @@ export default function GodMode() {
     }
   }
 
+  const handleSaveCookie = async () => {
+    if (!target.trim() || !authValue.trim()) return
+    setCookieSaving(true)
+    try {
+      const r = await endpoints.authSaveCookie({
+        target:        target.trim(),
+        cookie_string: authValue.trim(),
+        name:          target.trim(),
+      })
+      addNotification(`Cookie session saved — ${r.data.cookies_captured} cookies (${r.data.cookie_names?.slice(0,3).join(', ')}...)`, 'success')
+      setAuthSessionId(r.data.session_id)
+      const list = await endpoints.authListSessions()
+      setSavedSessions(list.data || [])
+      setAuthValue('')
+    } catch (e) {
+      addNotification('Save failed: ' + (e.response?.data?.detail || e.message), 'error')
+    } finally {
+      setCookieSaving(false)
+    }
+  }
+
+
 
   const handleLaunch = async () => {
     if (!target.trim()) return
@@ -506,6 +529,7 @@ export default function GodMode() {
           loginUsername={loginUsername} setLoginUsername={setLoginUsername}
           loginPassword={loginPassword} setLoginPassword={setLoginPassword}
           loginLoading={loginLoading} handleLoginWithCreds={handleLoginWithCreds}
+          cookieSaving={cookieSaving} handleSaveCookie={handleSaveCookie}
           sessions={sessions} selectedSessionId={selectedSessionId} setSelectedSessionId={setSelectedSessionId} setSession={setSession} setTab={setTab}
           handleDelete={handleDelete}
         />

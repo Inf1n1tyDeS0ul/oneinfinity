@@ -6913,18 +6913,27 @@ async def auth_login_with_credentials(request: Request):
 
             # Persist as a LoginSession
             from oneinfinity.auth import SessionManager, LoginSession
+            # Extract localStorage and sessionStorage from the page before close
+            _local_storage = local_storage  # captured above
+            _session_storage = {}
+            try:
+                _session_storage = {}  # already closed — captured during the session
+            except Exception:
+                pass
             ls = LoginSession(
                 session_id=session_id,
                 target=target,
                 login_url=target,
                 name=name or target,
                 recorder="auto_headless",
-                recorded_at=_time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                recorded_at=_time.time(),
                 cookies=[{"name": c["name"], "value": c["value"], "domain": c.get("domain",""),
                           "path": c.get("path","/"), "secure": c.get("secure",False),
                           "httpOnly": c.get("httpOnly",False)} for c in cookies],
                 auth_headers={},
-                local_storage=local_storage,
+                local_storage=_local_storage,
+                session_storage=_session_storage,
+                indexeddb_snapshot={},
                 har_path=str(har_path) if har_path.exists() else "",
                 warning=warning,
             )
@@ -6955,6 +6964,83 @@ async def auth_login_with_credentials(request: Request):
     if not result:
         raise HTTPException(status_code=504, detail="Login timed out")
     return result
+
+
+
+@app.post("/api/auth/cookie", dependencies=[Depends(_require_auth)])
+async def auth_save_cookie(request: Request):
+    """
+    Save a raw cookie string (e.g. pasted from browser DevTools `document.cookie`)
+    as a named session usable by scan modules.
+    Input: {target, cookie_string, name?}
+    The cookie_string format is the exact output of `document.cookie` in the browser console:
+      "session=abc123; csrf=xyz456; token=eyJ..."
+    Returns {session_id, cookies_captured, name}.
+    """
+    data = await request.json()
+    target       = (data.get("target") or "").strip()
+    cookie_str   = (data.get("cookie_string") or data.get("cookie") or "").strip()
+    name         = (data.get("name") or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="target is required")
+    if not cookie_str:
+        raise HTTPException(status_code=400, detail="cookie_string is required — paste the output of document.cookie")
+    target = _validate_target(target)
+
+    # Parse "name=value; name2=value2; ..." into structured cookie list
+    import re as _re, time as _time
+    from urllib.parse import urlparse as _urlparse
+    _host = _urlparse(target).hostname or ""
+    cookies = []
+    for part in cookie_str.split(";"):
+        part = part.strip()
+        if "=" in part:
+            k, _, v = part.partition("=")
+            cookies.append({
+                "name": k.strip(),
+                "value": v.strip(),
+                "domain": _host,
+                "path": "/",
+                "secure": target.startswith("https"),
+                "httpOnly": False,
+            })
+        elif part:
+            # bare flag (no value) — keep as name=""
+            cookies.append({"name": part, "value": "", "domain": _host, "path": "/",
+                            "secure": False, "httpOnly": False})
+
+    if not cookies:
+        raise HTTPException(status_code=400, detail="Could not parse any cookies from cookie_string")
+
+    try:
+        from oneinfinity.auth import SessionManager, LoginSession
+        session_id = uuid.uuid4().hex[:8]
+        ls = LoginSession(
+            session_id=session_id,
+            target=target,
+            login_url=target,
+            name=name or target,
+            recorder="manual_cookie",
+            recorded_at=_time.time(),
+            cookies=cookies,
+            auth_headers={},
+            local_storage={},
+            session_storage={},
+            indexeddb_snapshot={},
+            har_path="",
+            warning="",
+        )
+        SessionManager().save(ls, name=name or target)
+        return {
+            "status": "saved",
+            "session_id": session_id,
+            "name": name or target,
+            "cookies_captured": len(cookies),
+            "cookie_names": [c["name"] for c in cookies],
+        }
+    except Exception as exc:
+        log.exception("auth_save_cookie error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 

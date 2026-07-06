@@ -121,6 +121,7 @@ export default function LaunchPad({
   loginUsername, setLoginUsername,
   loginPassword, setLoginPassword,
   loginLoading, handleLoginWithCreds,
+  cookieSaving, handleSaveCookie,
   sessions, selectedSessionId, setSelectedSessionId, setSession, setTab,
   handleDelete,
   appContext, setAppContext,
@@ -340,14 +341,52 @@ export default function LaunchPad({
                       </div>
                     )}
                   </div>
-                ) : authType !== 'none' && authType !== 'creds' && (
+                ) : authType === 'cookie' ? (
+                  <div className="flex flex-col gap-2">
+                    <p className="text-[9px] text-slate-500 font-mono leading-relaxed">
+                      In browser DevTools console, run:<br/>
+                      <span className="text-accent-primary select-all">document.cookie</span><br/>
+                      then paste the output below.
+                    </p>
+                    <textarea
+                      rows={3}
+                      className="w-full bg-bg-primary border border-bg-border rounded-lg px-2 py-1.5 text-[10px] font-mono text-accent-primary outline-none focus:border-accent-primary transition-all resize-none placeholder-slate-600 scrollbar-thin"
+                      placeholder={'session=abc123; csrf=xyz; token=eyJ...'}
+                      value={authValue}
+                      onChange={e => setAuthValue(e.target.value)}
+                    />
+                    <button
+                      className={clsx(
+                        'btn-primary text-[10px] py-2 flex items-center justify-center gap-2',
+                        (!target.trim() || !authValue.trim() || cookieSaving) && 'opacity-50 cursor-not-allowed'
+                      )}
+                      disabled={!target.trim() || !authValue.trim() || cookieSaving}
+                      onClick={handleSaveCookie}
+                    >
+                      {cookieSaving
+                        ? <><RefreshCw size={10} className="animate-spin" /> Saving...</>
+                        : <><Shield size={10} /> Save as Session</>
+                      }
+                    </button>
+                    <p className="text-[8px] text-slate-600 font-mono">
+                      Saved sessions appear in Active Personas below and are reused across scans.
+                    </p>
+                  </div>
+                ) : authType === 'bearer' ? (
                   <input
                     className="w-full bg-bg-primary border border-bg-border rounded-lg px-2 py-1.5 text-[10px] font-mono text-accent-primary outline-none focus:border-accent-primary transition-all"
-                    placeholder="Enter credentials..."
+                    placeholder="eyJhbGciOiJIUzI1NiJ9..."
                     value={authValue}
                     onChange={e => setAuthValue(e.target.value)}
                   />
-                )}
+                ) : authType === 'header' ? (
+                  <input
+                    className="w-full bg-bg-primary border border-bg-border rounded-lg px-2 py-1.5 text-[10px] font-mono text-accent-primary outline-none focus:border-accent-primary transition-all"
+                    placeholder="Authorization: Token abc123"
+                    value={authValue}
+                    onChange={e => setAuthValue(e.target.value)}
+                  />
+                ) : null}
 
                 {savedSessions.length > 0 && (
                    <div className="flex flex-col gap-2 border-t border-bg-border/50 pt-3 mt-1">

@@ -300,6 +300,7 @@ export const endpoints = {
   authRecordDone:      (recId, data={}) => api.post(`/auth/record/${recId}/done`, data),
   authRecordCancel:    (recId) => api.post(`/auth/record/${recId}/cancel`),
   authLogin:           (data) => api.post('/auth/login', data, { timeout: 60000 }),
+  authSaveCookie:      (data) => api.post('/auth/cookie', data),
   authListSessions:    () => api.get('/auth/sessions'),
   authGetSession:      (id) => api.get(`/auth/sessions/${id}`),
   authSessionVerify:   (id) => api.post(`/auth/sessions/${id}/verify`),
