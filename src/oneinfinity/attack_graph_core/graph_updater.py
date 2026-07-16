@@ -533,7 +533,10 @@ class GraphUpdater:
                 payload=f.get("payload", ""),
             )
             count += 1
-        logger.info(f"Scan update for {target}: {count} findings added to graph")
+        if count > 0:
+            logger.info(f"Scan update for {target}: {count} findings added to graph")
+        else:
+            logger.debug(f"Scan update for {target}: 0 findings (no new graph nodes)")
 
     def update_from_exploit_result(self, exploit_result: dict):
         """

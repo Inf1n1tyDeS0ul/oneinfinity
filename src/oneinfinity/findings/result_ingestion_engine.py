@@ -623,6 +623,14 @@ class ResultIngestionEngine:
         if finding is None:
             return None
 
+        # Skip empty ghost findings — no vuln_type AND no url = useless stub
+        _vt = (finding.vuln_type or "").strip()
+        _url = (finding.url or "").strip()
+        if not _vt and not _url:
+            log.debug("ingest: skipping empty finding stub (no vuln_type, no url) target=%s",
+                      finding.target)
+            return None
+
         # 1. Confidence Filtering (Noise Reduction)
         if finding.confidence < confidence_threshold:
             log.info("ingest: suppressing low-confidence finding (%.2f < %.2f) [%s]",

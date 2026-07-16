@@ -995,6 +995,13 @@ def _push_finding_to_graph(api_finding: dict) -> None:
         url        = api_finding.get("url", "") or raw_target
         if not url:
             return
+        # Skip ghost findings — stubs with no vulnerability type or real URL
+        # (produced by graph_updater when scan is aborted mid-flight)
+        attack_type = (api_finding.get("attack_type") or api_finding.get("vuln_type") or "").strip()
+        if not attack_type or attack_type in ("vulnerability", "unknown", ""):
+            raw_url = api_finding.get("url", "").strip()
+            if not raw_url or not raw_url.startswith("http"):
+                return  # Ghost finding — no real type and no real URL
         # Normalize target to bare hostname so TARGET nodes are keyed by domain,
         # not full URLs. get_attack_paths and risk-report look up (TARGET, "hostname").
         parsed = _urlparse(raw_target if "://" in raw_target else f"https://{raw_target}")
@@ -1009,6 +1016,14 @@ def _push_finding_to_graph(api_finding: dict) -> None:
 # ── Wire ResultIngestionEngine and EventBus broadcast ────────────────────────
 
 def _on_finding_ingested(finding: dict):
+    # Guard: skip empty ghost stubs (no vuln_type AND no real url)
+    # These are produced when scan is aborted mid-flight and graph_updater
+    # publishes placeholder events for hosts with 0 findings.
+    _vt = (finding.get("vuln_type") or finding.get("attack_type") or finding.get("title") or "").strip()
+    _url = (finding.get("url") or finding.get("endpoint") or "").strip()
+    if not _vt and (not _url or not _url.startswith("http")):
+        log.debug("_on_finding_ingested: skipping ghost stub for target=%s", finding.get("target", "?"))
+        return
     fid = finding.get("finding_id") or finding.get("id") or str(uuid.uuid4())[:8]
     VULNERABILITIES[fid] = _finding_to_api(finding)
     _push_finding_to_graph(VULNERABILITIES[fid])
@@ -2352,6 +2367,16 @@ async def delete_scan(scan_id: str):
                 proc.terminate()
             except Exception:
                 pass
+    # Update in-memory scan record's findings_count to 0 BEFORE deleting
+    # so that any concurrent status reads see the correct count.
+    if scan_id in SCANS:
+        try:
+            _rec = dict(SCANS[scan_id])
+            _rec["findings_count"] = 0
+            SCANS[scan_id] = _rec
+        except Exception:
+            pass
+
     SCANS.delete(scan_id)
     await (await get_mgr()).delete_scan(scan_id)
 
