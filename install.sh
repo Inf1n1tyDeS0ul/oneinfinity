@@ -2942,6 +2942,18 @@ build_rust_core() {
 
     cd "$rust_dir" || { err "Cannot cd into $rust_dir"; return 1; }
 
+    # -- Ensure a virtualenv is active (maturin develop requires one) ------
+    local _venv_dir="$REPO_DIR/.venv"
+    if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+        if [[ ! -d "$_venv_dir" ]]; then
+            step "Creating .venv for maturin"
+            python3 -m venv "$_venv_dir" >>"$ONEINFINITY_LOG" 2>&1 \
+                && ok ".venv created" || { warn "venv creation failed — skipping Rust core build"; return 0; }
+        fi
+        # shellcheck disable=SC1091
+        source "$_venv_dir/bin/activate"
+    fi
+
     # -- Build with ABI3 forward compatibility ----------------------------
     # Required for Python 3.14+ because PyO3 >= 0.22 targets the stable ABI.
     step "Building oneinfinity_core with maturin (release mode)"
@@ -2993,8 +3005,8 @@ build_rust_fuzzer() {
     step "Building oi-fuzzer (release)"
     if (cd "$fuzzer_dir" && \
         cargo build --release 2>&1 | tee -a "$ONEINFINITY_LOG"); then
-        if [[ -f "$fuzzer_dir/target/release/oi-fuzzer" ]]; then
-            cp "$fuzzer_dir/target/release/oi-fuzzer" "$out_dir/oi-fuzzer"
+        if [[ -f "$REPO_DIR/src/rust/target/release/oi-fuzzer" ]]; then
+            cp "$REPO_DIR/src/rust/target/release/oi-fuzzer" "$out_dir/oi-fuzzer"
             chmod +x "$out_dir/oi-fuzzer"
             ok "oi-fuzzer built → $out_dir/oi-fuzzer"
         else
@@ -3030,8 +3042,8 @@ build_rust_jwt_crack() {
     step "Building oi-jwt-crack (release)"
     if (cd "$crack_dir" && \
         cargo build --release 2>&1 | tee -a "$ONEINFINITY_LOG"); then
-        if [[ -f "$crack_dir/target/release/oi-jwt-crack" ]]; then
-            cp "$crack_dir/target/release/oi-jwt-crack" "$out_dir/oi-jwt-crack"
+        if [[ -f "$REPO_DIR/src/rust/target/release/oi-jwt-crack" ]]; then
+            cp "$REPO_DIR/src/rust/target/release/oi-jwt-crack" "$out_dir/oi-jwt-crack"
             chmod +x "$out_dir/oi-jwt-crack"
             ok "oi-jwt-crack built → $out_dir/oi-jwt-crack (>2M candidates/sec)"
         else
@@ -3067,8 +3079,8 @@ build_rust_payload_fuzzer() {
     step "Building payload-fuzzer (release)"
     if (cd "$fuzzer_dir" && \
         cargo build --release 2>&1 | tee -a "$ONEINFINITY_LOG"); then
-        if [[ -f "$fuzzer_dir/target/release/payload-fuzzer" ]]; then
-            cp "$fuzzer_dir/target/release/payload-fuzzer" "$out_dir/payload-fuzzer"
+        if [[ -f "$REPO_DIR/src/rust/target/release/payload-fuzzer" ]]; then
+            cp "$REPO_DIR/src/rust/target/release/payload-fuzzer" "$out_dir/payload-fuzzer"
             chmod +x "$out_dir/payload-fuzzer"
             ok "payload-fuzzer built → $out_dir/payload-fuzzer"
         else
@@ -3995,12 +4007,12 @@ _build_nim_binaries() {
 
     info "Building Nim payload binaries from $nim_src_dir..."
     local -a nim_tools=(
-        "oi-fuzzer:oi-fuzzer.nim"
-        "oi-payloads:oi-payloads.nim"
-        "oi-privesc-gen:oi-privesc-gen.nim"
-        "oi-bypass-gen:oi-bypass-gen.nim"
-        "oi-post-exploit:oi-post-exploit.nim"
-        "oi-shell-gen:oi-shell-gen.nim"
+        "oi-fuzzer:oi_fuzzer.nim"
+        "oi-payloads:oi_payloads.nim"
+        "oi-privesc-gen:oi_privesc_gen.nim"
+        "oi-bypass-gen:oi_bypass_gen.nim"
+        "oi-post-exploit:oi_post_exploit.nim"
+        "oi-shell-gen:oi_shell_gen.nim"
         "stealth_prober:stealth_prober.nim"
     )
 

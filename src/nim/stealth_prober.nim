@@ -15,7 +15,7 @@
 ##    "confidence":0.85,"scan_id":"...","ts":1700000000.0}
 
 import std/[
-  httpclient, asynchttpclient, asyncdispatch,
+  httpclient, asyncdispatch,
   json, os, strutils, sequtils, random,
   times, tables, math, uri, strformat,
   streams, parseopt
@@ -121,7 +121,7 @@ proc urlEncode(s: string): string =
       result.add(ch)
     else:
       result.add('%')
-      result.add(($ord(ch)).toHex(2))
+      result.add(ord(ch).toHex(2))
 
 proc doubleEncode(payload: string): string =
   ## Double URL-encode dangerous chars: < > ' " ( ) = /
@@ -239,6 +239,13 @@ proc jitter(baseMs: int): Future[void] {.async.} =
   let delayMs = baseMs + rand(baseMs)
   await sleepAsync(delayMs)
 
+proc waitForAny[T](futs: seq[Future[T]]): Future[Future[T]] {.async.} =
+  ## Poll until one future in futs is finished, then return it.
+  while true:
+    for f in futs:
+      if f.finished: return f
+    await sleepAsync(10)
+
 # ── Probe execution ────────────────────────────────────────────────────────────
 
 proc probeUrl(
@@ -277,9 +284,13 @@ proc probeUrl(
     result.status = resp.code.int
 
     # WAF block detection heuristics
+    let serverHdr = if resp.headers.hasKey("server"):
+      seq[string](resp.headers["server"]).join(",").toLowerAscii
+    else: ""
+    let respBody = (await resp.body).toLowerAscii
     let blocked = resp.code.int in [403, 406, 429, 503] or
-                  "cloudflare" in resp.headers.getOrDefault("server", "").toLowerAscii or
-                  "access denied" in (await resp.body).toLowerAscii
+                  "cloudflare" in serverHdr or
+                  "access denied" in respBody
 
     result.blocked = blocked
 
@@ -377,12 +388,9 @@ Output: NDJSON (one JSON finding per line) to stdout"""
   else:
     payloads = @defaultPayloads
 
-  # Build client with custom TLS settings
-  let client = newAsyncHttpClient(
-    sslContext = newContext(verifyMode = CVerifyNone),
-    timeout = timeoutMs,
-  )
-  client.maxRedirects = 3
+  # Build client (system TLS; compile with -d:ssl for HTTPS targets)
+  let client = newAsyncHttpClient(maxRedirects = 3)
+  client.timeout = timeoutMs
 
   # All bypass techniques to cycle through
   const techniques = [
@@ -405,15 +413,14 @@ Output: NDJSON (one JSON finding per line) to stdout"""
     while pending.len < concurrency and idx < workQueue.len:
       let (payload, tech) = workQueue[idx]
       let headers = buildHeaders(wafVendor)
-      for (k, v) in headers:
-        client.headers[k] = v
+      client.headers = newHttpHeaders(headers)
       pending.add(probeUrl(client, target, payload, tech, wafVendor, scanId, jitterMs))
       inc idx
 
     if pending.len == 0: break
 
     # Wait for first to complete
-    let done = await one(pending)
+    let done = await waitForAny(pending)
     pending.keepItIf(it != done)
 
     let result = await done
