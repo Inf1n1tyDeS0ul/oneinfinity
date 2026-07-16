@@ -20,9 +20,10 @@
       "type": "stdio"
     },
     "ruflo": {
-      "command": "/usr/bin/python3",
+      "command": "/opt/homebrew/bin/ruflo",
       "args": [
-        "/Users/devendrayadav/.claude/ruflo-mcp-wrapper.py"
+        "mcp",
+        "start"
       ],
       "type": "stdio"
     }

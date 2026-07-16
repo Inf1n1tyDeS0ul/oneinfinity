@@ -5,7 +5,7 @@ Returns None when REDIS_URL is unset or Redis is unreachable.
 Callers must handle None: if get_redis() is None, use local fallback.
 
 Environment:
-    REDIS_URL — e.g. redis://localhost:6379/0 or rediss://user:pass@host:6380/0
+    REDIS_URL — e.g. redis://localhost:47294/0 or rediss://user:pass@host:6380/0
 """
 from __future__ import annotations
 

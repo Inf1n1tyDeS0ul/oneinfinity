@@ -242,7 +242,7 @@ function SSLBypassPanelCompact({ appId, packageName, deviceId }) {
 // ── Shared Sub-Components ───────────────────────────────────────────────────
 
 function SetupPanel() {
-  const apiBase = import.meta.env.VITE_API_BASE_URL || window.location.origin.replace('3000', '8000');
+  const apiBase = import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_API_BASE_URL || 'http://localhost:47291';
   const [lanUrl, setLanUrl] = useState(apiBase);
 
   useEffect(() => {

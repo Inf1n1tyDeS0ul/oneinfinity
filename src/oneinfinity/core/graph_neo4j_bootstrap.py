@@ -67,7 +67,7 @@ def create_default_graph_store() -> Tuple[Any, dict]:
 
     if neo_cfg.get("enabled") and neo4j_driver_available():
         eng = Neo4jEngine(
-            uri=str(neo_cfg.get("uri") or "bolt://localhost:7687"),
+            uri=str(neo_cfg.get("uri") or "bolt://localhost:47296"),
             username=str(neo_cfg.get("username") or "neo4j"),
             password=str(neo_cfg.get("password") or ""),
             database=str(neo_cfg.get("database") or "neo4j"),

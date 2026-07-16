@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 class ClusterConfig:
     num_workers: int = 4
     use_redis: bool = False
-    redis_url: str = "redis://localhost:6379"
+    redis_url: str = "redis://localhost:47294"
     worker_timeout_s: int = 3600
     task_retry_count: int = 3
     result_ttl_s: int = 86400

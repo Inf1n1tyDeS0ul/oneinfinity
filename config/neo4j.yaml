@@ -1,4 +1,4 @@
-uri: bolt://localhost:7687
+uri: bolt://localhost:47296
 user: neo4j
 password: neo4j123
 database: neo4j

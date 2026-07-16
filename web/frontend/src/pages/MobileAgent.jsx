@@ -442,7 +442,7 @@ export default function MobileAgent() {
             <h3>📱 QR Code Setup</h3>
             <p>Scan this QR code with OneInfinity Companion app:</p>
             <img
-              src={`${import.meta.env.VITE_API_BASE_URL || window.location.origin.replace('3000', '8000')}/api/setup/qr`}
+              src={`${import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_API_BASE_URL || 'http://localhost:47291'}/api/setup/qr`}
               alt="Setup QR Code"
               className="qr-code"
             />
@@ -457,12 +457,12 @@ export default function MobileAgent() {
             <h3>✍️ Manual Setup</h3>
             <p>Enter this URL manually in the app:</p>
             <code className="backend-url">
-              {import.meta.env.VITE_API_BASE_URL || window.location.origin.replace('3000', '8000')}
+              {import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_API_BASE_URL || 'http://localhost:47291'}
             </code>
             <button
               className="copy-btn"
               onClick={() => {
-                const url = import.meta.env.VITE_API_BASE_URL || window.location.origin.replace('3000', '8000');
+                const url = import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_API_BASE_URL || 'http://localhost:47291';
                 navigator.clipboard.writeText(url);
                 alert('URL copied to clipboard!');
               }}

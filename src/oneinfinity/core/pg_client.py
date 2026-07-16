@@ -5,7 +5,7 @@ Async pool: used by FastAPI/web backend (fully async)
 Sync conn:  used by CLI (synchronous, loop.run_until_complete wrapper)
 
 Environment:
-    POSTGRES_URL — e.g. postgresql://user:pass@localhost:5432/oneinfinity
+    POSTGRES_URL — e.g. postgresql://user:pass@localhost:47293/oneinfinity
                    or   postgresql://user:pass@rds.amazonaws.com/oneinfinity?sslmode=require
 """
 from __future__ import annotations

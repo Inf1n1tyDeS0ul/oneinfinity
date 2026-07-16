@@ -53,7 +53,7 @@ log = logging.getLogger("oneinfinity.mobile.mobsf")
 class MobSFConfig:
     """Runtime configuration for the MobSF wrapper."""
 
-    api_url: str = "http://localhost:8008"
+    api_url: str = ""
     """Base URL of the MobSF REST API server."""
 
     api_key: str = ""
@@ -67,7 +67,7 @@ class MobSFConfig:
 
     def __post_init__(self) -> None:
         # Strip trailing slash for consistent URL construction
-        self.api_url = self.api_url.rstrip("/")
+        self.api_url = (self.api_url or f"http://localhost:{os.environ.get('MOBSF_PORT', '47297')}").rstrip("/")
         # Allow API key to come from environment if not set explicitly
         if not self.api_key:
             self.api_key = os.environ.get("MOBSF_API_KEY", "")
@@ -804,7 +804,7 @@ class MobSFWrapper:
             "To enable full analysis, start MobSF with:\n"
             "    pip install mobsf && mobsf\n"
             "or use Docker:\n"
-            "    docker run -it -p 8008:8008 opensecurity/mobile-security-framework-mobsf\n"
+            "    docker run -it -p 47297:8000 opensecurity/mobile-security-framework-mobsf\n"
             "Skipping MobSF analysis for: %s",
             self.config.api_url,
             file_path,

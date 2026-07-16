@@ -4,7 +4,7 @@
 # Neo4j password is read from config/graph.yaml by default (neo4j123).
 set -euo pipefail
 
-NEO4J_URI="${NEO4J_URI:-bolt://localhost:7687}"
+NEO4J_URI="${NEO4J_URI:-bolt://localhost:47296}"
 NEO4J_USERNAME="${NEO4J_USERNAME:-neo4j}"
 NEO4J_PORT="${NEO4J_BOLT_PORT:-7687}"
 
@@ -92,7 +92,7 @@ echo ""
 echo "Then reload your shell:"
 echo "  source ~/.zshrc"
 echo ""
-echo "Neo4j Browser available at: http://localhost:7474"
+echo "Neo4j Browser available at: http://localhost:47295"
 echo "  Username: $NEO4J_USERNAME  Password: $NEO4J_PASSWORD"
 echo ""
 echo "Verify oneinfinity uses Neo4j:"

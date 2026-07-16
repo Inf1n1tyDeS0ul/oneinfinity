@@ -42,7 +42,7 @@ const s = {
   pre:       { background:'#060606', padding:10, borderRadius:4, overflow:'auto', maxHeight:200, fontSize:11, color:'#ccc', margin:0, whiteSpace:'pre-wrap' },
 };
 
-const WS_BASE = window.location.origin.replace('3000','8000').replace('http','ws');
+const WS_BASE = (import.meta.env.VITE_BACKEND_URL || 'http://localhost:47291').replace('http','ws');
 
 export default function InterceptProxy({ deviceId }) {
   const [traffic, setTraffic]         = useState([]);
@@ -218,7 +218,7 @@ export default function InterceptProxy({ deviceId }) {
                value={urlFilter} onChange={e => setUrlFilter(e.target.value)} />
 
         <button style={s.btn('#ffaa00')}
-                onClick={() => window.open(`${window.location.origin.replace('3000','8000')}/api/mobile/agent/traffic/${deviceId}/export/har`,'_blank')}>
+                onClick={() => window.open(`${import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_API_BASE_URL || 'http://localhost:47291'}/api/mobile/agent/traffic/${deviceId}/export/har`,'_blank')}>
           📤 HAR
         </button>
         <button style={s.btn('#555')} onClick={async () => {

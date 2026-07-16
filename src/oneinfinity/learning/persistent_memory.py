@@ -59,7 +59,7 @@ def _get_neo4j_driver():
         from neo4j import GraphDatabase
         cfg = _load_neo4j_config()
         driver = GraphDatabase.driver(
-            cfg.get("uri", "bolt://localhost:7687"),
+            cfg.get("uri", "bolt://localhost:47296"),
             auth=(cfg.get("user", "neo4j"), cfg.get("password", "neo4j123")),
         )
         driver.verify_connectivity()

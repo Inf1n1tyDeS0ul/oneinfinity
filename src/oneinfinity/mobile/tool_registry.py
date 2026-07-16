@@ -320,7 +320,7 @@ class MobileToolRegistry:
                 "Mobile Security Framework — comprehensive static + dynamic "
                 "analysis server with REST API"
             ),
-            config={"api_url": "http://localhost:8008"},
+            config={"api_url": f"http://localhost:{os.environ.get('MOBSF_PORT', '47297')}"},
         )
         self.register_tool(
             "frida",

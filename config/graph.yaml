@@ -4,7 +4,7 @@
 
 neo4j:
   enabled: true
-  uri: bolt://localhost:7687
+  uri: bolt://localhost:47296
   username: neo4j
   password: ""  # Required: set via NEO4J_PASSWORD env var
   database: neo4j

@@ -112,7 +112,8 @@ desktop.ini
 
 
 # ── Compiled build artifacts (NEVER commit binaries) ──────────────────────────
-src/rust/target/
+src/rust/**/target/
+src/ebpf/*.bpf.o
 src/nim/bin/
 src/go/oi-*/oi-*
 src/go/http2_rapid_reset/http2_rapid_reset

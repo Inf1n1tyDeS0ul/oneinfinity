@@ -10156,7 +10156,7 @@ async def distributed_scan(request: Request):
 
     try:
         import redis as _redis
-        r = _redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
+        r = _redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:47294/0"))
         r.rpush("swarm:tasks:full_pipeline", _json.dumps({
             "task_id":      task_id,       # was "id" — worker reads task_id
             "scan_id":      scan_id,       # SCA-04: parent attribution
@@ -10351,7 +10351,7 @@ async def replay_finding_report(request: Request):
 
 if __name__ == "__main__":
     _host = os.environ.get("API_HOST", "0.0.0.0")
-    _port = int(os.environ.get("API_PORT", "8000"))
+    _port = int(os.environ.get("API_PORT", "47291"))
     _reload = os.environ.get("API_RELOAD", "false").lower() == "true"
     uvicorn.run("main:app", host=_host, port=_port, reload=_reload)
 
@@ -10874,7 +10874,7 @@ async def get_scan_chain_graph(scan_id: str):
 
 # ── Static frontend serving ───────────────────────────────────────────────────
 # Serve the production Vite build from web/frontend/dist/ on the same port as
-# the API (8000).  All /api/* routes are registered above so they take priority.
+# the API (47291).  All /api/* routes are registered above so they take priority.
 # Anything else falls through to index.html (SPA client-side routing).
 _DIST_DIR = Path(__file__).parent.parent / "frontend" / "dist"
 

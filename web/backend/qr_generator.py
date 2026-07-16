@@ -51,7 +51,7 @@ def generate_qr_bytes(base_url: str, ws_url: str, api_key: Optional[str] = None)
     return buf.read()
 
 
-def generate_qr_for_port(port: int = 8000, api_key: Optional[str] = None) -> bytes:
+def generate_qr_for_port(port: int = 47291, api_key: Optional[str] = None) -> bytes:
     """Generate QR code for backend on given port"""
     local_ip = get_local_ip()
     base_url = f"http://{local_ip}:{port}"
@@ -64,7 +64,7 @@ if __name__ == "__main__":
     # Standalone mode - save QR to file
     import sys
 
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 47291
     output_file = sys.argv[2] if len(sys.argv) > 2 else "setup_qr.png"
     custom_ip = sys.argv[3] if len(sys.argv) > 3 else None
 

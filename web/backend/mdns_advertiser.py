@@ -11,7 +11,7 @@ from typing import Optional
 class MdnsAdvertiser:
     """Advertise OneInfinity backend via mDNS/Bonjour"""
 
-    def __init__(self, port: int = 8000):
+    def __init__(self, port: int = 47291):
         self.port = port
         self.zeroconf = None
         self.service_info = None
@@ -84,7 +84,7 @@ class MdnsAdvertiser:
 _mdns_advertiser: Optional[MdnsAdvertiser] = None
 
 
-def start_mdns_advertising(port: int = 8000):
+def start_mdns_advertising(port: int = 47291):
     """Start mDNS advertising (called from main.py)"""
     global _mdns_advertiser
     _mdns_advertiser = MdnsAdvertiser(port)

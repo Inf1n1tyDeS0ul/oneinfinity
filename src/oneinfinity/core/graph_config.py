@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 _DEFAULTS: dict[str, Any] = {
     "neo4j": {
         "enabled": False,
-        "uri": "bolt://localhost:7687",
+        "uri": "bolt://localhost:47296",
         "username": "neo4j",
         "password": "password",
         "database": "neo4j",

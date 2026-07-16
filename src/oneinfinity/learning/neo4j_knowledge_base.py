@@ -27,7 +27,7 @@ def _load_neo4j_config() -> dict:
             return yaml.safe_load(p.read_text()) or {}
     except Exception:
         log.warning("Neo4j config not found, using defaults")
-    return {"uri": "bolt://localhost:7687", "user": "neo4j",
+    return {"uri": "bolt://localhost:47296", "user": "neo4j",
             "password": "neo4j123", "database": "neo4j"}
 
 
@@ -47,7 +47,7 @@ class Neo4jKnowledgeBase:
             cfg = _load_neo4j_config()
             self._database = cfg.get("database", "neo4j")
             driver = GraphDatabase.driver(
-                cfg.get("uri", "bolt://localhost:7687"),
+                cfg.get("uri", "bolt://localhost:47296"),
                 auth=(cfg.get("user", "neo4j"), cfg.get("password", "neo4j123")),
             )
             driver.verify_connectivity()

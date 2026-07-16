@@ -97,7 +97,7 @@ class SemanticCache:
         """
         # Redis connection
         if redis_url is None:
-            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/1")
+            redis_url = os.getenv("REDIS_URL", "redis://localhost:47294/1")
 
         try:
             self.redis = redis.from_url(redis_url, decode_responses=True)

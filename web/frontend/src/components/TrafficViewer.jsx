@@ -17,7 +17,7 @@ export default function TrafficViewer({ deviceId, onViewCode }) {
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [diffBase, setDiffBase] = useState(null); // ID for diff comparison
 
-  const apiBase = useMemo(() => import.meta.env.VITE_API_BASE_URL || window.location.origin.replace('3000', '8000'), []);
+  const apiBase = useMemo(() => import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_API_BASE_URL || 'http://localhost:47291', []);
 
   const fetchTraffic = useCallback(async () => {
     if (!deviceId) return;

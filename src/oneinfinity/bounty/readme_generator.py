@@ -379,9 +379,9 @@ class ReadmeGenerator:
 
         lines.append("## Web UI\n\nStart backend + frontend:\n\n```bash\n./web/start.sh\n```\n\n")
         lines.append("| Service | URL |\n|---------|-----|\n")
-        lines.append("| React dashboard | `http://localhost:3000` |\n")
-        lines.append("| FastAPI REST    | `http://localhost:8000` |\n")
-        lines.append("| OpenAPI docs    | `http://localhost:8000/docs` |\n\n")
+        lines.append("| React dashboard | `http://localhost:47292` |\n")
+        lines.append("| FastAPI REST    | `http://localhost:47291` |\n")
+        lines.append("| OpenAPI docs    | `http://localhost:47291/docs` |\n\n")
 
         lines.append("### Pages\n\n| Page | Route | Description |\n|------|-------|-------------|\n")
         for p in self._pages:
