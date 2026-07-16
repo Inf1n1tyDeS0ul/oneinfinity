@@ -128,7 +128,7 @@ if [[ -d "$PROJECT_ROOT/web/frontend" ]]; then
     VITE_BACKEND_URL="http://localhost:${API_PORT}" \
     VITE_API_PORT="${API_PORT}" \
     VITE_FRONTEND_PORT="${FRONTEND_PORT}" \
-    nohup npm run dev -- --host 0.0.0.0 --port "${FRONTEND_PORT}" \
+    nohup npx vite --host 0.0.0.0 --port "${FRONTEND_PORT}" \
         > "$PROJECT_ROOT/logs/frontend.log" 2>&1 &
     FRONTEND_PID=$!
     echo -e "  ${GREEN}✓${NC} Frontend PID ${FRONTEND_PID} → http://localhost:${FRONTEND_PORT}"
