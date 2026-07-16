@@ -110,6 +110,14 @@ desktop.ini
 *.sublime-project
 *.sublime-workspace
 
+
+# ── Compiled build artifacts (NEVER commit binaries) ──────────────────────────
+src/rust/target/
+src/nim/bin/
+src/go/oi-*/oi-*
+src/go/http2_rapid_reset/http2_rapid_reset
+src/go/mcp_scanner/mcp_scanner
+checksums.json
 # ── Postman collections (expose API surface) ────────────────────────────────────
 gc_api.json
 sc_api.json

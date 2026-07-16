@@ -1,16 +1,17 @@
 go 1.25.0
 
 use (
+	./http2_rapid_reset
+	./mcp_scanner
 	./oi-crawler
 	./oi-credential-spray
 	./oi-ebpf-trace
 	./oi-idor-engine
+	./oi-lateral-portscan
 	./oi-oob-listener
 	./oi-recon-probe
 	./oi-sdk
 	./oi-service-cve-mapper
 	./oi-ssrf
-	./oi-lateral-portscan
-	./mcp_scanner
-	./http2_rapid_reset
+	./oi-target-disc
 )

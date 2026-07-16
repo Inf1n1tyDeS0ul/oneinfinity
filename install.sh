@@ -2876,10 +2876,17 @@ update_mobsf() {
     step "Restarting MobSF container"
     docker rm -f oneinfinity-mobsf >> "$ONEINFINITY_LOG" 2>&1 || true
 
+    # Fix volume ownership (uid 9901 = mobsf user inside the image)
+    docker run --rm \
+        -v oneinfinity-mobsf-data:/home/mobsf/.MobSF \
+        alpine chown -R 9901:9901 /home/mobsf/.MobSF \
+        >> "$ONEINFINITY_LOG" 2>&1 || true
+
     # Re-run startup with existing data volume (preserves scans/settings)
     docker run -d \
         --name oneinfinity-mobsf \
         -p "${MOBSF_PORT}:8008" \
+        -e MOBSF_HOME=/home/mobsf/.MobSF \
         -v oneinfinity-mobsf-data:/home/mobsf/.MobSF \
         --restart unless-stopped \
         opensecurity/mobile-security-framework-mobsf:latest \
