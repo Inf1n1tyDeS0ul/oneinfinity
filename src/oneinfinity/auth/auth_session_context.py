@@ -52,6 +52,8 @@ class AuthSessionContext:
                     })
             if pw_cookies:
                 context.add_cookies(pw_cookies)
+                # NOTE: for localStorage-based auth (Cognito/Amplify), cookies alone are
+                # insufficient. Call inject_localstorage(page) on each page after navigation.
             auth_headers = dict(self._session.auth_headers)
             if auth_headers:
                 def _add_headers(route, request):
@@ -60,6 +62,31 @@ class AuthSessionContext:
                 context.route("**/*", _add_headers)
         except Exception as exc:
             log.debug("inject_playwright failed: %s", exc)
+
+    async def inject_localstorage(self, page) -> None:
+        """
+        Inject localStorage keys into a Playwright page after navigation.
+
+        Must be called AFTER page.goto() because localStorage is origin-scoped —
+        it is cleared when navigating to a new origin. Call sequence:
+          1. await page.goto(url)
+          2. await auth_context.inject_localstorage(page)
+          3. await page.reload()  # reload so JS app reads the injected tokens
+
+        Used for Cognito SPAs that store idToken/accessToken in localStorage
+        rather than cookies (e.g. SpendAble, AWS Amplify apps).
+        """
+        try:
+            ls = getattr(self._session, "local_storage", {}) or {}
+            if not ls:
+                return
+            for key, value in ls.items():
+                if key and value:
+                    safe_value = str(value).replace("'", "\'").replace("\\", "\\\\")
+                    await page.evaluate(f"localStorage.setItem('{key}', '{safe_value}')")
+            log.debug("inject_localstorage: set %d keys", len(ls))
+        except Exception as exc:
+            log.debug("inject_localstorage failed (non-fatal): %s", exc)
 
     def inject_subprocess_env(self, env: dict) -> dict:
         """Add COOKIE and AUTH_HEADER env vars for CLI tool subprocesses."""

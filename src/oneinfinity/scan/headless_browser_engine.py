@@ -328,6 +328,22 @@ class HeadlessBrowserEngine:
                     log.debug("Playwright navigation error %s: %s", current, exc)
                     continue
 
+                # Inject localStorage tokens after navigation for Cognito/Amplify SPAs.
+                # These apps store idToken/accessToken in localStorage, not cookies.
+                # Must be called after goto() because localStorage is origin-scoped and
+                # cleared on navigation. After injection, reload so the JS app reads tokens.
+                if self._auth_context is not None:
+                    _ls = getattr(getattr(self._auth_context, "_session", None), "local_storage", None) or {}
+                    if _ls:
+                        try:
+                            import asyncio as _asyncio_ls
+                            _loop = _asyncio_ls.new_event_loop()
+                            _loop.run_until_complete(self._auth_context.inject_localstorage(page))
+                            _loop.close()
+                            page.reload(timeout=8000, wait_until="networkidle")
+                        except Exception as _ls_exc:
+                            log.debug("inject_localstorage after goto (non-fatal): %s", _ls_exc)
+
                 # Collect all links
                 try:
                     links = page.eval_on_selector_all(

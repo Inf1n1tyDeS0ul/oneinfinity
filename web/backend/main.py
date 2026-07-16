@@ -1226,6 +1226,17 @@ class ScanRequest(BaseModel):
     session_cookie: str = ""   # e.g. "session=abc123; csrf=xyz"
     bearer_token: str = ""     # e.g. "eyJhbGciOiJIUzI1NiJ9..."
     auth_header: str = ""      # raw value e.g. "Bearer token" or "Token abc"
+    # AWS Cognito native authentication
+    # Provide these instead of session_cookie when scanning Cognito-protected SPAs.
+    # OneInfinity will perform the full SRP auth flow and inject tokens into localStorage.
+    cognito_email: Optional[str] = Field(None, description="Cognito user email for SRP authentication")
+    cognito_password: Optional[str] = Field(None, description="Cognito user password")
+    cognito_email_2: Optional[str] = Field(None, description="Second Cognito account for cross-account IDOR testing")
+    cognito_password_2: Optional[str] = Field(None, description="Second Cognito account password")
+    cognito_user_pool_id: Optional[str] = Field(None, description="Cognito User Pool ID (e.g. ap-southeast-2_XXXXXXX)")
+    cognito_client_id: Optional[str] = Field(None, description="Cognito App Client ID")
+    cognito_identity_pool_id: Optional[str] = Field(None, description="Cognito Identity Pool ID")
+    cognito_region: str = Field("ap-southeast-2", description="AWS region for Cognito")
 
 class Scan(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
@@ -1798,24 +1809,24 @@ async def metrics(repo: TargetRepository = Depends(get_target_repo)):
 async def get_stats(repo: TargetRepository = Depends(get_target_repo)):
     try:
         active_scans = sum(1 for s in SCANS.values() if s.get("status") == "running")
-        
-        from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
-        total_vulns = 0
+
+        # Use db_manager (same source as /api/findings and /api/vulnerabilities)
+        _stats_mgr = await get_mgr()
+        _all_db_findings = []
         try:
-            total_vulns = len(get_ingestion_engine().get_findings())
-        except Exception:
-            total_vulns = len(VULNERABILITIES)
-        
-        # Severity distribution — use ingestion engine findings first
+            _all_db_findings = await _stats_mgr.get_findings()
+        except RuntimeError:
+            _all_db_findings = []
+        # Merge with in-memory VULNERABILITIES
+        _stats_merged = {f.get("finding_id", f.get("id", "")): f for f in _all_db_findings}
+        for _fid, _fdata in VULNERABILITIES.items():
+            if _fid and _fid not in _stats_merged:
+                _stats_merged[_fid] = _fdata
+        _sev_source = list(_stats_merged.values())
+        total_vulns = len(_sev_source)
+
+        # Severity distribution
         sev_dist = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
-        _sev_source = []
-        try:
-            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine as _gie
-            _sev_source = _gie().get_findings()
-        except Exception:
-            pass
-        if not _sev_source:
-            _sev_source = list(VULNERABILITIES.values())
         for v in _sev_source:
             s = (v.get("severity") or "info").lower()
             if s in sev_dist:
@@ -1849,13 +1860,8 @@ async def get_stats(repo: TargetRepository = Depends(get_target_repo)):
             except (ValueError, TypeError):
                 return None
 
-        # Source: ingestion engine findings
-        from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
-        all_db_findings = []
-        try:
-            all_db_findings = get_ingestion_engine().get_findings()
-        except Exception:
-            all_db_findings = list(VULNERABILITIES.values())
+        # Source: already fetched via db_manager above — reuse _sev_source
+        all_db_findings = _sev_source
 
         for v in all_db_findings:
             dt = _parse_dt(v.get("created_at"))
@@ -2167,6 +2173,14 @@ async def launch_scan(req: ScanRequest, background_tasks: BackgroundTasks):
             "session_cookie": req.session_cookie or "",
             "bearer_token": req.bearer_token or "",
             "auth_header": req.auth_header or req.auth or "",
+            "cognito_email": getattr(req, "cognito_email", "") or "",
+            "cognito_password": getattr(req, "cognito_password", "") or "",
+            "cognito_email_2": getattr(req, "cognito_email_2", "") or "",
+            "cognito_password_2": getattr(req, "cognito_password_2", "") or "",
+            "cognito_user_pool_id": getattr(req, "cognito_user_pool_id", "") or "",
+            "cognito_client_id": getattr(req, "cognito_client_id", "") or "",
+            "cognito_identity_pool_id": getattr(req, "cognito_identity_pool_id", "") or "",
+            "cognito_region": getattr(req, "cognito_region", "ap-southeast-2") or "ap-southeast-2",
         }
         has_auth = any(_auth_config.values())
         scan = {
@@ -2267,6 +2281,14 @@ async def launch_scan(req: ScanRequest, background_tasks: BackgroundTasks):
         "session_cookie": req.session_cookie or "",
         "bearer_token": req.bearer_token or "",
         "auth_header": req.auth_header or req.auth or "",
+        "cognito_email": getattr(req, "cognito_email", "") or "",
+        "cognito_password": getattr(req, "cognito_password", "") or "",
+        "cognito_email_2": getattr(req, "cognito_email_2", "") or "",
+        "cognito_password_2": getattr(req, "cognito_password_2", "") or "",
+        "cognito_user_pool_id": getattr(req, "cognito_user_pool_id", "") or "",
+        "cognito_client_id": getattr(req, "cognito_client_id", "") or "",
+        "cognito_identity_pool_id": getattr(req, "cognito_identity_pool_id", "") or "",
+        "cognito_region": getattr(req, "cognito_region", "ap-southeast-2") or "ap-southeast-2",
     }
     background_tasks.add_task(_run_scan_via_engine, scan_id, req.target, req.scan_type,
                                auth_config=_auth_config, extra_options=req.options or {})
@@ -2425,25 +2447,52 @@ async def list_findings(target: Optional[str] = None, scan_id: Optional[str] = N
 
 @app.get("/api/vulnerabilities/stats")
 async def get_vulnerability_stats():
-    """Return aggregated stats for all findings."""
+    """Return aggregated stats for all findings — uses db_manager (same source as /api/findings)."""
     try:
-        from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
-        return get_ingestion_engine().get_findings_stats()
+        mgr = await get_mgr()
+        db_results = []
+        try:
+            db_results = await mgr.get_findings()
+        except RuntimeError:
+            db_results = []
+        # Merge with in-memory
+        results = {f.get("finding_id", f.get("id", "")): f for f in db_results}
+        for fid, fdata in VULNERABILITIES.items():
+            if fid and fid not in results:
+                results[fid] = fdata
+        all_findings = list(results.values())
+        sev = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+        status_counts: dict = {}
+        for f in all_findings:
+            s = (f.get("severity") or "info").lower()
+            if s in sev:
+                sev[s] += 1
+            st = f.get("status", "new")
+            status_counts[st] = status_counts.get(st, 0) + 1
+        return {"severity": sev, "status": status_counts, "total": len(all_findings)}
     except Exception as exc:
         log.warning("get_vulnerability_stats failed: %s", exc)
         return {"severity": {}, "status": {}, "total": 0}
 
 @app.get("/api/vulnerabilities")
 async def list_vulnerabilities(target: Optional[str] = None, severity: Optional[str] = None):
+    """List all vulnerabilities — uses db_manager (same source as /api/findings)."""
+    mgr = await get_mgr()
+    # Primary: db_manager (same path as /api/findings)
     try:
-        from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
-        raw = get_ingestion_engine().get_findings(target=target, severity=severity)
-        vulns = [_finding_to_api(f) for f in raw]
-    except Exception as exc:
-        log.warning("ResultIngestionEngine unavailable, using in-memory: %s", exc)
-        vulns = list(VULNERABILITIES.values())
-        if target: vulns = [v for v in vulns if v.get("target") == target]
-        if severity: vulns = [v for v in vulns if v.get("severity") == severity]
+        db_results = await mgr.get_findings(target=target, severity=severity)
+    except RuntimeError:
+        db_results = []
+    # Merge with in-memory VULNERABILITIES
+    results = {f.get("finding_id", f.get("id", "")): f for f in db_results}
+    for fid, fdata in VULNERABILITIES.items():
+        if fid and fid not in results:
+            if target and fdata.get("target") != target:
+                continue
+            if severity and (fdata.get("severity") or "").lower() != severity.lower():
+                continue
+            results[fid] = fdata
+    vulns = [_finding_to_api(f) for f in results.values()]
     return sorted(vulns, key=lambda v: {"critical":0,"high":1,"medium":2,"low":3,"info":4}.get(v.get("severity","info"),5))
 
 @app.get("/api/vulnerabilities/retests", dependencies=[Depends(_require_auth)])
@@ -6213,6 +6262,14 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
         "session_cookie": str(data.get("session_cookie", "") or ""),
         "bearer_token":   str(data.get("bearer_token", "") or ""),
         "auth_header":    str(data.get("auth_header", "") or ""),
+        "cognito_email": str(data.get("cognito_email", "") or ""),
+        "cognito_password": str(data.get("cognito_password", "") or ""),
+        "cognito_email_2": str(data.get("cognito_email_2", "") or ""),
+        "cognito_password_2": str(data.get("cognito_password_2", "") or ""),
+        "cognito_user_pool_id": str(data.get("cognito_user_pool_id", "") or ""),
+        "cognito_client_id": str(data.get("cognito_client_id", "") or ""),
+        "cognito_identity_pool_id": str(data.get("cognito_identity_pool_id", "") or ""),
+        "cognito_region": str(data.get("cognito_region", "ap-southeast-2") or "ap-southeast-2"),
     }
     # If caller provided a saved session_id, load it and override auth_config
     _auth_session_id = (data.get("auth_session_id") or "").strip()
@@ -10495,6 +10552,14 @@ async def scan_god_mode(req: _GodModeCanonicalRequest, background_tasks: Backgro
         "session_cookie": str(auth_flat.get("session_cookie", "") or ""),
         "bearer_token":   str(auth_flat.get("bearer_token",   "") or ""),
         "auth_header":    str(auth_flat.get("auth_header",    "") or ""),
+        "cognito_email": str(auth_flat.get("cognito_email", "") or ""),
+        "cognito_password": str(auth_flat.get("cognito_password", "") or ""),
+        "cognito_email_2": str(auth_flat.get("cognito_email_2", "") or ""),
+        "cognito_password_2": str(auth_flat.get("cognito_password_2", "") or ""),
+        "cognito_user_pool_id": str(auth_flat.get("cognito_user_pool_id", "") or ""),
+        "cognito_client_id": str(auth_flat.get("cognito_client_id", "") or ""),
+        "cognito_identity_pool_id": str(auth_flat.get("cognito_identity_pool_id", "") or ""),
+        "cognito_region": str(auth_flat.get("cognito_region", "ap-southeast-2") or "ap-southeast-2"),
     }
     has_auth = any(auth_config_full.values())
 

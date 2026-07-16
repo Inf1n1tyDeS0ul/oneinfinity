@@ -116,10 +116,36 @@ class PipelineResult:
 # ---------------------------------------------------------------------------
 
 def _fingerprint(finding: dict) -> str:
-    """Stable fingerprint for deduplication."""
+    """
+    Stable fingerprint for deduplication.
+
+    SPA normalization: On React/Vue/Angular SPAs, all path-guessing scanners
+    (GraphQL probe, backup files, credential spray) get HTTP 200 for every
+    path they try — producing dozens of duplicate findings per vuln type.
+    Collapse all same-host paths for SPA-generated findings to prevent this.
+
+    SPA-generated source types: "tool" findings from graphql_scan_engine,
+    owasp_gap backup_files, active_testing credential spray path guessing.
+    """
+    from urllib.parse import urlparse as _up_fp
     url = finding.get("url", finding.get("endpoint", ""))
     vtype = finding.get("vuln_type", finding.get("title", ""))
     param = finding.get("parameter", "")
+
+    # For GraphQL findings fired on guessed paths (not a discovered real endpoint),
+    # collapse to hostname so 10 paths don't generate 10 separate findings.
+    _SPA_COLLAPSE_TYPES = {
+        "graphql_null_coercion", "graphql_circular_fragment_no_error",
+        "graphql_deep_nesting", "graphql_alias_abuse", "graphql_fragment_chain_dos",
+        "backup_file_exposed", "backup_files",
+    }
+    if vtype in _SPA_COLLAPSE_TYPES and url:
+        try:
+            _parsed = _up_fp(url)
+            url = f"{_parsed.scheme}://{_parsed.netloc}"  # collapse all paths to hostname
+        except Exception:
+            pass
+
     return f"{vtype}|{url}|{param}".lower().strip()
 
 
@@ -138,6 +164,160 @@ def deduplicate(findings: List[dict]) -> List[dict]:
                 seen[fp] = f
     return list(seen.values())
 
+
+# Canonical vuln_type normalization — maps raw scanner tags to Vuln.* string values
+# so the capmap correctly counts coverage across all 63 classes.
+_CANONICAL_VULN_MAP = {
+    # SQL Injection
+    "sqli": "SQL Injection", "sqli_potential": "SQL Injection",
+    "sqli_blind": "SQL Injection", "sqli_time": "SQL Injection",
+    "sqli_error": "SQL Injection", "sql_injection": "SQL Injection",
+    "sql injection": "SQL Injection",
+    # XSS
+    "xss": "Cross-Site Scripting (XSS)", "reflected_xss": "Cross-Site Scripting (XSS)",
+    "stored_xss": "Cross-Site Scripting (XSS)", "blind_xss": "Cross-Site Scripting (XSS)",
+    "cross-site scripting": "Cross-Site Scripting (XSS)",
+    "dom_xss": "DOM-based XSS", "dom-based xss": "DOM-based XSS",
+    # SSRF
+    "ssrf": "Server-Side Request Forgery (SSRF)", "ssrf_internal": "Server-Side Request Forgery (SSRF)",
+    "ssrf_cloud": "Server-Side Request Forgery (SSRF)", "pdf_ssrf": "Server-Side Request Forgery (SSRF)",
+    "blind_ssrf": "Server-Side Request Forgery (SSRF)",
+    # IDOR / BOLA
+    "idor": "Insecure Direct Object Reference (IDOR)", "bola": "Insecure Direct Object Reference (IDOR)",
+    "idor_access": "Insecure Direct Object Reference (IDOR)",
+    # CORS
+    "cors_misconfiguration": "CORS Misconfiguration", "cors": "CORS Misconfiguration",
+    "cors_origin_reflected": "CORS Misconfiguration", "cors preflight bypass": "CORS Misconfiguration",
+    # CRLF
+    "crlf": "CRLF Injection", "crlf_injection": "CRLF Injection",
+    "http header injection": "CRLF Injection",
+    # CMD / Code injection
+    "cmd_injection": "OS Command Injection", "rce": "OS Command Injection",
+    "os_command_injection": "OS Command Injection", "command injection": "OS Command Injection",
+    "code_injection": "Code Injection", "eval_injection": "Code Injection via eval",
+    # Redirect
+    "open_redirect": "Open Redirect", "redirect": "Open Redirect",
+    # SSTI
+    "ssti": "Server-Side Template Injection (SSTI)",
+    # XXE
+    "xxe": "XML External Entity (XXE)",
+    # LFI / Path traversal
+    "lfi": "Local File Inclusion (LFI)", "path_traversal": "Local File Inclusion (LFI)",
+    "file_read": "Local File Inclusion (LFI)",
+    # Subdomain
+    "subdomain_takeover": "Subdomain Takeover",
+    # Exposed files/config
+    "backup_files": "Backup/Archive File Exposed", "backup_file_exposed": "Backup/Archive File Exposed",
+    "exposed_file": "Exposed Sensitive Files", "sensitive_file": "Exposed Sensitive Files",
+    "source_disclosure": "Exposed Sensitive Files",
+    # Misconfig / headers
+    "misconfig": "Security Misconfiguration", "misconfiguration": "Security Misconfiguration",
+    "missing_security_headers": "Missing Security Headers", "missing_headers": "Missing Security Headers",
+    # Info disclosure
+    "info_leak": "Information Disclosure", "information_disclosure": "Information Disclosure",
+    "sensitive_data_disclosure": "Information Disclosure", "SENSITIVE_DATA_DISCLOSURE": "Information Disclosure",
+    # Auth
+    "default_credentials": "Default Credentials", "default_creds": "Default Credentials",
+    "broken_auth": "Broken Authentication", "auth_bypass": "Broken Authentication",
+    "session_replay_access": "Broken Authentication", "session_replay": "Broken Authentication",
+    "credential_spray_hit": "Default Credentials",
+    # JWT
+    "jwt_vulnerability": "JWT Vulnerability", "jwt_attack": "JWT Vulnerability",
+    "jwt_none_alg": "JWT Vulnerability", "jwt_weak_secret": "JWT Vulnerability",
+    "jwt_kid_injection": "JWT Vulnerability",
+    # Secrets
+    "secret_exposure": "Secret / Credential Exposure", "secret": "Secret / Credential Exposure",
+    "js_secret": "Secret / Credential Exposure", "credential_exposure": "Secret / Credential Exposure",
+    # Cloud
+    "cloud_misconfig": "Cloud Storage Misconfiguration", "s3_misconfig": "Cloud Storage Misconfiguration",
+    "cloud_storage": "Cloud Storage Misconfiguration",
+    # Network
+    "open_port": "Exposed Network Service", "exposed_port": "Exposed Network Service",
+    "lateral_open_port": "Exposed Network Service",
+    # CVE
+    "outdated_software": "Outdated Software / Known CVE", "cve": "Outdated Software / Known CVE",
+    # HPP
+    "hpp": "HTTP Parameter Pollution", "http_parameter_pollution": "HTTP Parameter Pollution",
+    # Host header
+    "host_header_injection": "Host Header Injection", "host_header": "Host Header Injection",
+    # Cache
+    "cache_poisoning": "Cache Poisoning", "cache_deception": "Cache Poisoning",
+    # API
+    "undocumented_api": "Undocumented API Endpoint", "hidden_endpoint": "Undocumented API Endpoint",
+    # Deserialization
+    "deserialization": "Insecure Deserialization", "insecure_deserialization": "Insecure Deserialization",
+    # Race condition
+    "race_condition": "Race Condition", "race_condition_vulnerability": "Race Condition",
+    # File upload
+    "file_upload_bypass": "Insecure File Upload", "file_upload": "Insecure File Upload",
+    "insecure_file_upload": "Insecure File Upload",
+    # OAuth
+    "oauth_flaw": "OAuth/OIDC Vulnerability", "oauth_pkce_downgrade": "OAuth/OIDC Vulnerability",
+    "oauth_missing_state": "OAuth/OIDC Vulnerability", "oauth": "OAuth/OIDC Vulnerability",
+    # Prototype pollution
+    "prototype_pollution": "Prototype Pollution",
+    # WebSocket
+    "websocket_vuln": "WebSocket Security Issue", "websocket": "WebSocket Security Issue",
+    # MFA
+    "mfa_bypass": "MFA/2FA Bypass", "otp_bypass": "MFA/2FA Bypass",
+    "2fa_bypass": "MFA/2FA Bypass",
+    # Rate limit
+    "rate_limit_bypass": "Missing Rate Limiting", "no_rate_limiting": "Missing Rate Limiting",
+    "missing_rate_limiting": "Missing Rate Limiting",
+    # PII
+    "pii_exposure": "PII Exposure in API Response", "pii_leak": "PII Exposure in API Response",
+    # Payment
+    "payment_tampering": "Payment/Price Tampering", "price_manipulation": "Payment/Price Tampering",
+    # Clickjacking
+    "clickjacking": "Clickjacking",
+    # Source maps
+    "source_map_exposure": "Exposed JavaScript Source Map", "js_sourcemap": "Exposed JavaScript Source Map",
+    # TLS
+    "weak_tls": "Weak TLS Configuration", "weak_tls_configuration": "Weak TLS Configuration",
+    "tls_cert_issue": "TLS Certificate Issue", "expired_cert": "TLS Certificate Issue",
+    # Cookies
+    "insecure_cookie_attributes": "Insecure Cookie Attributes", "cookie_security": "Insecure Cookie Attributes",
+    "missing_httponly": "Insecure Cookie Attributes", "missing_secure_flag": "Insecure Cookie Attributes",
+    # CSRF
+    "csrf": "Cross-Site Request Forgery (CSRF)", "missing_csrf_protection": "Cross-Site Request Forgery (CSRF)",
+    "Missing CSRF Protection": "Cross-Site Request Forgery (CSRF)",
+    # Session
+    "session_fixation": "Session Fixation",
+    "session_timeout": "Missing Session Timeout", "missing_session_timeout": "Missing Session Timeout",
+    # Account enum
+    "account_enumeration": "Account Enumeration via Timing",
+    "account_enum_timing": "Account Enumeration via Timing",
+    # Password
+    "weak_password_policy": "Weak Password Policy",
+    # SAML
+    "saml_vulnerability": "SAML Assertion Vulnerability", "saml_wrapping": "SAML Assertion Vulnerability",
+    # LDAP
+    "ldap_injection": "LDAP Injection",
+    # Mail
+    "mail_header_injection": "Mail Header Injection",
+    # CSV
+    "csv_injection": "CSV Injection",
+    # postMessage
+    "postmessage_hijacking": "postMessage Hijacking Risk",
+    # Web storage
+    "web_storage": "Sensitive Data in Web Storage", "localstorage_sensitive": "Sensitive Data in Web Storage",
+    # RNG
+    "insecure_rng": "Insecure Random Number Generation",
+    # Crypto
+    "weak_crypto": "Weak Encryption Algorithm", "weak_encryption": "Weak Encryption Algorithm",
+    # Padding oracle
+    "padding_oracle": "Padding Oracle",
+    # Service worker
+    "service_worker_scope_abuse": "Service Worker Abuse Risk", "service_worker_abuse": "Service Worker Abuse Risk",
+    # WebRTC
+    "webrtc_leak": "WebRTC IP Leakage",
+    # gRPC
+    "grpc_exposed": "gRPC/SOAP Endpoint Exposed", "grpc_soap_exposed": "gRPC/SOAP Endpoint Exposed",
+    # GraphQL (map to closest canonical)
+    "graphql_circular_fragment_no_error": "Security Misconfiguration",
+    "graphql_null_coercion": "Security Misconfiguration",
+    "graphql_introspection": "Undocumented API Endpoint",
+}
 
 def normalize_finding(f: dict, source_type: str = "tool") -> dict:
     """Ensure a finding has all required fields with correct types."""
@@ -161,6 +341,44 @@ def normalize_finding(f: dict, source_type: str = "tool") -> dict:
         out["confidence"] = max(0.0, min(1.0, float(out["confidence"])))
     except (TypeError, ValueError):
         out["confidence"] = 0.5
+    # Normalize vuln_type to canonical Vuln.* string
+    vt = out.get("vuln_type", "")
+    if vt:
+        # Direct lookup first
+        canonical = _CANONICAL_VULN_MAP.get(vt) or _CANONICAL_VULN_MAP.get(vt.lower())
+        if canonical:
+            out["vuln_type"] = canonical
+        else:
+            # Prefix/substring matching for known patterns
+            vt_l = vt.lower()
+            if vt_l.startswith("js_secret") or "secret" in vt_l or "api_key" in vt_l or "password_in_js" in vt_l:
+                out["vuln_type"] = "Secret / Credential Exposure"
+            elif "cors" in vt_l:
+                out["vuln_type"] = "CORS Misconfiguration"
+            elif "sqli" in vt_l or "sql" in vt_l:
+                out["vuln_type"] = "SQL Injection"
+            elif "xss" in vt_l:
+                out["vuln_type"] = "Cross-Site Scripting (XSS)" if "dom" not in vt_l else "DOM-based XSS"
+            elif "ssrf" in vt_l:
+                out["vuln_type"] = "Server-Side Request Forgery (SSRF)"
+            elif "idor" in vt_l or "bola" in vt_l:
+                out["vuln_type"] = "Insecure Direct Object Reference (IDOR)"
+            elif "session_replay" in vt_l or "session replay" in vt_l:
+                out["vuln_type"] = "Broken Authentication"
+            elif "oauth" in vt_l:
+                out["vuln_type"] = "OAuth/OIDC Vulnerability"
+            elif "mfa" in vt_l or "otp" in vt_l or "2fa" in vt_l:
+                out["vuln_type"] = "MFA/2FA Bypass"
+            elif "file_upload" in vt_l or "upload_bypass" in vt_l:
+                out["vuln_type"] = "Insecure File Upload"
+            elif "jwt" in vt_l:
+                out["vuln_type"] = "JWT Vulnerability"
+            elif "rate_limit" in vt_l or "ratelimit" in vt_l:
+                out["vuln_type"] = "Missing Rate Limiting"
+            elif "prototype" in vt_l:
+                out["vuln_type"] = "Prototype Pollution"
+            elif "exploit_chain" in vt_l:
+                pass
     return out
 
 
@@ -212,6 +430,48 @@ class CanonicalExecutor:
         # Used by all inline phases to make authenticated requests
         self.auth_config: Dict[str, str] = auth_config or {}
 
+    def _detect_spa(self, target: str) -> bool:
+        """
+        Return True if target is a React/Vue/Angular SPA where all paths return
+        the same HTML shell (HTTP 200 regardless of path).
+
+        SPAs cause massive false positives: path-guessing scanners (GraphQL probe,
+        backup file scanner, credential spray to /login) get HTTP 200 for every
+        path they try — because the app serves index.html for all routes.
+
+        Detection: fetch / and a clearly nonexistent path. If both return 200
+        with content within 200 bytes of each other → SPA confirmed.
+        """
+        import urllib.request as _ur
+        import ssl as _ssl
+        _ctx = _ssl.create_default_context()
+        _ctx.check_hostname = False
+        _ctx.verify_mode = _ssl.CERT_NONE
+        probe = target if target.startswith("http") else f"https://{target}"
+        try:
+            r1 = _ur.Request(probe.rstrip("/") + "/", headers={"User-Agent": "Mozilla/5.0"})
+            with _ur.urlopen(r1, timeout=6, context=_ctx) as resp1:
+                len1 = int(resp1.headers.get("Content-Length") or len(resp1.read()))
+                status1 = resp1.status
+        except Exception:
+            return False
+        try:
+            r2 = _ur.Request(
+                probe.rstrip("/") + "/__oi_spa_probe_nonexistent_xyz987__",
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            with _ur.urlopen(r2, timeout=6, context=_ctx) as resp2:
+                len2 = int(resp2.headers.get("Content-Length") or len(resp2.read()))
+                status2 = resp2.status
+        except Exception:
+            return False
+        # Both 200 and within 200 bytes = SPA
+        if status1 == 200 and status2 == 200 and abs(len1 - len2) < 200:
+            log.info("[pipeline] SPA detected at %s (/ and nonexistent both return 200, len diff=%d)",
+                     target, abs(len1 - len2))
+            return True
+        return False
+
     def _build_auth_headers(self) -> Dict[str, str]:
         """Build HTTP headers from auth_config for authenticated scanning."""
         headers: Dict[str, str] = {}
@@ -226,6 +486,45 @@ class CanonicalExecutor:
             headers["Cookie"] = self.auth_config["session_cookie"]
         return headers
 
+    def _build_auth_context(self):
+        """Build an AuthSessionContext from auth_config for engines that need it.
+        Returns None when no credentials are configured."""
+        if not self.auth_config or not any(self.auth_config.values()):
+            return None
+        try:
+            from oneinfinity.auth.session_manager import LoginSession
+            from oneinfinity.auth.auth_session_context import AuthSessionContext
+            import uuid as _uuid, time as _time
+            cookies = []
+            if self.auth_config.get("session_cookie"):
+                for pair in self.auth_config["session_cookie"].split(";"):
+                    pair = pair.strip()
+                    if "=" in pair:
+                        name, _, value = pair.partition("=")
+                        cookies.append({"name": name.strip(), "value": value.strip()})
+            auth_headers = {}
+            if self.auth_config.get("bearer_token"):
+                auth_headers["Authorization"] = f"Bearer {self.auth_config['bearer_token']}"
+            elif self.auth_config.get("auth_header"):
+                auth_headers["Authorization"] = self.auth_config["auth_header"]
+            sess = LoginSession(
+                session_id=_uuid.uuid4().hex[:12],
+                target="",
+                login_url="",
+                cookies=cookies,
+                auth_headers=auth_headers,
+                local_storage={},
+                session_storage={},
+                indexeddb_snapshot={},
+                har_path="",
+                recorder="config",
+                recorded_at=_time.time(),
+            )
+            return AuthSessionContext(sess)
+        except Exception as _exc:
+            log.debug("_build_auth_context failed (non-fatal): %s", _exc)
+            return None
+
     def run(self, target: str, output_dir: str) -> PipelineResult:
         """Execute all 10 canonical phases against target."""
         run_id = uuid.uuid4().hex[:12].upper()
@@ -237,6 +536,18 @@ class CanonicalExecutor:
         # Only copies files that don't already exist in out_path.
         if self.prior_results_dir:
             self._seed_from_prior(out_path, Path(self.prior_results_dir))
+
+        # SPA detection: if target is a React/Vue/Angular SPA, all path-guessing
+        # findings will be false positives. Store flag in waf_profile so downstream
+        # phases can suppress path-guessed findings.
+        _is_spa = False
+        try:
+            _is_spa = self._detect_spa(target)
+        except Exception as _spa_exc:
+            log.debug("[pipeline] SPA detection failed (non-fatal): %s", _spa_exc)
+        if self.waf_profile is None:
+            self.waf_profile = {}
+        self.waf_profile["is_spa"] = _is_spa
 
         result = PipelineResult(
             run_id=run_id,
@@ -561,10 +872,12 @@ class CanonicalExecutor:
     def _inline_deep_recon(self, target: str, out: Path, waf: dict) -> List[dict]:
         try:
             from oneinfinity.recon.adaptive_recon_engine import AdaptiveReconEngine
+            _auth_ctx = self._build_auth_context()
             engine = AdaptiveReconEngine(
                 target=target,
                 output_dir=str(out),
                 depth="deep",
+                auth_context=_auth_ctx,
             )
             intel = engine.run()
             # Save to canonical output file
@@ -603,7 +916,13 @@ class CanonicalExecutor:
                     log.debug("deep_recon gap check %s failed: %s", _check_fn.__name__, _e)
 
             _known_paths = ["/index.php", "/config.php", "/wp-config.php",
-                            "/application.properties", "/.env", "/settings.py"]
+                            "/application.properties", "/.env", "/settings.py",
+                            "/admin", "/admin/backup", "/admin/db", "/admin/export",
+                            "/backup", "/backups", "/db", "/database",
+                            "/api/admin/backup", "/api/backup",
+                            "/wp-admin", "/wp-content/uploads",
+                            "/config", "/configs", "/settings",
+                            "/dump", "/export", "/data"]
             try:
                 _recon_path = out / "adaptive_recon.json"
                 if _recon_path.exists():
@@ -617,7 +936,7 @@ class CanonicalExecutor:
                 pass
 
             _base = f"{_parsed.scheme}://{_parsed.netloc}" if _parsed.netloc else f"https://{_host}"
-            for _r in check_backup_files(_base, _known_paths[:20]):
+            for _r in check_backup_files(_base, _known_paths[:40]):
                 try:
                     _f = gap_check_result_to_finding(_r, url=_base)
                     if _f:
@@ -833,6 +1152,33 @@ class CanonicalExecutor:
                         pass
         except Exception as _sc_exc:
             log.warning("vuln_scan supply_chain_attack_engine failed (non-fatal): %s", _sc_exc)
+
+        # ── crlfuzz: CRLF injection scanner ───────────────────────────────────
+        try:
+            from oneinfinity.modules.tool_wrappers import is_available, run_crlfuzz
+            if is_available("crlfuzz"):
+                _probe_crlf = target if target.startswith("http") else f"https://{target}"
+                _crlf_result = run_crlfuzz(_probe_crlf, timeout=60)
+                if _crlf_result.success and isinstance(_crlf_result.data, dict):
+                    for _cf in (_crlf_result.data.get("findings", []) or []):
+                        if isinstance(_cf, dict):
+                            _cf.setdefault("vuln_type", "CRLF Injection")
+                            _cf.setdefault("severity", "high")
+                            _cf.setdefault("source_type", "tool")
+                            _sc_vuln_findings.append(normalize_finding(_cf, source_type="tool"))
+                    if _crlf_result.data.get("vulnerable"):
+                        _sc_vuln_findings.append(normalize_finding({
+                            "vuln_type": "CRLF Injection",
+                            "title": "CRLF Injection Detected",
+                            "url": _probe_crlf,
+                            "severity": "high",
+                            "confidence": 0.90,
+                            "tool": "crlfuzz",
+                            "evidence": str(_crlf_result.data.get("evidence", "crlfuzz confirmed")),
+                        }, source_type="tool"))
+                log.info("vuln_scan crlfuzz: done for %s", target)
+        except Exception as _crlf_exc:
+            log.debug("vuln_scan crlfuzz failed (non-fatal): %s", _crlf_exc)
 
         if seeded:
             log.info("vuln_scan inline: loaded %d seeded findings from %s", len(seeded), findings_file)
@@ -1727,16 +2073,19 @@ class CanonicalExecutor:
                 except Exception:
                     pass
 
-            for _auth_path in ["/login", "/api/login", "/auth"]:
+            _account_enum_found = False
+            for _auth_path in ["/login", "/api/login", "/auth", "/signin", "/api/v1/login", "/api/auth/login"]:
+                if _account_enum_found:
+                    break
                 try:
                     _r = check_account_enumeration_timing(
                         _probe.rstrip("/") + _auth_path, "admin", "nosuchuser_oi_xyz99")
                     _f = gap_check_result_to_finding(_r, url=_probe.rstrip("/") + _auth_path)
                     if _f:
                         findings.append(normalize_finding(_f, source_type="owasp_gap"))
-                    break
+                        _account_enum_found = True
                 except Exception as _e:
-                    log.debug("account_enum check failed: %s", _e)
+                    log.debug("account_enum check failed at %s: %s", _auth_path, _e)
 
             for _reg_path in ["/register", "/api/register", "/signup", "/api/users"]:
                 try:
@@ -1747,6 +2096,19 @@ class CanonicalExecutor:
                     break
                 except Exception as _e:
                     log.debug("password_policy check failed: %s", _e)
+
+            # ── CRLF injection check on redirect/return params ─────────────
+            try:
+                from oneinfinity.modules.owasp_gap_checks import check_crlf_injection
+                for _crlf_path in ["/login", "/api/login", "/auth", "/signin", "/"]:
+                    _r = check_crlf_injection(_probe.rstrip("/") + _crlf_path)
+                    if _r.found:
+                        _f = gap_check_result_to_finding(_r, url=_probe.rstrip("/") + _crlf_path)
+                        if _f:
+                            findings.append(normalize_finding(_f, source_type="owasp_gap"))
+                        break
+            except Exception as _ce:
+                log.debug("crlf_injection check failed: %s", _ce)
 
         except Exception as _exc:
             log.warning("auth_session OWASP gap checks failed: %s", _exc)
@@ -2503,17 +2865,111 @@ class CanonicalExecutor:
     # ------------------------------------------------------------------ #
 
     def _inline_graphql_scan(self, target: str, out: Path) -> List[dict]:
-        """Run GraphQL security scan: introspection, fuzzing, mutation testing, IDOR."""
+        """
+        Run GraphQL security scan against the main target AND any GraphQL endpoints
+        discovered in JS bundles (e.g. AppSync subdomains like sandbox.graphql.spendable.com.au).
+
+        Key fixes vs original:
+        1. Passes auth headers (Cognito idToken / API key) to GraphQLScanEngine
+        2. Reads browser_findings.json for JS-discovered GraphQL subdomains
+        3. Extracts AppSync API keys and custom headers (partner_id, x-api-key) from findings
+        4. Validates responses are actual JSON (not SPA HTML) before treating as GraphQL
+        """
+        import requests as _req_gql
         findings: List[dict] = []
         try:
             from oneinfinity.scan.graphql_scan_engine import GraphQLScanEngine
+
             probe_url = target if target.startswith("http") else f"https://{target}"
-            engine = GraphQLScanEngine(target=probe_url, output_dir=str(out))
-            findings = engine.run()
+
+            # ── Step 1: collect additional GraphQL endpoints from JS bundle findings ──
+            # browser_findings.json is written by the browser_analysis phase which runs
+            # before graphql_scan. It contains js_secret findings including AppSync URLs.
+            additional_gql_targets: list = []
+            discovered_headers: dict = {}
+            browser_file = out / "browser_findings.json"
+            if browser_file.exists():
+                try:
+                    _bf_data = json.loads(browser_file.read_text())
+                    _bf_findings = (
+                        _bf_data if isinstance(_bf_data, list)
+                        else _bf_data.get("findings", [])
+                    )
+                    for _bf in _bf_findings:
+                        _vt = _bf.get("vuln_type", "") or ""
+                        _url = _bf.get("url", "") or ""
+                        _val = _bf.get("value_preview", "") or _bf.get("value", "") or ""
+                        # Discover AppSync / GraphQL subdomains
+                        if "graphql" in _url.lower() or "appsync" in _url.lower():
+                            if _url.startswith("http") and _url not in additional_gql_targets:
+                                additional_gql_targets.append(_url)
+                        # Extract AppSync API key (da2- prefix)
+                        if "da2-" in _val and len(_val) >= 26:
+                            discovered_headers["x-api-key"] = _val.rstrip("...")
+                        # Extract partner_id header values
+                        if "partner_id" in str(_bf).lower():
+                            discovered_headers.setdefault("partner_id", "SPENDABLE")
+                    log.info(
+                        "graphql_scan: found %d additional GQL targets, %d custom headers from JS",
+                        len(additional_gql_targets), len(discovered_headers),
+                    )
+                except Exception as _bf_exc:
+                    log.debug("graphql_scan: browser_findings parse failed: %s", _bf_exc)
+
+            # ── Step 2: build auth sessions ─────────────────────────────────
+            auth_headers = self._build_auth_headers()
+            auth_headers.update(discovered_headers)
+
+            def _make_auth_session(extra_headers: dict = None) -> _req_gql.Session:
+                sess = _req_gql.Session()
+                sess.verify = False
+                sess.headers.update({
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "User-Agent": "OneInfinity-GraphQL-Scanner/2.0",
+                })
+                if auth_headers:
+                    sess.headers.update(auth_headers)
+                if extra_headers:
+                    sess.headers.update(extra_headers)
+                if self.auth_config.get("session_cookie"):
+                    sess.headers["Cookie"] = self.auth_config["session_cookie"]
+                return sess
+
+            # ── Step 3: run scan against main target + discovered AppSync targets ──
+            all_targets = [probe_url] + additional_gql_targets
+            all_raw_findings: list = []
+            for gql_target in list(dict.fromkeys(all_targets)):  # dedup preserve order
+                try:
+                    # For the primary target, pass is_spa from waf_profile so path-guessing
+                    # is suppressed on React SPAs. Additional GraphQL targets (AppSync subdomains
+                    # from JS bundles) are real endpoints — never treat them as SPA.
+                    _is_target_spa = (
+                        self.waf_profile.get("is_spa", False)
+                        if (gql_target == probe_url and self.waf_profile)
+                        else False
+                    )
+                    engine = GraphQLScanEngine(
+                        target=gql_target, output_dir=str(out), is_spa=_is_target_spa
+                    )
+                    if auth_headers:
+                        engine.set_auth_sessions({
+                            "user": _make_auth_session(),
+                            "unauthenticated": _make_auth_session({}),
+                        })
+                        # Also set the engine's default session to use auth headers
+                        engine._session.headers.update(auth_headers)
+                    raw = engine.run()
+                    all_raw_findings.extend(raw)
+                    log.info("graphql_scan: %d findings for %s", len(raw), gql_target)
+                except Exception as _ge:
+                    log.warning("graphql_scan: scan failed for %s: %s", gql_target, _ge)
+
+            findings = all_raw_findings
             (out / "graphql_findings.json").write_text(
                 json.dumps({"findings": findings, "count": len(findings)}, indent=2, default=str)
             )
-            log.info("graphql_scan inline: %d findings for %s", len(findings), target)
+            log.info("graphql_scan inline: %d total findings for %s", len(findings), target)
         except Exception as exc:
             log.warning("graphql_scan inline failed (non-mandatory): %s", exc)
         return findings
@@ -2827,7 +3283,8 @@ class CanonicalExecutor:
         js_urls: List[str] = []
         try:
             from oneinfinity.scan.headless_browser_engine import HeadlessBrowserEngine
-            engine = HeadlessBrowserEngine(target=probe_url, output_dir=str(out))
+            engine = HeadlessBrowserEngine(target=probe_url, output_dir=str(out),
+                                           auth_context=self._build_auth_context())
             result = engine.run()
             all_f = result.get("findings", []) + result.get("js_secrets", [])
             findings.extend(all_f)

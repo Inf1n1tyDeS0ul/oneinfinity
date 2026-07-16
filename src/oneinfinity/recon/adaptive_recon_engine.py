@@ -1048,8 +1048,11 @@ def _gau_fetch(domain: str, timeout: int = 45) -> list[str]:
     return [l.strip() for l in out.splitlines() if l.strip()]
 
 
-def _python_crawl(base_url: str, depth: int = 2, timeout: int = 15) -> list[str]:
-    """Pure-Python BFS crawler — fallback when gau/katana are not installed."""
+def _python_crawl(base_url: str, depth: int = 2, timeout: int = 15,
+                  auth_headers: dict = None) -> list[str]:
+    """Pure-Python BFS crawler — fallback when gau/katana are not installed.
+    auth_headers: optional dict of HTTP headers (e.g. Cookie, Authorization)
+    injected into every request so post-login pages are reachable."""
     import re as _re
     import ssl as _ssl
     import urllib.request as _ur
@@ -1068,6 +1071,10 @@ def _python_crawl(base_url: str, depth: int = 2, timeout: int = 15) -> list[str]
         _re.IGNORECASE,
     )
 
+    _req_headers = {"User-Agent": "Mozilla/5.0"}
+    if auth_headers:
+        _req_headers.update(auth_headers)
+
     parsed_base = _up.urlparse(base_url)
     origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
     visited: set[str] = set()
@@ -1081,7 +1088,7 @@ def _python_crawl(base_url: str, depth: int = 2, timeout: int = 15) -> list[str]
                 continue
             visited.add(url)
             try:
-                req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                req = _ur.Request(url, headers=_req_headers)
                 with _ur.urlopen(req, timeout=timeout, context=_ctx) as resp:
                     body = resp.read(512_000).decode("utf-8", errors="replace")
             except Exception:
@@ -1518,8 +1525,9 @@ class AdaptiveReconEngine:
                     output_dir=str(self.output_dir),
                     auth_context=self._auth_context,
                 )
-                # Cap at max_pages=10 for auth crawls (PE2 bounds recommendation)
-                crawl_result = hbe.crawl(primary, max_pages=10)
+                # Allow up to 100 pages for authenticated crawls so all post-login
+                # pages are discovered (was 10 — too small for real apps).
+                crawl_result = hbe.crawl(primary, max_pages=100)
                 auth_urls = crawl_result.get("urls", [])
                 spa_routes = crawl_result.get("spa_routes", [])
                 auth_urls_set = set(auth_urls) | set(spa_routes)
@@ -1551,7 +1559,23 @@ class AdaptiveReconEngine:
             base = self._alive_hosts[0].get("url", f"https://{self.target}") if self._alive_hosts else (
                 self.target if self.target.startswith("http") else f"https://{self.target}"
             )
-            fallback_urls = _python_crawl(base, depth=2, timeout=15)
+            _fallback_auth = {}
+            if self._auth_context is not None:
+                try:
+                    _fallback_auth = self._auth_context.inject_subprocess_env({})
+                    # Extract Cookie header from COOKIE env var if set
+                    _cookie = _fallback_auth.get("COOKIE", "")
+                    _auth_hdr = _fallback_auth.get("AUTH_HEADER", "")
+                    _fallback_auth = {}
+                    if _cookie:
+                        _fallback_auth["Cookie"] = _cookie
+                    if _auth_hdr and ": " in _auth_hdr:
+                        _k, _, _v = _auth_hdr.partition(": ")
+                        _fallback_auth[_k.strip()] = _v.strip()
+                except Exception:
+                    _fallback_auth = {}
+            fallback_urls = _python_crawl(base, depth=2, timeout=15,
+                                          auth_headers=_fallback_auth or None)
             all_urls.update(fallback_urls)
             if fallback_urls:
                 _ok(f"python-crawl: {len(fallback_urls)} URLs")
@@ -1621,6 +1645,59 @@ class AdaptiveReconEngine:
 
     def _phase_js_intelligence(self):
         _info("Phase 6: JavaScript endpoint extraction...")
+        # When URL crawling produced no JS files (common for SPAs served from CDN with
+        # hashed filenames like main.5f48d206.js), parse the HTML of the root page
+        # to discover the actual bundle URLs from <script src="..."> tags.
+        # Without this, JSIntelligence falls back to guessing /main.chunk.js which
+        # often does not exist — causing the entire JS intelligence phase to produce
+        # nothing (as happened with sandbox.gimmeit.net.au).
+        _js_urls_from_crawl = [u for u in self._all_urls if isinstance(u, str) and
+                               (u.endswith(".js") or ".js?" in u)]
+        if not _js_urls_from_crawl:
+            try:
+                import re as _re
+                _base_url = (
+                    self._alive_hosts[0].get("url", f"https://{self.target}")
+                    if self._alive_hosts else f"https://{self.target}"
+                )
+                # Build auth headers for the fetch if auth_context available
+                _fetch_headers = {"User-Agent": "Mozilla/5.0 (OneInfinity/3.0)"}
+                if self._auth_context is not None:
+                    try:
+                        _auth_env = self._auth_context.inject_subprocess_env({})
+                        _cookie = _auth_env.get("COOKIE", "")
+                        if _cookie:
+                            _fetch_headers["Cookie"] = _cookie
+                        _auth_hdr = _auth_env.get("AUTH_HEADER", "")
+                        if _auth_hdr and ": " in _auth_hdr:
+                            _k, _, _v = _auth_hdr.partition(": ")
+                            _fetch_headers[_k.strip()] = _v.strip()
+                    except Exception:
+                        pass
+                import urllib.request as _urjs, ssl as _ssljs
+                _ctx_js = _ssljs.create_default_context()
+                _ctx_js.check_hostname = False
+                _ctx_js.verify_mode = _ssljs.CERT_NONE
+                _req_js = _urjs.Request(_base_url, headers=_fetch_headers)
+                with _urjs.urlopen(_req_js, timeout=10, context=_ctx_js) as _resp_js:
+                    _html = _resp_js.read(200_000).decode("utf-8", errors="replace")
+                # Parse <script src="..."> tags
+                _script_src_re = _re.compile(r'<script[^>]+src=["\'"]([^"\']+\.js[^"\']*)["\'"]', _re.I)
+                _found_scripts = []
+                for _m in _script_src_re.finditer(_html):
+                    _src = _m.group(1)
+                    if _src:
+                        from urllib.parse import urljoin as _urljoin
+                        _abs = _urljoin(_base_url, _src)
+                        if _abs not in self._all_urls:
+                            self._all_urls.append(_abs)
+                        _found_scripts.append(_abs)
+                if _found_scripts:
+                    _ok(f"HTML script tag discovery: {len(_found_scripts)} JS bundle URLs found")
+                    for _s in _found_scripts[:5]:
+                        _info(f"  {_s}")
+            except Exception as _html_exc:
+                _warn(f"HTML script tag discovery failed (non-fatal): {_html_exc}")
         self._hidden_endpoints, self._js_secrets = self._js_intel.extract_js_endpoints(
             self.target, self._all_urls)
 
