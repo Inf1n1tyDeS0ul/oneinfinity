@@ -1,0 +1,30 @@
+# OneInfinity graph backends — Neo4j is optional; SQLite + in-memory remain primary.
+# Override secrets via env: NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
+# IMPORTANT: Do not store passwords here. Use NEO4J_PASSWORD env var.
+
+neo4j:
+  enabled: true
+  uri: bolt://localhost:47296
+  username: neo4j
+  password: ""  # Required: set via NEO4J_PASSWORD env var
+  database: neo4j
+  # Batched write-through (reduces round-trips)
+  batch_size: 100
+  flush_interval_sec: 2.0
+  # Hybrid query: use Neo4j for path search when max_depth exceeds this threshold
+  hybrid_depth_threshold: 3
+  # On startup: merge Neo4j graph into local store (can duplicate SQLite data — use carefully)
+  load_on_startup: false
+  # Analytics / feedback nodes in Neo4j
+  record_chain_feedback: true
+  path_max_depth: 8
+  max_path_query_ms: 5000
+
+enforcement:
+  enabled: true
+  validation_pipeline: true        # req 2: HTTP-probe all findings before storage
+  capmap_enforcement: true         # req 1: trigger tools for uncovered vuln classes
+  max_recursion_depth: 2           # req 3: recursive scan depth cap
+  max_recursive_items: 100         # req 3: total new items across all recursive passes
+  module_compliance: warn          # req 4: warn | block | disabled
+  ingestion_audit: true            # req 5: flag non-compliant cmds in doctor
