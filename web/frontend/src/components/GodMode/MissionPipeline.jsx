@@ -1,5 +1,5 @@
 import React from 'react'
-import { CheckCircle2, Clock, Loader2, XCircle, AlertCircle } from 'lucide-react'
+import { CheckCircle2, Clock, Loader2, XCircle, AlertCircle, StopCircle } from 'lucide-react'
 import clsx from 'clsx'
 
 const MISSION_LABELS = {
@@ -55,21 +55,38 @@ function MissionCard({ name, status }) {
   )
 }
 
-export default function MissionPipeline({ missions = {}, phases_complete = [], recursionLayer = 0 }) {
-  // Determine display order: foundation first (synthetic), then missions in order
+export default function MissionPipeline({ missions = {}, phases_complete = [], recursionLayer = 0, terminated_by = null }) {
   const missionEntries = Object.entries(missions)
   const runningCount  = missionEntries.filter(([, s]) => s === 'running').length
   const doneCount     = missionEntries.filter(([, s]) => s === 'done').length
   const totalCount    = missionEntries.length
+
+  const isUserStopped = terminated_by === 'stop'
+  const isComplete    = ['all_done', 'convergence'].includes(terminated_by)
 
   return (
     <div className="flex flex-col gap-4 p-4">
       {/* Summary bar */}
       <div className="flex items-center gap-4 text-[10px] font-bold uppercase tracking-widest text-slate-500 px-1">
         <span className="text-accent-success">{doneCount} done</span>
-        <span className="text-accent-primary">{runningCount} running</span>
-        <span>{totalCount - doneCount - runningCount} pending</span>
-        {phases_complete.length > 0 && (
+        {runningCount > 0 && <span className="text-accent-primary">{runningCount} running</span>}
+        {totalCount - doneCount - runningCount > 0 && (
+          <span>{totalCount - doneCount - runningCount} pending</span>
+        )}
+        {/* Terminated state indicator in the summary bar */}
+        {isUserStopped && (
+          <span className="flex items-center gap-1 text-yellow-400 ml-auto">
+            <StopCircle size={10} />
+            Aborted by user
+          </span>
+        )}
+        {isComplete && (
+          <span className="flex items-center gap-1 text-accent-success ml-auto">
+            <CheckCircle2 size={10} />
+            {terminated_by === 'convergence' ? 'Converged' : 'Complete'}
+          </span>
+        )}
+        {phases_complete.length > 0 && !terminated_by && (
           <span className="ml-auto text-accent-success">Phases: {phases_complete.join(' · ')}</span>
         )}
       </div>

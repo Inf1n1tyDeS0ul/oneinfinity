@@ -2,9 +2,9 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   RefreshCw, Terminal,
-  CheckCircle2,
+  CheckCircle2, StopCircle,
   Activity, Flame,
-  Zap, X, Radar, Menu, Shield
+  Zap, X, Radar, Menu, Shield, AlertTriangle
 } from 'lucide-react'
 import { endpoints } from '../utils/api'
 import { useStore } from '../store/useStore'
@@ -111,6 +111,7 @@ export default function GodMode() {
   const [logsLoading, setLogsLoading]       = useState(false)
   const [selectedSessionId, setSelectedSessionId] = useState(null)
   const [stopping, setStopping]             = useState(false)
+  const [stopConfirming, setStopConfirming] = useState(false)
   const [tab, setTab]                       = useState('status')
   const [councilData, setCouncilData]       = useState(null)
   const [councilLoading, setCouncilLoading] = useState(false)
@@ -441,15 +442,47 @@ export default function GodMode() {
 
   const handleStop = async () => {
     setStopping(true)
+    setStopConfirming(false)
     try {
       const r = await endpoints.godModeStop(session?.scan_id || null)
       if (r.data?.stopped) {
-        addNotification('Stop sentinel written — finalizing within 30s', 'success')
+        // Show "confirming" state while we wait for backend to acknowledge
+        setStopConfirming(true)
+        addNotification('Abort signal sent — waiting for backend confirmation...', 'info')
+        // Poll every 2s for up to 30s until terminated_by is set
+        let attempts = 0
+        const waitForStop = setInterval(async () => {
+          attempts++
+          try {
+            const sr = await endpoints.godModeStatus(session?.scan_id)
+            const data = sr.data
+            if (data?.terminated_by) {
+              clearInterval(waitForStop)
+              setStopConfirming(false)
+              setStopping(false)
+              setSession(data)
+              const reason = data.terminated_by === 'stop' ? 'User abort' : data.terminated_by
+              addNotification(`✓ Scan confirmed stopped (${reason})`, 'success')
+              refreshSessions()
+            }
+          } catch (_) {}
+          if (attempts >= 15) {
+            clearInterval(waitForStop)
+            setStopConfirming(false)
+            setStopping(false)
+            addNotification('Stop signal sent — scan should halt within 30s', 'warning')
+            refresh()
+          }
+        }, 2000)
+      } else {
+        addNotification('Stop request sent', 'info')
+        setStopping(false)
         setTimeout(refresh, 3000)
       }
     } catch (e) {
       addNotification('Stop failed: ' + e.message, 'error')
-    } finally { setStopping(false) }
+      setStopping(false)
+    }
   }
 
   const handleDelete = async (scanId, e) => {
@@ -481,15 +514,24 @@ export default function GodMode() {
   }
 
   const isRunning  = session && !session.terminated_by
-  const activeStage = Object.entries(session?.missions || {}).find(([_, s]) => s === 'running')?.[0] || 
+  const activeStage = Object.entries(session?.missions || {}).find(([_, s]) => s === 'running')?.[0] ||
                      (session?.terminated_by ? 'complete' : 'foundation')
-  
+
   const completedStages = Object.entries(session?.missions || {})
     .filter(([_, s]) => s === 'done')
     .map(([name]) => {
        if (name === 'full_scan') return 'scan'
        return name
     })
+
+  const TERMINATED_BY_CONFIG = {
+    stop:        { label: 'Aborted by user',        color: 'text-yellow-400',      bg: 'bg-yellow-500/10 border-yellow-500/30',   icon: StopCircle },
+    all_done:    { label: 'Mission complete',        color: 'text-accent-success',  bg: 'bg-accent-success/10 border-accent-success/30', icon: CheckCircle2 },
+    convergence: { label: 'Converged (no new finds)',color: 'text-accent-success',  bg: 'bg-accent-success/10 border-accent-success/30', icon: CheckCircle2 },
+    time:        { label: 'Time limit reached',      color: 'text-slate-400',       bg: 'bg-slate-500/10 border-slate-500/30',      icon: AlertTriangle },
+    cap:         { label: 'Finding cap reached',     color: 'text-slate-400',       bg: 'bg-slate-500/10 border-slate-500/30',      icon: AlertTriangle },
+    error:       { label: 'Stopped due to error',    color: 'text-red-400',         bg: 'bg-red-500/10 border-red-500/30',          icon: AlertTriangle },
+  }
 
   const logLevelColor = (line) => {
     if (/ERROR|CRITICAL|\[-\]/i.test(line)) return 'text-red-400'
@@ -582,23 +624,41 @@ export default function GodMode() {
           )}>
             <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 px-2 gap-4">
               <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Mission Pipeline</h3>
-              {isRunning && (
+              {(isRunning || stopConfirming) && (
                 <div className="flex items-center gap-4 flex-wrap">
                   <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-accent-primary animate-ping" />
-                    <span className="text-[10px] font-mono text-accent-primary uppercase tracking-widest font-bold">Live Execution</span>
+                    {stopConfirming ? (
+                      <>
+                        <AlertTriangle size={12} className="text-yellow-400 animate-pulse" />
+                        <span className="text-[10px] font-mono text-yellow-400 uppercase tracking-widest font-bold">Waiting for backend...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="w-2 h-2 rounded-full bg-accent-primary animate-ping" />
+                        <span className="text-[10px] font-mono text-accent-primary uppercase tracking-widest font-bold">Live Execution</span>
+                      </>
+                    )}
                   </div>
-                  <button onClick={handleStop} disabled={stopping} className="btn-danger btn-xs py-1 px-3 text-[10px] whitespace-nowrap">
-                    {stopping ? 'Stopping...' : 'Abort Mission'}
+                  <button
+                    onClick={handleStop}
+                    disabled={stopping || stopConfirming}
+                    className={clsx(
+                      "btn-xs py-1 px-3 text-[10px] whitespace-nowrap flex items-center gap-1.5",
+                      stopConfirming ? "btn-secondary opacity-60 cursor-not-allowed" : "btn-danger"
+                    )}
+                  >
+                    <StopCircle size={10} className={stopConfirming ? "animate-spin" : ""} />
+                    {stopConfirming ? 'Confirming stop...' : stopping ? 'Sending abort...' : 'Abort Mission'}
                   </button>
                 </div>
               )}
             </div>
             <div className="bg-bg-secondary/20 backdrop-blur-sm border border-bg-border rounded-2xl overflow-hidden shadow-inner">
-               <MissionPipeline 
+               <MissionPipeline
                  missions={session?.missions || {}}
                  phases_complete={session?.phases_complete || []}
                  recursionLayer={session?.recursion_layer || 0}
+                 terminated_by={session?.terminated_by || null}
                />
             </div>
           </div>
@@ -642,16 +702,38 @@ export default function GodMode() {
                    ) : (
                      <>
                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                          <div className="p-4 rounded-xl bg-bg-primary/40 border border-bg-border">
+                          <div className={clsx(
+                            "p-4 rounded-xl border",
+                            stopConfirming
+                              ? "bg-yellow-500/10 border-yellow-500/30"
+                              : session.terminated_by
+                                ? (TERMINATED_BY_CONFIG[session.terminated_by] || TERMINATED_BY_CONFIG.error).bg
+                                : "bg-bg-primary/40 border-bg-border"
+                          )}>
                             <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-2 opacity-60">Engine Status</div>
                             <div className="flex items-center gap-3">
-                               <div className={clsx(
-                                 "w-2 h-2 rounded-full",
-                                 isRunning ? "bg-accent-primary shadow-glow-cyan" : "bg-accent-success shadow-glow-green"
-                               )} />
-                               <span className="text-sm font-bold text-slate-200 uppercase tracking-tight">
-                                 {session.terminated_by ? 'Terminated' : 'Operational'}
-                               </span>
+                               {stopConfirming ? (
+                                 <>
+                                   <AlertTriangle size={14} className="text-yellow-400 animate-pulse shrink-0" />
+                                   <span className="text-sm font-bold text-yellow-400 uppercase tracking-tight">Stopping...</span>
+                                 </>
+                               ) : session.terminated_by ? (() => {
+                                 const cfg = TERMINATED_BY_CONFIG[session.terminated_by] || TERMINATED_BY_CONFIG.error
+                                 const TIcon = cfg.icon
+                                 return (
+                                   <>
+                                     <TIcon size={14} className={clsx(cfg.color, "shrink-0")} />
+                                     <span className={clsx("text-sm font-bold uppercase tracking-tight", cfg.color)}>
+                                       {cfg.label}
+                                     </span>
+                                   </>
+                                 )
+                               })() : (
+                                 <>
+                                   <div className="w-2 h-2 rounded-full bg-accent-primary shadow-glow-cyan animate-pulse" />
+                                   <span className="text-sm font-bold text-accent-primary uppercase tracking-tight">Operational</span>
+                                 </>
+                               )}
                             </div>
                           </div>
                           <div className="p-4 rounded-xl bg-bg-primary/40 border border-bg-border">
@@ -659,6 +741,19 @@ export default function GodMode() {
                             <div className="text-xs font-mono text-accent-primary truncate">#{session.scan_id.slice(0, 12)}...</div>
                           </div>
                        </div>
+
+                       {/* Stop confirmation banner — shown immediately after abort, before terminated_by lands */}
+                       {stopConfirming && (
+                         <div className="flex items-start gap-3 p-4 rounded-xl bg-yellow-500/10 border border-yellow-500/30 animate-fade-in">
+                           <AlertTriangle size={16} className="text-yellow-400 shrink-0 mt-0.5 animate-pulse" />
+                           <div>
+                             <div className="text-xs font-bold text-yellow-400 uppercase tracking-widest mb-1">Abort signal delivered</div>
+                             <p className="text-[11px] text-slate-400 leading-relaxed">
+                               The backend received the stop request. Waiting for all running missions to finalize gracefully. This takes up to 30s.
+                             </p>
+                           </div>
+                         </div>
+                       )}
 
                        {/* Live Finding Count — real-time update from /api/scan/{id}/findings */}
                        {isRunning && (
@@ -698,19 +793,41 @@ export default function GodMode() {
                                 </div>
                              </div>
 
-                             {session.terminated_by && (
-                               <div className="mt-4 p-4 rounded-xl bg-accent-success/5 border border-accent-success/20 animate-fade-in">
-                                  <div className="flex items-center gap-2 text-accent-success mb-2">
-                                     <CheckCircle2 size={16} />
-                                     <span className="text-xs font-bold uppercase tracking-widest">Mission Complete</span>
-                                  </div>
-                                  <p className="text-xs text-slate-400 mb-4">Autonomous execution has converged. Exploit chains and findings are ready for review.</p>
-                                  <div className="flex gap-2">
-                                     <button onClick={() => navigate(`/chains/${session.scan_id}`)} className="btn-primary flex-1 text-[10px] py-2">Exploit Chains</button>
-                                     <button onClick={() => navigate('/results')} className="btn-secondary flex-1 text-[10px] py-2">Findings</button>
-                                  </div>
-                               </div>
-                             )}
+                             {session.terminated_by && !stopConfirming && (() => {
+                               const cfg = TERMINATED_BY_CONFIG[session.terminated_by] || TERMINATED_BY_CONFIG.error
+                               const TIcon = cfg.icon
+                               const isUserStop = session.terminated_by === 'stop'
+                               const isSuccess  = ['all_done', 'convergence'].includes(session.terminated_by)
+                               return (
+                                 <div className={clsx("mt-4 p-4 rounded-xl border animate-fade-in", cfg.bg)}>
+                                   <div className={clsx("flex items-center gap-2 mb-2", cfg.color)}>
+                                     <TIcon size={16} />
+                                     <span className="text-xs font-bold uppercase tracking-widest">{cfg.label}</span>
+                                   </div>
+                                   <p className="text-xs text-slate-400 mb-1">
+                                     {isUserStop
+                                       ? 'Scan was aborted by user request. Partial findings are available below.'
+                                       : isSuccess
+                                         ? 'Autonomous execution has converged. Exploit chains and findings are ready for review.'
+                                         : session.terminated_by === 'error'
+                                           ? 'Scan stopped due to an internal error. Check logs for details.'
+                                           : 'Scan reached its configured limit and stopped automatically.'}
+                                   </p>
+                                   <p className="text-[10px] font-mono text-slate-600 mb-3">
+                                     {session.finding_count || 0} finding{session.finding_count !== 1 ? 's' : ''} collected
+                                     {session.phases_complete?.length > 0 && ` · ${session.phases_complete.length} phase${session.phases_complete.length !== 1 ? 's' : ''} complete`}
+                                   </p>
+                                   <div className="flex gap-2">
+                                     {isSuccess && (
+                                       <button onClick={() => navigate(`/chains/${session.scan_id}`)} className="btn-primary flex-1 text-[10px] py-2">Exploit Chains</button>
+                                     )}
+                                     <button onClick={() => navigate('/results')} className={clsx("flex-1 text-[10px] py-2", isSuccess ? "btn-secondary" : "btn-primary")}>
+                                       {isUserStop ? 'View Partial Findings' : 'View Findings'}
+                                     </button>
+                                   </div>
+                                 </div>
+                               )
+                             })()}
 
                              {/* ── AI Council Results — shown inline when ai_council phase ran ── */}
                              {(session.phases_complete || []).includes('ai_council') && (
