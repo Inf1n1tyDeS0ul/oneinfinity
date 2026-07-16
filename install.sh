@@ -2823,7 +2823,7 @@ setup_mobsf() {
     step "Starting MobSF container on port ${MOBSF_PORT}"
     if ! docker run -d \
             --name oneinfinity-mobsf \
-            -p "${MOBSF_PORT}:8008" \
+            -p "${MOBSF_PORT}:8000" \
             -e MOBSF_HOME=/home/mobsf/.MobSF \
             -v oneinfinity-mobsf-data:/home/mobsf/.MobSF \
             --restart unless-stopped \
@@ -2885,7 +2885,7 @@ update_mobsf() {
     # Re-run startup with existing data volume (preserves scans/settings)
     docker run -d \
         --name oneinfinity-mobsf \
-        -p "${MOBSF_PORT}:8008" \
+        -p "${MOBSF_PORT}:8000" \
         -e MOBSF_HOME=/home/mobsf/.MobSF \
         -v oneinfinity-mobsf-data:/home/mobsf/.MobSF \
         --restart unless-stopped \

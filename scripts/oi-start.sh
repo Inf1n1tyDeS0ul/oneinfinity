@@ -72,7 +72,7 @@ if ! docker ps --filter name=oneinfinity-mobsf --filter status=running -q | grep
         alpine chown -R 9901:9901 /home/mobsf/.MobSF &>/dev/null || true
     docker rm -f oneinfinity-mobsf &>/dev/null || true
     docker run -d --name oneinfinity-mobsf \
-        -p "${MOBSF_PORT}:8008" \
+        -p "${MOBSF_PORT}:8000" \
         -e MOBSF_HOME=/home/mobsf/.MobSF \
         -v oneinfinity-mobsf-data:/home/mobsf/.MobSF \
         --restart unless-stopped \

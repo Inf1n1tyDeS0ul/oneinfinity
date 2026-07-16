@@ -5135,7 +5135,7 @@ async def mobile_analyze_endpoint(app_id: str, background_tasks: BackgroundTasks
     if run_mobsf and not _mobsf_available():
         raise HTTPException(503, (
             "MobSF server is not running. "
-            "Start it with: mobsf  (or: docker run -it -p 8008:8008 opensecurity/mobile-security-framework-mobsf)"
+            "Start it with: docker run -it -p 47297:8000 -e MOBSF_HOME=/home/mobsf/.MobSF opensecurity/mobile-security-framework-mobsf"
         ))
 
     scan_id = f"mobile_{app_id}"
@@ -8960,10 +8960,15 @@ async def tools_health():
         h["virustotal"] = {"status": "configured" if env_manager.get("VIRUSTOTAL_API_KEY") else "not_configured"}
         censys_ok = env_manager.get("CENSYS_API_ID") and env_manager.get("CENSYS_API_SECRET")
         h["censys"] = {"status": "configured" if censys_ok else "not_configured"}
-        # MobSF — port 8008, NOT 8000 (that's this server)
+        # MobSF — gunicorn binds to 8000 inside container, mapped to MOBSF_PORT on host.
+        # Any HTTP response (incl. 401 Unauthorized) means the server is up.
+        import urllib.error as _uerr
+        _mobsf_url = f"http://localhost:{os.environ.get('MOBSF_PORT', '47297')}/api/v1/health"
         try:
-            with _ureq.urlopen(f"http://localhost:{os.environ.get('MOBSF_PORT', '47297')}/api/v1/health", timeout=3) as r:
+            with _ureq.urlopen(_mobsf_url, timeout=3) as r:
                 h["mobsf"] = {"status": "healthy" if r.status == 200 else "unhealthy"}
+        except _uerr.HTTPError:
+            h["mobsf"] = {"status": "healthy"}   # 401/403 = server is up
         except Exception:
             h["mobsf"] = {"status": "offline"}
         return {"services": h}
