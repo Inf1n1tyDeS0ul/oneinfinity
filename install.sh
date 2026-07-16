@@ -2812,11 +2812,19 @@ setup_mobsf() {
     step "Removing stale MobSF container (if any)"
     docker rm -f oneinfinity-mobsf >> "$ONEINFINITY_LOG" 2>&1 || true
 
+    # -- Fix volume ownership (Docker creates named volumes as root; MobSF runs as uid 9901)
+    step "Fixing MobSF volume ownership (uid 9901)"
+    docker run --rm \
+        -v oneinfinity-mobsf-data:/home/mobsf/.MobSF \
+        alpine chown -R 9901:9901 /home/mobsf/.MobSF \
+        >> "$ONEINFINITY_LOG" 2>&1 || true
+
     # -- Start container ---------------------------------------------------
     step "Starting MobSF container on port ${MOBSF_PORT}"
     if ! docker run -d \
             --name oneinfinity-mobsf \
             -p "${MOBSF_PORT}:8008" \
+            -e MOBSF_HOME=/home/mobsf/.MobSF \
             -v oneinfinity-mobsf-data:/home/mobsf/.MobSF \
             --restart unless-stopped \
             opensecurity/mobile-security-framework-mobsf:latest \
