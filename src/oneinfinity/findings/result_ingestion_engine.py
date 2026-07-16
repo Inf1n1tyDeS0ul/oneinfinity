@@ -272,6 +272,225 @@ def _parse_httpx(raw: dict, scan_id: str) -> Optional[NormalizedFinding]:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Canonical vuln_type normalization — maps raw scanner tags → Vuln.* strings
+# so the capmap correctly counts coverage across all 63 vulnerability classes.
+# ---------------------------------------------------------------------------
+
+_CANONICAL_VULN_MAP: dict = {
+    # SQL Injection
+    "sqli": "SQL Injection", "sqli_potential": "SQL Injection",
+    "sqli_blind": "SQL Injection", "sqli_time": "SQL Injection",
+    "sqli_error": "SQL Injection", "sql_injection": "SQL Injection",
+    "sql injection": "SQL Injection",
+    # XSS
+    "xss": "Cross-Site Scripting (XSS)", "reflected_xss": "Cross-Site Scripting (XSS)",
+    "stored_xss": "Cross-Site Scripting (XSS)", "blind_xss": "Cross-Site Scripting (XSS)",
+    "cross-site scripting": "Cross-Site Scripting (XSS)",
+    "dom_xss": "DOM-based XSS", "dom-based xss": "DOM-based XSS",
+    # SSRF
+    "ssrf": "Server-Side Request Forgery (SSRF)", "ssrf_internal": "Server-Side Request Forgery (SSRF)",
+    "ssrf_cloud": "Server-Side Request Forgery (SSRF)", "pdf_ssrf": "Server-Side Request Forgery (SSRF)",
+    "blind_ssrf": "Server-Side Request Forgery (SSRF)",
+    # IDOR/BOLA
+    "idor": "Insecure Direct Object Reference (IDOR)", "bola": "Insecure Direct Object Reference (IDOR)",
+    "idor_access": "Insecure Direct Object Reference (IDOR)",
+    # CORS
+    "cors_misconfiguration": "CORS Misconfiguration", "cors": "CORS Misconfiguration",
+    "cors_origin_reflected": "CORS Misconfiguration",
+    # CRLF
+    "crlf": "CRLF Injection", "crlf_injection": "CRLF Injection",
+    "http header injection": "CRLF Injection",
+    # Command / Code injection
+    "cmd_injection": "OS Command Injection", "rce": "OS Command Injection",
+    "os_command_injection": "OS Command Injection", "command injection": "OS Command Injection",
+    "code_injection": "Code Injection", "eval_injection": "Code Injection via eval",
+    # Redirect / SSTI / XXE / LFI
+    "open_redirect": "Open Redirect", "redirect": "Open Redirect",
+    "ssti": "Server-Side Template Injection (SSTI)",
+    "xxe": "XML External Entity (XXE)",
+    "lfi": "Local File Inclusion (LFI)", "path_traversal": "Local File Inclusion (LFI)",
+    "file_read": "Local File Inclusion (LFI)",
+    # Subdomain / Files
+    "subdomain_takeover": "Subdomain Takeover",
+    "backup_files": "Backup/Archive File Exposed", "backup_file_exposed": "Backup/Archive File Exposed",
+    "exposed_file": "Exposed Sensitive Files", "sensitive_file": "Exposed Sensitive Files",
+    "source_disclosure": "Exposed Sensitive Files",
+    # Misconfig / Headers
+    "misconfig": "Security Misconfiguration", "misconfiguration": "Security Misconfiguration",
+    "missing_security_headers": "Missing Security Headers", "missing_headers": "Missing Security Headers",
+    # Info disclosure
+    "info_leak": "Information Disclosure", "information_disclosure": "Information Disclosure",
+    "sensitive_data_disclosure": "Information Disclosure",
+    "SENSITIVE_DATA_DISCLOSURE": "Information Disclosure",
+    # Auth
+    "default_credentials": "Default Credentials", "default_creds": "Default Credentials",
+    "credential_spray_hit": "Default Credentials",
+    "broken_auth": "Broken Authentication", "auth_bypass": "Broken Authentication",
+    "session_replay_access": "Broken Authentication", "session_replay": "Broken Authentication",
+    "session_not_invalidated": "Broken Authentication",
+    # JWT
+    "jwt_vulnerability": "JWT Vulnerability", "jwt_attack": "JWT Vulnerability",
+    "jwt_none_alg": "JWT Vulnerability", "jwt_weak_secret": "JWT Vulnerability",
+    "jwt_kid_injection": "JWT Vulnerability",
+    # Secrets
+    "secret_exposure": "Secret / Credential Exposure", "secret": "Secret / Credential Exposure",
+    "credential_exposure": "Secret / Credential Exposure",
+    # Cloud / Network
+    "cloud_misconfig": "Cloud Storage Misconfiguration", "s3_misconfig": "Cloud Storage Misconfiguration",
+    "open_port": "Exposed Network Service", "lateral_open_port": "Exposed Network Service",
+    "outdated_software": "Outdated Software / Known CVE", "cve": "Outdated Software / Known CVE",
+    # HTTP attacks
+    "hpp": "HTTP Parameter Pollution", "http_parameter_pollution": "HTTP Parameter Pollution",
+    "host_header_injection": "Host Header Injection", "host_header": "Host Header Injection",
+    "cache_poisoning": "Cache Poisoning", "cache_deception": "Cache Poisoning",
+    "undocumented_api": "Undocumented API Endpoint",
+    # Vuln classes
+    "deserialization": "Insecure Deserialization", "insecure_deserialization": "Insecure Deserialization",
+    "race_condition": "Race Condition",
+    "file_upload_bypass": "Insecure File Upload", "file_upload": "Insecure File Upload",
+    "oauth_flaw": "OAuth/OIDC Vulnerability", "oauth_pkce_downgrade": "OAuth/OIDC Vulnerability",
+    "oauth_missing_state": "OAuth/OIDC Vulnerability", "oauth": "OAuth/OIDC Vulnerability",
+    "prototype_pollution": "Prototype Pollution",
+    "websocket_vuln": "WebSocket Security Issue", "websocket": "WebSocket Security Issue",
+    "mfa_bypass": "MFA/2FA Bypass", "otp_bypass": "MFA/2FA Bypass", "2fa_bypass": "MFA/2FA Bypass",
+    "rate_limit_bypass": "Missing Rate Limiting", "no_rate_limiting": "Missing Rate Limiting",
+    "missing_rate_limiting": "Missing Rate Limiting",
+    "pii_exposure": "PII Exposure in API Response", "pii_leak": "PII Exposure in API Response",
+    "payment_tampering": "Payment/Price Tampering", "price_manipulation": "Payment/Price Tampering",
+    "clickjacking": "Clickjacking",
+    "source_map_exposure": "Exposed JavaScript Source Map",
+    "weak_tls": "Weak TLS Configuration", "tls_cert_issue": "TLS Certificate Issue",
+    "insecure_cookie_attributes": "Insecure Cookie Attributes",
+    "missing_httponly": "Insecure Cookie Attributes", "missing_secure_flag": "Insecure Cookie Attributes",
+    "csrf": "Cross-Site Request Forgery (CSRF)",
+    "missing_csrf_protection": "Cross-Site Request Forgery (CSRF)",
+    "Missing CSRF Protection": "Cross-Site Request Forgery (CSRF)",
+    "session_fixation": "Session Fixation",
+    "session_timeout": "Missing Session Timeout", "missing_session_timeout": "Missing Session Timeout",
+    "account_enumeration": "Account Enumeration via Timing",
+    "account_enum_timing": "Account Enumeration via Timing",
+    "weak_password_policy": "Weak Password Policy",
+    "saml_vulnerability": "SAML Assertion Vulnerability", "saml_wrapping": "SAML Assertion Vulnerability",
+    "ldap_injection": "LDAP Injection",
+    "mail_header_injection": "Mail Header Injection",
+    "csv_injection": "CSV Injection",
+    "postmessage_hijacking": "postMessage Hijacking Risk",
+    "web_storage": "Sensitive Data in Web Storage",
+    "insecure_rng": "Insecure Random Number Generation",
+    "weak_crypto": "Weak Encryption Algorithm", "weak_encryption": "Weak Encryption Algorithm",
+    "padding_oracle": "Padding Oracle",
+    "service_worker_scope_abuse": "Service Worker Abuse Risk",
+    "service_worker_abuse": "Service Worker Abuse Risk",
+    "webrtc_leak": "WebRTC IP Leakage",
+    "grpc_exposed": "gRPC/SOAP Endpoint Exposed",
+    # GraphQL → nearest canonical
+    "graphql_circular_fragment_no_error": "Security Misconfiguration",
+    "graphql_null_coercion": "Security Misconfiguration",
+    "graphql_introspection": "Undocumented API Endpoint",
+}
+
+
+def _canonicalize_vuln_type(vuln_type: str) -> str:
+    """Map a raw scanner vuln_type string to the canonical Vuln.* value.
+    Returns the canonical string if a mapping exists, else the original."""
+    if not vuln_type:
+        return vuln_type
+    # Exact match first (case-sensitive)
+    if vuln_type in _CANONICAL_VULN_MAP:
+        return _CANONICAL_VULN_MAP[vuln_type]
+    # Case-insensitive match
+    vl = vuln_type.lower()
+    if vl in _CANONICAL_VULN_MAP:
+        return _CANONICAL_VULN_MAP[vl]
+    # Prefix/substring fallback for families of tags
+    if vl.startswith("js_secret") or "password_in_js" in vl or "api_key" in vl or "aws_secret" in vl:
+        return "Secret / Credential Exposure"
+    if "cors" in vl:
+        return "CORS Misconfiguration"
+    if "sqli" in vl or ("sql" in vl and "injection" in vl):
+        return "SQL Injection"
+    if "dom" in vl and "xss" in vl:
+        return "DOM-based XSS"
+    if "xss" in vl:
+        return "Cross-Site Scripting (XSS)"
+    if "ssrf" in vl:
+        return "Server-Side Request Forgery (SSRF)"
+    if "idor" in vl or "bola" in vl:
+        return "Insecure Direct Object Reference (IDOR)"
+    if "session_replay" in vl or "session replay" in vl:
+        return "Broken Authentication"
+    if "oauth" in vl:
+        return "OAuth/OIDC Vulnerability"
+    if "mfa" in vl or "otp" in vl or "2fa" in vl:
+        return "MFA/2FA Bypass"
+    if "file_upload" in vl or "upload_bypass" in vl:
+        return "Insecure File Upload"
+    if "jwt" in vl:
+        return "JWT Vulnerability"
+    if "rate_limit" in vl or "ratelimit" in vl:
+        return "Missing Rate Limiting"
+    if "prototype" in vl:
+        return "Prototype Pollution"
+    if "crlf" in vl:
+        return "CRLF Injection"
+    if "csrf" in vl:
+        return "Cross-Site Request Forgery (CSRF)"
+    if "deserialization" in vl:
+        return "Insecure Deserialization"
+    if "race_condition" in vl or "race condition" in vl:
+        return "Race Condition"
+    if "service_worker" in vl:
+        return "Service Worker Abuse Risk"
+    if "webrtc" in vl:
+        return "WebRTC IP Leakage"
+    if "grpc" in vl or "soap" in vl:
+        return "gRPC/SOAP Endpoint Exposed"
+    return vuln_type  # no mapping found — keep original
+
+
+def _canonicalize_vuln_type(vt: str) -> str:
+    """Normalize a raw scanner vuln_type tag to a canonical Vuln.* string."""
+    if not vt:
+        return vt
+    try:
+        from oneinfinity.pipeline.executor import _CANONICAL_VULN_MAP
+        canonical = _CANONICAL_VULN_MAP.get(vt) or _CANONICAL_VULN_MAP.get(vt.lower())
+        if canonical:
+            return canonical
+    except ImportError:
+        pass
+    # Substring fallback
+    vt_l = vt.lower()
+    if vt_l.startswith("js_secret") or "secret" in vt_l or "api_key" in vt_l or "password_in_js" in vt_l:
+        return "Secret / Credential Exposure"
+    if "cors" in vt_l:
+        return "CORS Misconfiguration"
+    if "sqli" in vt_l or "sql" in vt_l:
+        return "SQL Injection"
+    if "xss" in vt_l:
+        return "Cross-Site Scripting (XSS)" if "dom" not in vt_l else "DOM-based XSS"
+    if "ssrf" in vt_l:
+        return "Server-Side Request Forgery (SSRF)"
+    if "idor" in vt_l or "bola" in vt_l:
+        return "Insecure Direct Object Reference (IDOR)"
+    if "oauth" in vt_l:
+        return "OAuth/OIDC Vulnerability"
+    if "mfa" in vt_l or "otp" in vt_l or "2fa" in vt_l:
+        return "MFA/2FA Bypass"
+    if "jwt" in vt_l:
+        return "JWT Vulnerability"
+    if "rate_limit" in vt_l or "ratelimit" in vt_l:
+        return "Missing Rate Limiting"
+    if "prototype" in vt_l:
+        return "Prototype Pollution"
+    if "session_replay" in vt_l or "session replay" in vt_l:
+        return "Broken Authentication"
+    if "file_upload" in vt_l or "upload_bypass" in vt_l:
+        return "Insecure File Upload"
+    return vt
+
+
 def _parse_generic(raw: dict, scan_id: str, source: str) -> Optional[NormalizedFinding]:
     """Fallback parser using raw.get fields."""
     try:
@@ -308,6 +527,9 @@ def _parse_generic(raw: dict, scan_id: str, source: str) -> Optional[NormalizedF
             or raw.get("category")
             or source
         )
+        # Normalize vuln_type to canonical Vuln.* string so capmap coverage
+        # correctly counts against the 63-class catalogue.
+        vuln_type = _canonicalize_vuln_type(str(vuln_type))
         payload = raw.get("payload") or raw.get("poc") or ""
         cvss_map = {"critical": 9.5, "high": 7.5, "medium": 5.0, "low": 2.5, "info": 0.0}
         cvss = float(raw.get("cvss") or raw.get("cvss_score") or cvss_map.get(severity, 0.0))

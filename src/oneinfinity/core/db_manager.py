@@ -123,6 +123,26 @@ class DBManager:
         self._pg_pool = None
         self._sqlite_path: Path = path_manager.findings_db_path()
 
+    async def _pool(self):
+        """Return the active PG pool, reconnecting if it was closed."""
+        if self._pg_pool is not None:
+            try:
+                if not self._pg_pool.closed:
+                    return self._pg_pool
+            except Exception:
+                pass
+        # Pool is closed or missing — reconnect
+        log.warning("[DBManager] PG pool closed — reconnecting")
+        try:
+            from oneinfinity.core.pg_client import get_async_pool
+            new_pool = await get_async_pool()
+            if new_pool is not None:
+                self._pg_pool = new_pool
+                log.info("[DBManager] PG pool reconnected successfully")
+        except Exception as _exc:
+            log.warning("[DBManager] PG pool reconnect failed: %s", _exc)
+        return self._pg_pool
+
     async def _init(self) -> None:
         """Detect available backends and set mode."""
         explicit = os.environ.get("ONEINFINITY_STORAGE_MODE", "").lower()
@@ -182,7 +202,7 @@ class DBManager:
             return
         sql = schema_path.read_text()
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(sql)
                 await conn.commit()
             log.info("DBManager: schema applied")
@@ -208,7 +228,7 @@ class DBManager:
             for k in ("evidence", "payload", "raw", "poc_steps", "reproduction_cmd")
         }
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     """
                     INSERT INTO findings
@@ -275,7 +295,7 @@ class DBManager:
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         params.append(limit)
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 rows = await conn.execute(
                     f"SELECT finding_id,scan_id,target,title,severity,vuln_type,url,"
                     f"tool,confidence,cvss,status,source_type,created_at,data "
@@ -313,7 +333,7 @@ class DBManager:
             for k in ("evidence", "payload", "raw", "poc_steps", "reproduction_cmd")
         }
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 result = await conn.execute(
                     """
                     INSERT INTO findings
@@ -418,7 +438,7 @@ class DBManager:
         self, asset_id: str, scan_id: str, asset_type: str, value: str, metadata: dict
     ) -> None:
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     """
                     INSERT INTO recon_assets (asset_id, scan_id, asset_type, value, data)
@@ -466,7 +486,7 @@ class DBManager:
             conditions.append("asset_type = %s"); params.append(asset_type)
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 rows = await conn.execute(
                     f"SELECT asset_id, scan_id, asset_type, value, data, created_at "
                     f"FROM recon_assets {where} ORDER BY created_at DESC",
@@ -527,7 +547,7 @@ class DBManager:
     async def _pg_store_raw_findings(self, findings: list) -> int:
         inserted = 0
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 for f in findings:
                     tool = f.get("tool") or f.get("source_tool") or "unknown"
                     await conn.execute(
@@ -568,7 +588,7 @@ class DBManager:
 
     async def _pg_delete_findings_for_scan(self, scan_id: str) -> int:
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 result = await conn.execute(
                     "DELETE FROM findings WHERE scan_id = %s", (scan_id,)
                 )
@@ -597,7 +617,7 @@ class DBManager:
 
     async def _pg_finding_count(self, scan_id: str) -> int:
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 result = await conn.execute(
                     "SELECT COUNT(*) FROM findings WHERE scan_id = %s", (scan_id,)
                 )
@@ -634,7 +654,7 @@ class DBManager:
         data = {k: v for k, v in scan.items()
                 if k not in ("id", "scan_id", "target", "scan_type", "status", "created_at", "completed_at")}
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     """
                     INSERT INTO scans (scan_id, target, scan_type, status, data)
@@ -711,7 +731,7 @@ class DBManager:
 
     async def _pg_delete_scan(self, scan_id: str) -> None:
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute("DELETE FROM scans WHERE scan_id = %s", (scan_id,))
                 await conn.commit()
         except Exception as exc:
@@ -745,7 +765,7 @@ class DBManager:
 
     async def _pg_load_scans(self) -> list:
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 rows = await conn.execute(
                     "SELECT scan_id, target, scan_type, status, data, completed_at "
                     "FROM scans ORDER BY created_at DESC"
@@ -820,7 +840,7 @@ class DBManager:
         if self.mode not in ("distributed", "postgres"):
             return  # events only persisted in Postgres mode
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     """
                     INSERT INTO events (event_id, event_type, scan_id, source, data)
@@ -844,7 +864,7 @@ class DBManager:
     async def upsert_knowledge(self, category: str, key: str, data: dict) -> None:
         if self.mode in ("distributed", "postgres"):
             try:
-                async with self._pg_pool.connection() as conn:
+                async with (await self._pool()).connection() as conn:
                     await conn.execute(
                         """
                         INSERT INTO knowledge_base (category, key, data)
@@ -867,7 +887,7 @@ class DBManager:
             conditions.append("key = %s")
             params.append(key)
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 rows = await conn.execute(
                     f"SELECT key, data FROM knowledge_base WHERE {' AND '.join(conditions)}",
                     params,
@@ -905,7 +925,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("save_target requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     """
                     INSERT INTO targets
@@ -938,7 +958,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("get_target requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 rows = await conn.execute(
                     "SELECT target_id, target_value, target_type, name, platform, scope, "
                     "status, created_at, last_scan_time, vuln_count, severity_counts "
@@ -956,7 +976,7 @@ class DBManager:
         if self.mode not in ("distributed", "postgres"):
             return []
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 rows = await conn.execute(
                     "SELECT target_id, target_value, target_type, name, platform, scope, "
                     "status, created_at, last_scan_time, vuln_count, severity_counts "
@@ -975,7 +995,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("delete_target requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     "DELETE FROM targets WHERE target_id = %s", (target_id,)
                 )
@@ -991,7 +1011,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("update_target_status requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     "UPDATE targets SET status = %s, last_scan_time = %s "
                     "WHERE target_id = %s",
@@ -1006,7 +1026,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("update_target_vuln_count requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     "UPDATE targets SET vuln_count = %s WHERE target_id = %s",
                     (count, target_id),
@@ -1023,7 +1043,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("save_research_session requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     """
                     INSERT INTO research_sessions (
@@ -1070,7 +1090,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("get_research_session requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 rows = await conn.execute(
                     "SELECT * FROM research_sessions WHERE session_id = %s",
                     (session_id,),
@@ -1088,7 +1108,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("list_research_sessions requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 if target:
                     rows = await conn.execute(
                         "SELECT * FROM research_sessions WHERE target = %s "
@@ -1119,7 +1139,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("save_research_theory requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     """
                     INSERT INTO vuln_theories (
@@ -1155,7 +1175,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("update_research_theory_status requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     "UPDATE vuln_theories SET status = %s, updated_at = %s "
                     "WHERE theory_id = %s",
@@ -1172,7 +1192,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("save_test_outcome requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     """
                     INSERT INTO test_outcomes (
@@ -1211,7 +1231,7 @@ class DBManager:
             steps = data.get("steps", [])
             if isinstance(steps, str):
                 steps = json.loads(steps)
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     """
                     INSERT INTO research_discoveries (
@@ -1262,7 +1282,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("list_research_discoveries requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 if session_id:
                     rows = await conn.execute(
                         "SELECT * FROM research_discoveries WHERE session_id = %s "
@@ -1287,7 +1307,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("upsert_cross_target_pattern requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     """
                     INSERT INTO cross_target_patterns (
@@ -1316,7 +1336,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("get_cross_target_patterns requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 rows = await conn.execute(
                     "SELECT * FROM cross_target_patterns WHERE success_count >= %s "
                     "ORDER BY success_count DESC",
@@ -1343,7 +1363,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("save_learning_session requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     """
                     INSERT INTO learning_scan_sessions
@@ -1378,7 +1398,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("get_learning_session requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 rows = await conn.execute(
                     "SELECT * FROM learning_scan_sessions WHERE session_id = %s",
                     (session_id,),
@@ -1396,7 +1416,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("list_learning_sessions requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 rows = await conn.execute(
                     "SELECT * FROM learning_scan_sessions ORDER BY started_at DESC LIMIT %s",
                     (limit,),
@@ -1415,7 +1435,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("save_learning_finding requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     """
                     INSERT INTO learning_findings
@@ -1454,7 +1474,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("record_tool_run requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     """
                     INSERT INTO tool_performance
@@ -1497,7 +1517,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("get_best_tool_for_vuln requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 rows = await conn.execute(
                     """
                     SELECT tool_name, runs_total, runs_success, findings_total, avg_duration_s
@@ -1528,7 +1548,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("upsert_target_profile requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     """
                     INSERT INTO target_profiles
@@ -1562,7 +1582,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("get_target_profile requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 rows = await conn.execute(
                     "SELECT * FROM target_profiles WHERE domain = %s",
                     (domain,),
@@ -1581,7 +1601,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("upsert_pattern requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 await conn.execute(
                     """
                     INSERT INTO pattern_library
@@ -1616,7 +1636,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("get_patterns_for_tech_stack requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 rows = await conn.execute(
                     "SELECT * FROM pattern_library WHERE tech_stack_key = %s "
                     "ORDER BY occurrence_count DESC LIMIT 20",
@@ -1636,7 +1656,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("get_learning_stats requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 cur = await conn.execute(
                     "SELECT COUNT(*) FROM learning_scan_sessions"
                 )
@@ -1695,7 +1715,7 @@ class DBManager:
             # Postgres not available
             raise RuntimeError("list_tool_performance requires Postgres mode")
         try:
-            async with self._pg_pool.connection() as conn:
+            async with (await self._pool()).connection() as conn:
                 rows = await conn.execute(
                     "SELECT tool_name, vuln_type, "
                     "CASE WHEN runs_total > 0 "
@@ -1747,7 +1767,7 @@ class DBManager:
         if self.mode not in ("distributed", "postgres"):
             # Postgres not available
             raise RuntimeError("pg_execute_write requires Postgres mode")
-        async with self._pg_pool.connection() as conn:
+        async with (await self._pool()).connection() as conn:
             result = await conn.execute(sql, params)
             await conn.commit()
             return result.rowcount
@@ -1757,7 +1777,7 @@ class DBManager:
         if self.mode not in ("distributed", "postgres"):
             # Postgres not available
             raise RuntimeError("pg_execute_read requires Postgres mode")
-        async with self._pg_pool.connection() as conn:
+        async with (await self._pool()).connection() as conn:
             cursor = await conn.execute(sql, params)
             columns = [d[0] for d in cursor.description] if cursor.description else []
             rows = await cursor.fetchall()
@@ -1767,7 +1787,7 @@ class DBManager:
         """Run CREATE TABLE IF NOT EXISTS DDL against PG (schema migration)."""
         if self.mode not in ("distributed", "postgres"):
             return
-        async with self._pg_pool.connection() as conn:
+        async with (await self._pool()).connection() as conn:
             await conn.execute(ddl)
             await conn.commit()
 

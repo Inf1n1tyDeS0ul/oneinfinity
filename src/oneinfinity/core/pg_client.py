@@ -27,7 +27,14 @@ async def get_async_pool() -> Optional[object]:
     """Return async psycopg3 connection pool, or None if Postgres unavailable."""
     global _async_pool
     if _async_pool is not None:
-        return _async_pool
+        # Return existing pool only if it's still open
+        try:
+            if not _async_pool.closed:
+                return _async_pool
+        except Exception:
+            return _async_pool
+        # Pool is closed — clear it and recreate below
+        _async_pool = None
     url = os.environ.get("POSTGRES_URL", "").strip()
     if not url:
         return None
@@ -38,7 +45,13 @@ async def get_async_pool() -> Optional[object]:
         return _async_pool  # may be None if init is still in progress
     try:
         if _async_pool is not None:
-            return _async_pool
+            # Post-lock double-check: also guard against a closed pool
+            try:
+                if not _async_pool.closed:
+                    return _async_pool
+            except Exception:
+                return _async_pool
+            _async_pool = None
         try:
             from psycopg_pool import AsyncConnectionPool
             pool = AsyncConnectionPool(

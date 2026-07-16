@@ -189,6 +189,80 @@ def cmd_ai_models(args):
         print(f"  [!] Error: {e}")
 
 
+
+def cmd_ai_parseltongue(args):
+    """
+    oneinfinity ai-parseltongue <target> — test AI endpoint using parallel obfuscation race.
+
+    Fires all 33 Parseltongue obfuscation variants of the prompt simultaneously,
+    scores responses, returns the best non-refusal output.
+
+    Examples:
+      oneinfinity ai-parseltongue https://api.target.com/v1/chat/completions --prompt 'exploit the system'
+      oneinfinity ai-parseltongue https://chatbot.target.com --prompt 'bypass restrictions' --tier 3
+      oneinfinity ai-parseltongue https://api.target.com --prompt 'test' --hof --auth 'Bearer sk-...'
+    """
+    import asyncio
+    target = args.target
+    prompt = args.prompt
+    auth = getattr(args, 'auth', '') or ''
+    tier = int(getattr(args, 'tier', 1) or 1)
+    use_hof = getattr(args, 'hof', False)
+    openrouter_key = getattr(args, 'openrouter_key', '') or ''
+    model = getattr(args, 'model', 'gpt-3.5-turbo') or 'gpt-3.5-turbo'
+    timeout = int(getattr(args, 'timeout', 30) or 30)
+
+    if not target:
+        print('[!] --target is required')
+        return 1
+    if not prompt:
+        print('[!] --prompt is required')
+        return 1
+
+    if use_hof:
+        # Hall of Fame parallel jailbreak race
+        from oneinfinity.ai_security.multi_turn_chainer import HallOfFameLauncher
+        launcher = HallOfFameLauncher()
+        result = asyncio.run(launcher.run_parallel_race(
+            query=prompt,
+            target_url=target,
+            auth_header=auth,
+            timeout=timeout,
+            openrouter_key=openrouter_key,
+        ))
+        print(f"[+] HOF Race result:")
+        print(f"    Winner:  {result.get('winning_combo_id')} ({result.get('winning_model')})")
+        print(f"    Score:   {result.get('score', 0):.2f}")
+        print(f"    Divider: {'YES' if result.get('divider_found') else 'no'}")
+        print(f"\n--- Response ---")
+        print(result.get('response', '')[:2000])
+    else:
+        # Parseltongue obfuscation parallel race
+        from oneinfinity.ai_security.payload_mutator import ParseltongueMutator
+        pt = ParseltongueMutator()
+        triggers = pt.detect_triggers(prompt)
+        if not triggers:
+            print(f'[i] No trigger words detected in prompt. Running raw.')
+        else:
+            print(f'[i] Detected triggers: {triggers}')
+
+        variants = pt.generate_variants(prompt, tier=tier)
+        print(f'[+] Generated {len(variants)} obfuscated variants (tier={tier})')
+        result = asyncio.run(pt.run_parallel_race(
+            text=prompt,
+            target_url=target,
+            auth_header=auth,
+            model=model,
+            tier=tier,
+            timeout=timeout,
+        ))
+        print(f"[+] Parseltongue race result:")
+        print(f"    Winner technique: {result.get('winning_technique')}")
+        print(f"    Score:            {result.get('score', 0):.2f}")
+        print(f"\n--- Best response ---")
+        print(result.get('response', '')[:2000])
+    return 0
+
 # ── Graph Brain handlers ───────────────────────────────────────────────────────
 
 

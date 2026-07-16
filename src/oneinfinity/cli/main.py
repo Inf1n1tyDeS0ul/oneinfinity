@@ -589,6 +589,26 @@ def build_parser():
                           metavar="FMT", help="Report formats (default: markdown json html)")
     ai_agent.add_argument("--yes", "-y", action="store_true", help="Skip authorization prompt")
 
+
+    # ── Parseltongue / HOF AI probe ───────────────────────────────────────────
+    pt_cmd = sub.add_parser(
+        "ai-parseltongue",
+        help="Parseltongue: parallel 33-technique obfuscation race against AI endpoint",
+    )
+    pt_cmd.add_argument("target", help="Target AI endpoint URL")
+    pt_cmd.add_argument("--prompt", required=True, help="Probe prompt to obfuscate and fire")
+    pt_cmd.add_argument("--tier", type=int, default=2, choices=[1, 2, 3],
+                        help="Obfuscation tier: 1=basic(11), 2=standard(22), 3=heavy(33) (default: 2)")
+    pt_cmd.add_argument("--hof", action="store_true",
+                        help="Use Hall of Fame jailbreak templates instead of obfuscation")
+    pt_cmd.add_argument("--auth", default="", metavar="HEADER",
+                        help="Auth header value (e.g. 'Bearer sk-...')")
+    pt_cmd.add_argument("--model", default="gpt-3.5-turbo",
+                        help="Model name for direct API targets (default: gpt-3.5-turbo)")
+    pt_cmd.add_argument("--openrouter-key", dest="openrouter_key", default="",
+                        help="OpenRouter API key for HOF mode (routes through openrouter.ai)")
+    pt_cmd.add_argument("--timeout", type=int, default=30,
+                        help="Per-request timeout seconds (default: 30)")
     # ── scan profiles ─────────────────────────────────────────────────────────
     sp_cmd = sub.add_parser("profile", help="Scan profiles: quick/deep/research/swarm/stealth")
     sp_sub = sp_cmd.add_subparsers(dest="subcommand")
@@ -1031,6 +1051,7 @@ def main():
         "ai-test":            _h("cmd_ai_test"),
         "ai-redteam":         _h("cmd_ai_redteam"),
         "ai-agent-test":      _h("cmd_ai_agent_test"),
+        "ai-parseltongue":    _h("cmd_ai_parseltongue"),
         # ── Core Infrastructure ────────────────────────────────────────────
         "profile":            _h("cmd_profile"),
         "swarm":              _h("cmd_swarm"),

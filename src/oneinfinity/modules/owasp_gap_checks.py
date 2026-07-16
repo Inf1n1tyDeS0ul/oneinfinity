@@ -238,8 +238,9 @@ def check_tls_cert(host: str, port: int = 443) -> GapCheckResult:
 # ── WSTG-CONF-04: Backup/Archive File Discovery ───────────────────────────────
 
 _BACKUP_EXTENSIONS = [
-    ".bak", ".old", ".orig", ".backup", ".copy", ".tmp", ".swp",
-    "~", ".zip", ".tar.gz", ".sql", ".db", ".dump", ".log",
+    ".bak", ".backup", ".old", ".orig", ".save", ".swp", ".tmp",
+    "~", ".copy", ".1", ".2", "_bak", "_old", "_backup", "_orig",
+    ".zip", ".tar.gz", ".tgz", ".tar", ".gz",
 ]
 
 def check_backup_files(base_url: str, known_paths: List[str]) -> List[GapCheckResult]:
@@ -248,7 +249,7 @@ def check_backup_files(base_url: str, known_paths: List[str]) -> List[GapCheckRe
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
 
-    for path in known_paths[:20]:
+    for path in known_paths[:40]:
         stem = path.rstrip("/")
         candidates = [stem + ext for ext in _BACKUP_EXTENSIONS]
         for url_path in candidates:
@@ -831,4 +832,57 @@ def check_password_policy(register_url: str, username_param: str = "username",
             pass
         except Exception as e:
             log.debug("password_policy check failed: %s", e)
+    return result
+
+
+# ── WSTG-INPV-CRLF: CRLF Injection ──────────────────────────────────────────
+
+_CRLF_PAYLOADS = [
+    "%0d%0aSet-Cookie:%20oi_crlf_test=1",
+    "%0aSet-Cookie:%20oi_crlf_test=1",
+    "%0d%0aLocation:%20https://oi-test.invalid",
+    "\r\nSet-Cookie:%20oi_crlf_test=1",
+]
+_CRLF_EVIDENCE = re.compile(r"oi_crlf_test=1", re.I)
+
+def check_crlf_injection(base_url: str, params: List[str] = None) -> GapCheckResult:
+    """WSTG-INPV-CRLF: Test for CRLF injection in URL parameters and redirect params."""
+    result = GapCheckResult(check_id="WSTG-INPV-CRLF", vuln_name="CRLF Injection")
+    import urllib.request as _ur, ssl as _ssl, urllib.error as _ue
+    from urllib.parse import urlencode, urljoin
+
+    _ctx = _ssl.create_default_context()
+    _ctx.check_hostname = False
+    _ctx.verify_mode = _ssl.CERT_NONE
+
+    test_params = params or ["redirect", "url", "next", "return", "location", "continue", "dest"]
+
+    for param in test_params[:4]:
+        for payload in _CRLF_PAYLOADS[:3]:
+            try:
+                test_url = f"{base_url.rstrip('/')}?{param}={payload}"
+                req = _ur.Request(test_url, headers={"User-Agent": "Mozilla/5.0"})
+                with _ur.urlopen(req, timeout=6, context=_ctx) as resp:
+                    resp_headers = str(dict(resp.headers)).lower()
+                    resp_body = resp.read(4096).decode("utf-8", errors="replace")
+                    if _CRLF_EVIDENCE.search(resp_headers) or _CRLF_EVIDENCE.search(resp_body):
+                        result.found = True
+                        result.confidence = 0.92
+                        result.evidence = f"CRLF injection confirmed: param={param!r} payload={payload!r}"
+                        result.severity = "high"
+                        result.needs_validation = False
+                        return result
+                    # Also check if \r\n appears in response headers (header splitting)
+                    raw_loc = resp.headers.get("Location", "")
+                    if "oi-test.invalid" in raw_loc:
+                        result.found = True
+                        result.confidence = 0.95
+                        result.evidence = f"CRLF redirect injection: Location header poisoned via {param!r}"
+                        result.severity = "high"
+                        result.needs_validation = False
+                        return result
+            except (_ue.HTTPError, _ue.URLError, OSError):
+                continue
+            except Exception:
+                continue
     return result
