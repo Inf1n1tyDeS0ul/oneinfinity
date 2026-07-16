@@ -58,7 +58,7 @@ mcp_mode:
 server:
   # HTTP server settings (for Claude CLI/Gemini CLI integration)
   host: "127.0.0.1"
-  port: 5000
+  port: 47299
 
   # Request timeout (seconds)
   timeout: 1800

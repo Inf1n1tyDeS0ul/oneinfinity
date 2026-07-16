@@ -4,8 +4,8 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$SCRIPT_DIR"
-BACKEND_PORT="${BACKEND_PORT:-8000}"
-FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+BACKEND_PORT="${API_PORT:-${BACKEND_PORT:-47291}}"
+FRONTEND_PORT="${FRONTEND_PORT:-47292}"
 
 echo ""
 echo "╔══════════════════════════════════════════════╗"

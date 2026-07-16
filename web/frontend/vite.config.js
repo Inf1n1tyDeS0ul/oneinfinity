@@ -2,7 +2,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import compression from 'vite-plugin-compression'
 
-const backendUrl = process.env.VITE_BACKEND_URL || 'http://localhost:8000';
+const backendUrl = process.env.VITE_BACKEND_URL || `http://localhost:${process.env.VITE_API_PORT || '47291'}`;
 const wsUrl = backendUrl.replace(/^http/, 'ws');
 
 export default defineConfig({
@@ -14,7 +14,7 @@ export default defineConfig({
   ],
   server: {
     host: '0.0.0.0',
-    port: 3000,
+    port: parseInt(process.env.VITE_FRONTEND_PORT || '47292'),
     proxy: {
       '/api': { target: backendUrl, changeOrigin: true },
       '/ws':  { target: wsUrl, ws: true },

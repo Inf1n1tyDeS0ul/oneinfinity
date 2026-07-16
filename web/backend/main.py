@@ -306,7 +306,7 @@ async def _lifespan(application):
     # Start mDNS advertising for mobile companion auto-discovery
     try:
         from .mdns_advertiser import start_mdns_advertising, stop_mdns_advertising
-        start_mdns_advertising(port=8000)
+        start_mdns_advertising(port=int(os.environ.get("API_PORT", "47291")))
     except Exception as mdns_err:
         log.warning(f"Could not start mDNS advertising: {mdns_err}")
 
@@ -379,16 +379,17 @@ app = FastAPI(
 # CORS origin allowlist. In production set CORS_ALLOWED_ORIGINS to your actual
 # frontend origin(s), comma-separated (e.g. "https://myapp.example.com").
 # In Docker with non-localhost access set: CORS_ALLOWED_ORIGINS=http://192.168.1.x:3000
+_API_PORT = os.environ.get("API_PORT", "47291")
+_FRONTEND_PORT = os.environ.get("FRONTEND_PORT", "47292")
 _CORS_ORIGINS_RAW = os.environ.get(
     "CORS_ALLOWED_ORIGINS",
-    "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173",
+    f"http://localhost:{_FRONTEND_PORT},http://localhost:5173,http://127.0.0.1:{_FRONTEND_PORT},http://127.0.0.1:5173",
 )
 _CORS_ORIGINS: list[str] = [o.strip() for o in _CORS_ORIGINS_RAW.split(",") if o.strip()]
-# In non-production environments also allow LAN IPs (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
-# so the UI works when accessed by IP from another machine on the network.
+# In non-production environments also allow LAN IPs on the configured frontend port
 _OI_ENV = os.environ.get("OI_ENV", "dev")
 _CORS_REGEX = (
-    r"http://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2[0-9]|3[01])\.\d+\.\d+):(3000|5173|8000|8001)"
+    rf"http://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2[0-9]|3[01])\.\d+\.\d+):({_FRONTEND_PORT}|5173)"
     if _OI_ENV != "prod" else None
 )
 app.add_middleware(GZipMiddleware, minimum_size=1024)
@@ -676,12 +677,12 @@ try:
     def get_server_ip():
         """Get LAN IP for manual mobile setup"""
         from .qr_generator import get_local_ip
-        return {"ip": get_local_ip(), "port": 8000}
+        return {"ip": get_local_ip(), "port": int(os.environ.get("API_PORT", "47291"))}
 
     @app.get("/api/setup/qr")
     def generate_setup_qr(api_key: Optional[str] = None):
         """Generate QR code for mobile companion setup"""
-        qr_bytes = generate_qr_for_port(port=8000, api_key=api_key)
+        qr_bytes = generate_qr_for_port(port=int(os.environ.get("API_PORT", "47291")), api_key=api_key)
         buf = BytesIO(qr_bytes)
         return StreamingResponse(buf, media_type="image/png")
 
@@ -5091,10 +5092,13 @@ def _resolve_app(app_id: str) -> dict | None:
     return None
 
 
-def _mobsf_available(url: str = "http://localhost:8008") -> bool:
+def _mobsf_available(url: str = "") -> bool:
     """Return True if a MobSF REST API server is reachable."""
     import urllib.request as _ur
     import urllib.error as _ue
+    if not url:
+        mobsf_port = os.environ.get("MOBSF_PORT", "47297")
+        url = f"http://localhost:{mobsf_port}"
     try:
         _ur.urlopen(f"{url}/api/v1/", timeout=3)
         return True
@@ -5109,7 +5113,7 @@ def _mobsf_available(url: str = "http://localhost:8008") -> bool:
 async def mobile_mobsf_status():
     """Check whether the local MobSF server is reachable."""
     available = await asyncio.to_thread(_mobsf_available)
-    return {"available": available, "url": "http://localhost:8008"}
+    return {"available": available, "url": f"http://localhost:{os.environ.get('MOBSF_PORT', '47297')}"}
 
 
 @app.post("/api/mobile/apps/{app_id}/analyze", dependencies=[Depends(_require_auth)])
@@ -8958,7 +8962,7 @@ async def tools_health():
         h["censys"] = {"status": "configured" if censys_ok else "not_configured"}
         # MobSF — port 8008, NOT 8000 (that's this server)
         try:
-            with _ureq.urlopen("http://localhost:8008/api/v1/health", timeout=3) as r:
+            with _ureq.urlopen(f"http://localhost:{os.environ.get('MOBSF_PORT', '47297')}/api/v1/health", timeout=3) as r:
                 h["mobsf"] = {"status": "healthy" if r.status == 200 else "unhealthy"}
         except Exception:
             h["mobsf"] = {"status": "offline"}

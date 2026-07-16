@@ -1,107 +1,89 @@
 #!/bin/bash
 
 # OneInfinity Native Startup Script
-# Starts Redis, Postgres, Neo4j (via brew) and Backend, Frontend, Worker (natively)
+# Starts Docker DB services + backend + frontend + worker
 
-# Get script directory and project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-# Change to project root
 cd "$PROJECT_ROOT" || exit 1
+
+# Load .env so all port/config vars are available
+if [[ -f "$PROJECT_ROOT/.env" ]]; then
+    set -a; source "$PROJECT_ROOT/.env"; set +a
+fi
+
+# Port defaults (fall through to uncommon values if .env absent)
+API_PORT="${API_PORT:-47291}"
+FRONTEND_PORT="${FRONTEND_PORT:-47292}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 echo -e "${BLUE}=== OneInfinity Startup ===${NC}"
 echo -e "  Project root: $PROJECT_ROOT"
+echo -e "  Backend  → http://localhost:${API_PORT}"
+echo -e "  Frontend → http://localhost:${FRONTEND_PORT}"
 
-# Set Python path (venv or system)
-if [ -d "$PROJECT_ROOT/.venv" ]; then
-    echo -e "${BLUE}  Using venv Python...${NC}"
+# Python: prefer venv
+if [[ -d "$PROJECT_ROOT/.venv" ]]; then
     PYTHON="$PROJECT_ROOT/.venv/bin/python3"
 else
-    echo -e "${RED}  Warning: .venv not found, using system Python${NC}"
     PYTHON="python3"
 fi
 
-# 1. Check/Start Databases via Homebrew
-echo -e "${BLUE}[1/3] Checking Databases...${NC}"
+# 1. Docker DB services
+echo -e "\n${BLUE}[1/3] Docker DB services...${NC}"
+docker compose -f "$PROJECT_ROOT/docker-compose.db.yml" \
+    --env-file "$PROJECT_ROOT/.env" up -d 2>&1 | grep -E "Started|Running|healthy|error" || true
 
-services=("redis" "postgresql@14" "neo4j")
-for service in "${services[@]}"; do
-    brew_status=$(brew services list 2>/dev/null | grep "^$service " | awk '{print $2}')
-    # neo4j manages its own daemon and may show 'error' in brew even when running
-    if [ "$brew_status" = "started" ]; then
-        echo -e "${GREEN}  ✓ $service is already running${NC}"
-    elif [ "$service" = "neo4j" ] && neo4j status 2>/dev/null | grep -q "running"; then
-        echo -e "${GREEN}  ✓ neo4j is running (self-managed daemon)${NC}"
-    else
-        echo -e "  → Starting $service..."
-        brew services start "$service" 2>&1 || true
-        # For neo4j, fall back to direct start if brew fails
-        if [ "$service" = "neo4j" ]; then
-            sleep 2
-            neo4j status 2>/dev/null | grep -q "running" || neo4j start 2>/dev/null || true
-        fi
-    fi
-done
+# 2. Kill stale processes on configured ports
+echo -e "\n${BLUE}[2/3] Cleaning up stale processes...${NC}"
+pkill -f "uvicorn web.backend.main:app" 2>/dev/null || true
+pkill -f "npm run dev" 2>/dev/null || true
+pkill -f "oneinfinity/worker/main.py" 2>/dev/null || true
+lsof -t -i :"${API_PORT}"      | xargs kill -9 2>/dev/null || true
+lsof -t -i :"${FRONTEND_PORT}" | xargs kill -9 2>/dev/null || true
 
-# 2. Kill existing app processes to avoid port conflicts
-echo -e "${BLUE}[2/3] Cleaning up old processes...${NC}"
-pkill -f "uvicorn web.backend.main:app" 2>/dev/null
-pkill -f "npm run dev" 2>/dev/null
-pkill -f "src/oneinfinity/worker/main.py" 2>/dev/null
-# Port-based kill as fallback
-lsof -t -i :3000 | xargs kill -9 2>/dev/null || true
-lsof -t -i :8000 | xargs kill -9 2>/dev/null || true
-lsof -t -i :5001 | xargs kill -9 2>/dev/null || true
-
-# Determine available backend port (8000 or 5001)
-BACKEND_PORT=8000
-if lsof -i :8000 -sTCP:LISTEN -t >/dev/null 2>&1; then
-    echo -e "  ${RED}⚠${NC}  Port 8000 occupied (likely macOS ControlCenter), using 5001"
-    BACKEND_PORT=5001
-    # Check if 5001 also occupied
-    if lsof -i :5001 -sTCP:LISTEN -t >/dev/null 2>&1; then
-        echo -e "  ${RED}✗${NC} Port 5001 also occupied, attempting kill..."
-        lsof -t -i :5001 | xargs kill -9 2>/dev/null || true
-        sleep 1
-    fi
-fi
+BACKEND_PORT="${API_PORT}"
 echo -e "  → Backend will use port ${BACKEND_PORT}"
 
 # 3. Start Application Stack
-echo -e "${BLUE}[3/3] Launching OneInfinity Stack...${NC}"
-
-# Ensure logs directory exists
+echo -e "\n${BLUE}[3/3] Launching OneInfinity Stack...${NC}"
 mkdir -p "$PROJECT_ROOT/logs"
 
-# Start Backend
+# Backend
 echo -e "  → Starting Backend (port ${BACKEND_PORT})..."
-if nohup "$PYTHON" -m uvicorn web.backend.main:app --host 0.0.0.0 --port ${BACKEND_PORT} > logs/backend.log 2>&1 & then
+if nohup "$PYTHON" -m uvicorn web.backend.main:app \
+        --host 0.0.0.0 --port "${BACKEND_PORT}" > logs/backend.log 2>&1 &
+then
     BACKEND_PID=$!
     echo -e "    ${GREEN}✓${NC} Backend started (PID: $BACKEND_PID)"
 else
     echo -e "    ${RED}✗${NC} Backend failed to start"
 fi
 
-# Start Worker
+# Worker
 echo -e "  → Starting Worker..."
-if nohup "$PYTHON" src/oneinfinity/worker/main.py > logs/worker.log 2>&1 & then
+if nohup "$PYTHON" src/oneinfinity/worker/main.py > logs/worker.log 2>&1 &
+then
     WORKER_PID=$!
     echo -e "    ${GREEN}✓${NC} Worker started (PID: $WORKER_PID)"
 else
     echo -e "    ${RED}✗${NC} Worker failed to start"
 fi
 
-# Start Frontend
-echo -e "  → Starting Frontend (port 3000)..."
-if [ -d "web/frontend" ]; then
+# Frontend
+echo -e "  → Starting Frontend (port ${FRONTEND_PORT})..."
+if [[ -d "web/frontend" ]]; then
     cd web/frontend || exit 1
-    if VITE_BACKEND_URL="http://localhost:${BACKEND_PORT}" nohup npm run dev -- --host 0.0.0.0 --port 3000 > ../../logs/frontend.log 2>&1 & then
+    if VITE_BACKEND_URL="http://localhost:${BACKEND_PORT}" \
+       VITE_API_PORT="${BACKEND_PORT}" \
+       VITE_FRONTEND_PORT="${FRONTEND_PORT}" \
+       nohup npm run dev -- --host 0.0.0.0 --port "${FRONTEND_PORT}" \
+           > ../../logs/frontend.log 2>&1 &
+    then
         FRONTEND_PID=$!
         echo -e "    ${GREEN}✓${NC} Frontend started (PID: $FRONTEND_PID)"
     else
@@ -112,41 +94,31 @@ else
     echo -e "    ${RED}✗${NC} web/frontend directory not found"
 fi
 
-# Wait for processes to start
-sleep 2
+sleep 3
 
-# Verify processes are running
+# Verify
 echo -e "\n${BLUE}Verifying processes...${NC}"
 FAILED=0
+for desc_pid in "Backend:$BACKEND_PID" "Worker:$WORKER_PID" "Frontend:$FRONTEND_PID"; do
+    desc="${desc_pid%%:*}"
+    pid="${desc_pid##*:}"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        echo -e "  ${GREEN}✓${NC} $desc running (PID: $pid)"
+    else
+        echo -e "  ${RED}✗${NC} $desc not running (check logs/${desc,,}.log)"
+        FAILED=1
+    fi
+done
 
-if [ -n "$BACKEND_PID" ] && kill -0 $BACKEND_PID 2>/dev/null; then
-    echo -e "  ${GREEN}✓${NC} Backend running (PID: $BACKEND_PID)"
-else
-    echo -e "  ${RED}✗${NC} Backend not running (check logs/backend.log)"
-    FAILED=1
-fi
-
-if [ -n "$WORKER_PID" ] && kill -0 $WORKER_PID 2>/dev/null; then
-    echo -e "  ${GREEN}✓${NC} Worker running (PID: $WORKER_PID)"
-else
-    echo -e "  ${RED}✗${NC} Worker not running (check logs/worker.log)"
-    FAILED=1
-fi
-
-if [ -n "$FRONTEND_PID" ] && kill -0 $FRONTEND_PID 2>/dev/null; then
-    echo -e "  ${GREEN}✓${NC} Frontend running (PID: $FRONTEND_PID)"
-else
-    echo -e "  ${RED}✗${NC} Frontend not running (check logs/frontend.log)"
-    FAILED=1
-fi
-
-if [ $FAILED -eq 0 ]; then
+if [[ $FAILED -eq 0 ]]; then
     echo -e "\n${GREEN}=== Startup Complete ===${NC}"
-    echo -e "Dashboard: ${BLUE}http://localhost:3000${NC}"
-    echo -e "API:       ${BLUE}http://localhost:${BACKEND_PORT}${NC}"
-    echo -e "Logs:      tail -f logs/*.log"
+    echo -e "  Dashboard: ${BLUE}http://localhost:${FRONTEND_PORT}${NC}"
+    echo -e "  API:       ${BLUE}http://localhost:${BACKEND_PORT}${NC}"
+    echo -e "  MobSF:     ${BLUE}http://localhost:${MOBSF_PORT:-47297}${NC}"
+    echo -e "  Neo4j:     ${BLUE}http://localhost:${NEO4J_HTTP_PORT:-47295}${NC}"
+    echo -e "  Logs:      tail -f logs/*.log"
 else
     echo -e "\n${RED}=== Startup Completed with Errors ===${NC}"
-    echo -e "Check logs: tail -f logs/*.log"
+    echo -e "  Check logs: tail -f logs/*.log"
     exit 1
 fi
