@@ -6274,6 +6274,7 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
     target = _validate_target(target)
     max_time     = int(data.get("max_time", 0) or 0)
     max_findings = int(data.get("max_findings", 0) or 0)
+    scan_tier    = str(data.get("scan_tier", "") or "").strip()
     no_swarm     = bool(data.get("no_swarm", False))
     no_research  = bool(data.get("no_research", False))
     report_fmt   = str(data.get("report_fmt", "markdown"))
@@ -6363,6 +6364,7 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
                 _override_scan_id=scan_id,
                 max_time=max_time,
                 max_findings=max_findings,
+                scan_tier=scan_tier,
             )
             # Remove WS bridge handler now that scan is done
             _oi_logger.removeHandler(_ws_handler)
@@ -6419,7 +6421,8 @@ async def god_mode_run(request: Request, background_tasks: BackgroundTasks):
 
     background_tasks.add_task(_run)
     return {"status": "started", "target": target, "scan_id": scan_id,
-            "max_time": max_time, "max_findings": max_findings, "authenticated": has_auth}
+            "scan_tier": scan_tier, "max_time": max_time,
+            "max_findings": max_findings, "authenticated": has_auth}
 
 
 class GodModeApproveRequest(BaseModel):
