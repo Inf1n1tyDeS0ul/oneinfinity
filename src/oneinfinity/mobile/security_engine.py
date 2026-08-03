@@ -48,6 +48,7 @@ class MobileSecurityConfig:
     run_network_analysis: bool = True
     run_api_attack: bool = False       # active testing — off by default
     run_api_fuzzing: bool = False
+    run_backend_differential: bool = True  # Phase 2: mobile vs plain request comparison
 
     # Tool config
     use_mobsf: bool = False            # requires MobSF server
@@ -310,6 +311,37 @@ class MobileSecurityEngine:
             logger.info("[mobile] Phase 10: API Attack & Fuzzing")
             self._phase_api_attack(report, config)
             report.phase_timings["api_attack"] = round(time.time() - t0, 2)
+
+        # ── Phase 11: Backend Differential Analysis (Phase 2 — Pillar 4.6) ────
+        # Replays discovered API endpoints with and without mobile client headers.
+        # Finds: shadow APIs, client-trust validation, rate-limit bypass.
+        if config.run_backend_differential and report.api_discovery.get("endpoints"):
+            t0 = time.time()
+            logger.info("[mobile] Phase 11: Backend Differential Analysis")
+            try:
+                from oneinfinity.mobile.backend_differential_analyzer import (
+                    run_mobile_backend_differential,
+                )
+                _base_urls = report.api_discovery.get("base_urls") or []
+                _target    = _base_urls[0] if _base_urls else self._target if hasattr(self, "_target") else ""
+                _endpoints = report.api_discovery.get("endpoints") or []
+                _auth      = {}
+                _scan_id   = getattr(report, "scan_id", "") or getattr(self, "_scan_id", "") or "mobile-scan"
+                _diff_findings = run_mobile_backend_differential(
+                    target=_target,
+                    scan_id=_scan_id,
+                    endpoints=_endpoints,
+                    auth_headers=_auth,
+                    app_name=report.app_name,
+                )
+                if _diff_findings:
+                    for _df in _diff_findings:
+                        report.all_vulnerabilities.append(_df)
+                    logger.info("[mobile] Backend differential: %d findings", len(_diff_findings))
+            except Exception as _de:
+                logger.warning("[mobile] Backend differential failed (non-fatal): %s", _de)
+            report.phase_timings["backend_differential"] = round(time.time() - t0, 2)
+
 
         # ── Aggregate, Score, Recommend ───────────────────────────────────────
         self._aggregate_vulnerabilities(report)
