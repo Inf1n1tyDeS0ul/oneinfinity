@@ -425,75 +425,6 @@ class SmugglingEngine:
     # Orchestration
     # ------------------------------------------------------------------ #
 
-    # Phase 2: H2.TE tunneling (Pillar 4.7)
-
-    def test_h2_te(self, url: str) -> Optional[dict]:
-        """
-        Test H2.TE request tunneling — HTTP/2 with Transfer-Encoding in trailer.
-
-        Most smuggling scanners only test HTTP/1.1 CL.TE and TE.CL variants.
-        H2.TE is distinct: the front-end speaks HTTP/2 (no Transfer-Encoding
-        header), but smuggles a Transfer-Encoding header in the HTTP/2 request
-        which the back-end HTTP/1.1 server interprets as a chunked body.
-
-        Detection method (timing-based, no HTTP/2 library needed):
-          1. Send an HTTP/1.1 request with a Transfer-Encoding: chunked header
-             in what would be the HTTP/2 trailer position (after the body chunk)
-          2. Observe timing — a vulnerable server that downgrades H2 to H1.1
-             internally will hold the connection waiting for the remainder of
-             the smuggled chunked body
-          3. Timing delta > 3s above baseline suggests H2.TE vulnerability
-
-        Note: True H2.TE testing requires an HTTP/2 library (httpx, hyper-h2).
-        This probe tests the HTTP/1.1 downgrade path which is the most common
-        H2.TE exploitation surface — the back-end always speaks HTTP/1.1.
-        """
-        try:
-            host, path, port, use_ssl = _parse_url(url)
-        except Exception as exc:
-            log.debug("test_h2_te: URL parse error: %s", exc)
-            return None
-
-        # H2.TE probe: HTTP/1.1 request with TE header + truncated chunked body
-        # When the front-end (nginx/Cloudflare) upgrades to HTTP/2 and the
-        # back-end speaks HTTP/1.1, the TE header may be forwarded.
-        h2_te_probe = (
-            f"POST {path} HTTP/1.1\r\n"
-            f"Host: {host}\r\n"
-            f"Transfer-Encoding: chunked\r\n"
-            f"Transfer-Encoding: identity\r\n"   # obfuscated TE
-            f"Content-Length: 4\r\n"
-            f"Connection: keep-alive\r\n"
-            f"\r\n"
-            f"1\r\n"
-            f"G\r\n"
-            # Intentionally incomplete — back-end waits for rest of chunks
-        ).encode()
-
-        log.info("Testing H2.TE tunneling on %s", url)
-        _, elapsed = self._send_raw(host, port, h2_te_probe, use_ssl)
-        baseline = self._baseline_time or float(self.timeout)
-
-        # Timing signal: elapsed is close to timeout (server held connection)
-        timing_delta = elapsed - baseline
-        if timing_delta >= _TIMING_THRESHOLD_S:
-            return {
-                "vuln_type":   "http2_te_smuggling",
-                "title":       "HTTP/2 TE Request Tunneling (H2.TE)",
-                "severity":    "critical",
-                "url":         url,
-                "payload":     "H2.TE: Transfer-Encoding in HTTP/2 trailer position",
-                "evidence":    (
-                    f"H2.TE probe caused {elapsed:.2f}s response vs baseline {baseline:.2f}s "
-                    f"(delta: {timing_delta:.2f}s ≥ threshold {_TIMING_THRESHOLD_S}s). "
-                    f"The back-end may be interpreting Transfer-Encoding forwarded by the "
-                    f"HTTP/2 front-end, enabling request tunneling."
-                ),
-                "confidence":  0.75,
-                "tool":        "smuggling_engine",
-                "source_type": "tool",
-            }
-        return None
     def run(self) -> List[dict]:
         """
         Run all smuggling tests against ``self.target`` and return findings.
@@ -549,16 +480,6 @@ class SmugglingEngine:
                 findings.append(f)
         except Exception as exc:
             log.warning("test_te_te raised exception for %s: %s", url, exc)
-
-        # Phase 2: H2.TE tunneling
-        log.info("Testing H2.TE tunneling on %s", url)
-        try:
-            f = self.test_h2_te(url)
-            if f:
-                log.warning("H2.TE tunneling detected at %s", url)
-                findings.append(f)
-        except Exception as exc:
-            log.warning("test_h2_te raised exception for %s: %s", url, exc)
 
 
         log.info(
