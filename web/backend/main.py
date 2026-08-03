@@ -10200,6 +10200,69 @@ async def list_oi_bench_targets():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.post("/api/validate/finding", dependencies=[Depends(_require_auth)])
+async def validate_finding(request: Request):
+    """
+    Phase 3 — oi-validation-server: validate a single finding by replaying its payload.
+
+    Request body: { "finding": <finding dict>, "auth_headers": {} }
+    Returns: VerificationResult dict with validated, confidence, evidence, elapsed_s.
+    """
+    data = await request.json()
+    finding = data.get("finding") or {}
+    auth_headers = data.get("auth_headers") or {}
+
+    if not finding:
+        raise HTTPException(status_code=400, detail="finding required")
+    if not finding.get("finding_id"):
+        finding["finding_id"] = str(uuid.uuid4())[:12]
+
+    try:
+        from oneinfinity.findings.post_scan_verifier import get_verifier
+        result = get_verifier().verify_finding(finding, auth_headers or None)
+        return result.to_dict()
+    except Exception as exc:
+        log.error("validate/finding failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Validation failed: {exc}")
+
+
+@app.post("/api/validate/scan/{scan_id}", dependencies=[Depends(_require_auth)])
+async def validate_scan(scan_id: str, request: Request, background_tasks: BackgroundTasks):
+    """
+    Phase 3 — oi-validation-server: validate all findings for a completed scan.
+
+    Runs as a background task — returns immediately with a job_id.
+    Verification results are written back to postgres as confirmed_tier updates.
+
+    Request body (optional): { "auth_headers": {}, "sample_rate": 0.2 }
+    """
+    data = {}
+    try:
+        data = await request.json()
+    except Exception:
+        pass
+    auth_headers = (data.get("auth_headers") or {}) if data else {}
+    sample_rate  = float((data.get("sample_rate") or 0.20) if data else 0.20)
+    job_id = str(uuid.uuid4())[:12]
+
+    def _run_verification():
+        try:
+            from oneinfinity.findings.post_scan_verifier import PostScanVerifier
+            verifier = PostScanVerifier(sample_rate=sample_rate)
+            verifier.verify_scan(
+                scan_id=scan_id,
+                target=SCANS.get(scan_id, {}).get("target", ""),
+                auth_headers=auth_headers or None,
+            )
+        except Exception as exc:
+            log.warning("validate/scan background failed [%s]: %s", scan_id, exc)
+
+    background_tasks.add_task(_run_verification)
+    return {"job_id": job_id, "scan_id": scan_id, "status": "verifying",
+            "message": "Verification running in background. Check findings for confirmed_tier updates."}
+
+
+
 
 @app.post("/api/distributed/scan", dependencies=[Depends(_require_auth)])
 async def distributed_scan(request: Request):
