@@ -1722,6 +1722,41 @@ class AIRedTeamMission(Mission):
                 log.warning("[GOD MODE] AIRedTeamMission findings_pipeline_cb failed: %s", _cb_exc)
 
         log.info("[GOD MODE] AIRedTeamMission complete — %d findings", new_count)
+
+        # Indirect Prompt Injection scan (Phase 2 — Pillar 4.1.1)
+        # Tests whether data sources that the AI agent fetches can be poisoned
+        # with adversarial instructions. Runs after the existing direct red-team battery.
+        try:
+            from oneinfinity.ai_security.indirect_prompt_injection_mapper import run_indirect_injection_scan
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine as _gie3, RawResult as _RR3
+            # Gather URLs from recon
+            _ipi_urls: list = []
+            _recon = getattr(getattr(self, '_foundation', None) or
+                             getattr(session, '_foundation', None), 'recon', None)
+            if _recon:
+                _ipi_urls = list(getattr(_recon, 'urls', None) or [])
+            # Agent endpoint is the target itself (or /v1/chat if known)
+            _agent_ep = session.target.rstrip("/") + "/v1/chat/completions"
+            _ipi_headers = {}
+            if session.auth_config.get("bearer_token"):
+                _ipi_headers["Authorization"] = f"Bearer {session.auth_config['bearer_token']}"
+            _ipi_findings = run_indirect_injection_scan(
+                target=session.target,
+                scan_id=session.scan_id,
+                urls=_ipi_urls[:200],
+                agent_endpoint=_agent_ep,
+                auth_headers=_ipi_headers or None,
+            )
+            if _ipi_findings:
+                _bus3 = _gie3()
+                for _ipi_f in _ipi_findings:
+                    _bus3.ingest(_RR3(scan_id=session.scan_id,
+                                      source="god-mode-indirect-injection", raw=_ipi_f))
+                session.add_findings(len(_ipi_findings))
+                log.info("[GOD MODE] Indirect prompt injection: %d findings", len(_ipi_findings))
+        except Exception as _ipi_exc:
+            log.warning("[GOD MODE] Indirect prompt injection scan failed (non-fatal): %s", _ipi_exc)
+
         self._result = {"findings": new_count, "tools_run": [
             "multi_turn_chainer", "rag_poisoning", "llm_dos",
             "llm_supply_chain", "model_extraction", "agent_hijack",
