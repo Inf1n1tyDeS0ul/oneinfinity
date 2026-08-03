@@ -411,6 +411,147 @@ Gate summary:
 ```
 ---
 
+## Code Sync — Local ↔ GitHub ↔ EC2 (Hard Rule)
+
+**GitHub is the single source of truth.**
+Local and EC2 must both be at the same commit as `origin/main`
+before starting any session and after ending any session.
+Never leave uncommitted working changes on EC2 overnight.
+
+### Topology
+
+```
+  Local (macOS)                   EC2 (172.31.2.127)
+  /Users/devendra.yadav/          /home/ubuntu/
+  oneinfinity/                    oneinfinity/
+       │                               │
+       │  git push / git pull          │  git push / git pull
+       │                               │
+       └──────────── GitHub ───────────┘
+              Inf1n1tyDeS0ul/oneinfinity
+              branch: main (only branch for active work)
+
+  EC2 remote config:
+    fetch:  https://github.com/Inf1n1tyDeS0ul/oneinfinity.git
+    push:   git@github-oneinfinity:Inf1n1tyDeS0ul/oneinfinity.git
+
+  EC2 post-commit hook auto-pushes to GitHub on every commit.
+  Local pushes via HTTPS (token auth).
+```
+
+### Start-of-session checklist (always run first)
+
+```bash
+# On whichever machine you are about to develop on:
+cd /home/ubuntu/oneinfinity   # or local equivalent
+git fetch origin
+git status                    # must be clean — no uncommitted changes
+git log --oneline HEAD..origin/main   # must be empty (nothing to pull)
+git pull origin main --rebase         # pull if behind
+```
+
+If `git status` shows modified files: **commit them first** (see commit rules below).
+Never develop on top of uncommitted changes.
+
+### End-of-session checklist (always run before closing)
+
+```bash
+# 1. Run all 4 quality gates
+bash scripts/check_process_hygiene.sh
+
+# 2. Commit everything — no WIP commits, no "misc" messages
+git add -A
+git commit -m "<type>(<scope>): <what changed and why>"
+
+# 3. Push to GitHub
+git push origin main
+
+# 4. Pull on the other machine
+#    If you worked on Local → pull on EC2:
+ssh -i ~/.ssh/oneinfinity_sync ubuntu@172.31.2.127 \
+  "cd /home/ubuntu/oneinfinity && git pull origin main --rebase"
+
+#    If you worked on EC2 → pull on Local:
+cd /Users/devendra.yadav/oneinfinity && git pull origin main --rebase
+
+# 5. If web/backend/main.py changed — restart backend on EC2
+ssh -i ~/.ssh/oneinfinity_sync ubuntu@172.31.2.127 \
+  "pkill -f 'python.*main.py'; sleep 3;
+   cd /home/ubuntu/oneinfinity;
+   nohup venv/bin/python -B web/backend/main.py >> logs/backend.log 2>&1 &
+   sleep 8 && curl -sf http://localhost:3000/health > /dev/null && echo 'backend: UP'"
+```
+
+### One-command sync (use `scripts/sync.sh`)
+
+```bash
+# From local — commits staged changes, pushes, pulls on EC2, restarts if needed:
+bash scripts/sync.sh "feat(scan): add new IDOR detection module"
+
+# From EC2 — commits staged changes, pushes to GitHub:
+bash scripts/sync.sh "fix(scanner): headless browser timeout fix"
+```
+
+### Commit message format
+
+```
+<type>(<scope>): <imperative description, ≤72 chars>
+
+type:  feat | fix | chore | docs | refactor | perf | test
+scope: scan | agent | api | mobile | ai | infra | db | frontend | docs
+
+Examples:
+  feat(scan): add GraphQL batching attack to graphql_scan_engine
+  fix(agent): exploit_agent pool crash on empty findings list
+  chore(infra): add src/nim/bin/ to .gitignore
+  docs(agents): add 4-role development workflow to AGENTS.md
+```
+
+### Never
+
+- Push without all 4 quality gates passing
+- Push directly to a branch other than `main` without a PR review
+- Leave EC2 with uncommitted changes at end of session
+- Merge commit on pull — always `--rebase`
+- Force-push to `main` (`git push --force`) — ask human first
+- Commit secrets, `.env` files, scan output JSON, or binary build artifacts
+
+### Conflict resolution
+
+EC2 and Local diverge only when both machines commit to `main` without syncing.
+Resolution is always: **rebase, never merge**.
+
+```bash
+# Machine that is behind:
+git fetch origin
+git rebase origin/main        # replay your commits on top of remote
+# Fix any conflicts, then:
+git rebase --continue
+git push origin main
+```
+
+If a rebase is blocked by an untracked file conflicting with a remote commit:
+```bash
+git rebase --abort
+# Remove or commit the blocking file, then retry rebase
+```
+
+### What is never committed (enforced by .gitignore)
+
+```
+.env  .env.*          # secrets — use .env.example for templates
+venv/  node_modules/  # dependency trees — pip/npm install on each machine
+logs/  *.log          # runtime output — lives only on the running machine
+.oneinfinity/         # scan state, findings cache — machine-local runtime data
+god-mode-*.json       # scan session state — not code
+unified_findings.json # findings JSON — stored in postgres, not git
+*.db  *.sqlite        # databases — not code
+data/                 # binary/large data — not code
+src/nim/bin/          # compiled binaries — build on target machine
+```
+
+---
+
 ## Quality Gates
 
 No traditional test suite. All four gates must pass before any PR or session-end claim of "done."
