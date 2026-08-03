@@ -1136,10 +1136,11 @@ class ResearchMission(Mission):
     Unlocked by: NEW_VULNERABILITY count >= 1 (EVENT_UNLOCK_VULN_THRESHOLD).
     """
 
-    def __init__(self, convergence: ConvergenceChecker):
+    def __init__(self, convergence: ConvergenceChecker, foundation_recon=None):
         super().__init__("research")
         self._convergence = convergence
         self._iterations_done: int = 0
+        self._foundation_recon = foundation_recon  # pre-existing recon to skip redundant quick scan
 
     def _run(self, session: GodModeSession) -> None:
         from oneinfinity.orchestration.research_mode_controller import ResearchModeController
@@ -1155,6 +1156,7 @@ class ResearchMission(Mission):
             max_iterations=5,
             passive_only=False,
             auth_config=session.auth_config,
+            seed_recon=self._foundation_recon,   # skip redundant quick recon on iteration 1
         )
         discoveries = ctrl.run_research()
 
@@ -1228,6 +1230,11 @@ class SwarmMission(Mission):
                         _urls = _d
                     else:
                         _urls = _d.get("all_urls") or _d.get("urls") or []
+                    # Keep only URLs belonging to the target domain or its subdomains.
+                    # Excludes CDN assets (cloudflareinsights.com, etc.) that would
+                    # waste agent cycles on out-of-scope third-party infrastructure.
+                    _target_host = session.target.split("//")[-1].split("/")[0].lstrip("www.")
+                    _urls = [u for u in _urls if _target_host in u]
                     _endpoints.extend(u for u in _urls if u not in _endpoints)
             except Exception:
                 pass
@@ -1373,6 +1380,8 @@ class AuthTestMission(Mission):
                         _urls = _d
                     else:
                         _urls = _d.get("all_urls") or _d.get("urls") or []
+                    _th = session.target.split("//")[-1].split("/")[0].lstrip("www.")
+                    _urls = [u for u in _urls if _th in u]
                     _endpoints.extend(_urls)
             except Exception:
                 pass
@@ -3161,7 +3170,7 @@ class GodModeConductor:
         # ── Build mission list ─────────────────────────────────────────────
         full_scan = FullScanMission(foundation, auth_config=session.auth_config,
                                     findings_pipeline_cb=self._apply_findings_pipeline)
-        research = ResearchMission(self._convergence) if not no_research else None
+        research = ResearchMission(self._convergence, foundation_recon=foundation.recon) if not no_research else None
         swarm = SwarmMission() if not no_swarm else None
         # Build AuthSessionContext from session.auth_config so AuthTestMission
         # can run its 16 post-login test categories. GodModeSession has no

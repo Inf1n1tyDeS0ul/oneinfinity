@@ -442,6 +442,7 @@ class ResearchModeController:
         tool_registry=None,
         min_confidence: float = 0.60,
         auth_config: Optional[dict] = None,
+        seed_recon=None,
     ):
         # Strip scheme from target if present
         _t = target
@@ -460,6 +461,8 @@ class ResearchModeController:
         self.tool_registry = tool_registry
         self.min_confidence = min_confidence
         self.auth_config = auth_config or {}
+        # Pre-existing recon from Foundation — skip re-run on first iteration if supplied
+        self._seed_recon = seed_recon
 
         # Sub-engines (lazy-initialized)
         self._app_engine = None
@@ -560,30 +563,46 @@ class ResearchModeController:
             self.target, str(self.output_dir)
         )
 
-        # On the first iteration seed the AppModel with real recon data
+        # On the first iteration seed the AppModel with real recon data.
+        # If seed_recon was provided by the caller (e.g. FoundationMission already ran a
+        # deep recon), use it directly — avoids a redundant quick recon that misses data.
         _seed_urls: list[str] | None = None
         _seed_hosts: list[dict] | None = None
         _seed_tech: dict | None = None
         if self._session.iteration == 1:
-            try:
-                self._log("Phase 0: Adaptive recon (first iteration only)...")
-                from oneinfinity.recon.adaptive_recon_engine import AdaptiveReconEngine
-                _recon = AdaptiveReconEngine(
-                    self.target,
-                    depth="quick",
-                    output_dir=str(self.output_dir),
-                    auth_context=self.auth_config if self.auth_config else None,
-                ).run()
-                _seed_urls  = _recon.all_urls or None
-                _seed_hosts = _recon.alive_hosts or None
-                _seed_tech  = {"tech_stack": _recon.tech_profile.raw_tech} if _recon.tech_profile.raw_tech else None
-                self._log(
-                    f"  Recon: {len(_recon.subdomains)} subdomains, "
-                    f"{len(_recon.all_urls)} URLs, "
-                    f"tech: {_recon.tech_profile.raw_tech[:3]}"
-                )
-            except Exception as _re:
-                self._log(f"  Adaptive recon skipped: {_re}")
+            if self._seed_recon is not None:
+                try:
+                    _r = self._seed_recon
+                    _seed_urls  = (getattr(_r, "all_urls", None) or []) or None
+                    _seed_hosts = getattr(_r, "alive_hosts", None) or None
+                    _tp = getattr(_r, "tech_profile", None)
+                    if _tp and getattr(_tp, "raw_tech", None):
+                        _seed_tech = {"tech_stack": _tp.raw_tech}
+                    self._log(f"Phase 0: Using pre-existing Foundation recon — "
+                              f"{len(_seed_urls or [])} URLs, tech: {(_seed_tech or {}).get('tech_stack', [])[:3]}")
+                except Exception as _se:
+                    self._log(f"  Pre-existing recon read failed: {_se} — falling back to quick recon")
+                    _seed_urls = _seed_hosts = _seed_tech = None
+            if _seed_urls is None:
+                try:
+                    self._log("Phase 0: Adaptive recon (first iteration only)...")
+                    from oneinfinity.recon.adaptive_recon_engine import AdaptiveReconEngine
+                    _recon = AdaptiveReconEngine(
+                        self.target,
+                        depth="quick",
+                        output_dir=str(self.output_dir),
+                        auth_context=self.auth_config if self.auth_config else None,
+                    ).run()
+                    _seed_urls  = _recon.all_urls or None
+                    _seed_hosts = _recon.alive_hosts or None
+                    _seed_tech  = {"tech_stack": _recon.tech_profile.raw_tech} if _recon.tech_profile.raw_tech else None
+                    self._log(
+                        f"  Recon: {len(_recon.subdomains)} subdomains, "
+                        f"{len(_recon.all_urls)} URLs, "
+                        f"tech: {_recon.tech_profile.raw_tech[:3]}"
+                    )
+                except Exception as _re:
+                    self._log(f"  Adaptive recon skipped: {_re}")
 
         app_model = self._app_engine.analyze_application_structure(
             urls=_seed_urls,
