@@ -697,3 +697,323 @@ def get_feedback_loop() -> BenchmarkFeedbackLoop:
     if _feedback_instance is None:
         _feedback_instance = BenchmarkFeedbackLoop()
     return _feedback_instance
+# ---------------------------------------------------------------------------
+# Phase 3 — oneinfinity-Bench: Internal Vulnerability Benchmark (Pillar 5.1)
+# ---------------------------------------------------------------------------
+#
+# Modeled after CyberGym: run oneinfinity against deliberately vulnerable targets
+# with known ground-truth vulnerabilities. Measure recall, precision, FP rate.
+# This is the CI/CD pipeline for oneinfinity's security intelligence.
+#
+# Usage:
+#   bench = OIBench()
+#   result = bench.run(target_name="juice_shop", scan_id="existing-scan-id")
+#   print(f"Recall: {result.recall:.1%}, Precision: {result.precision:.1%}")
+
+import time as _time
+import uuid as _uuid
+from dataclasses import dataclass as _dataclass, field as _field
+
+
+@_dataclass
+class OIBenchKnownVuln:
+    """A known vulnerability in a benchmark target."""
+    vuln_type: str
+    url_pattern: str        # regex pattern to match finding URLs
+    severity: str
+    description: str = ""
+
+
+@_dataclass
+class OIBenchTarget:
+    """A deliberately vulnerable benchmark target with known ground truth."""
+    name: str               # e.g. "juice_shop", "dvwa", "webgoat"
+    url: str                # base URL of the running target
+    known_vulns: List[OIBenchKnownVuln] = _field(default_factory=list)
+    notes: str = ""
+
+
+@_dataclass
+class OIBenchResult:
+    """Result of running oneinfinity against one benchmark target."""
+    target_name: str
+    scan_id: str
+    run_at: float = _field(default_factory=_time.time)
+
+    # Ground truth
+    known_count: int = 0
+    found_count: int = 0     # known vulns found by oneinfinity
+    missed_count: int = 0    # known vulns NOT found
+    extra_count: int = 0     # findings not in ground truth (potential FP or new discovery)
+
+    # Metrics
+    recall: float = 0.0       # found / known  — "did we find what we should?"
+    precision: float = 0.0    # found / (found + extra)  — "are our findings accurate?"
+    fp_rate: float = 0.0      # extra / total_findings
+
+    # Per-category breakdown
+    coverage_by_category: Dict[str, dict] = _field(default_factory=dict)
+
+    # Detail
+    found_vulns: List[dict] = _field(default_factory=list)
+    missed_vulns: List[dict] = _field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "target_name":          self.target_name,
+            "scan_id":              self.scan_id,
+            "run_at":               self.run_at,
+            "known_count":          self.known_count,
+            "found_count":          self.found_count,
+            "missed_count":         self.missed_count,
+            "extra_count":          self.extra_count,
+            "recall":               round(self.recall, 4),
+            "precision":            round(self.precision, 4),
+            "fp_rate":              round(self.fp_rate, 4),
+            "coverage_by_category": self.coverage_by_category,
+        }
+
+    def summary(self) -> str:
+        return (
+            f"OI-Bench [{self.target_name}] "
+            f"Recall={self.recall:.1%} "
+            f"Precision={self.precision:.1%} "
+            f"FP-rate={self.fp_rate:.1%} "
+            f"({self.found_count}/{self.known_count} known vulns found)"
+        )
+
+
+# ── Pre-defined benchmark targets ─────────────────────────────────────────────
+# Update these URLs to point to running instances of each target.
+# Targets are intentionally vulnerable — NEVER scan against production systems.
+
+KNOWN_BENCH_TARGETS: Dict[str, OIBenchTarget] = {
+    "juice_shop": OIBenchTarget(
+        name="juice_shop",
+        url="http://localhost:3000",
+        notes="OWASP Juice Shop — comprehensive modern web app with 100+ challenges",
+        known_vulns=[
+            OIBenchKnownVuln("sqli",          r"/rest/user/login",       "critical"),
+            OIBenchKnownVuln("xss",           r"/search\?q=",            "medium"),
+            OIBenchKnownVuln("idor",          r"/api/users/",            "high"),
+            OIBenchKnownVuln("jwt_weak",      r"/rest/user/login",       "high"),
+            OIBenchKnownVuln("path_traversal",r"/ftp/",                  "medium"),
+            OIBenchKnownVuln("ssrf",          r"/profile/image",         "high"),
+            OIBenchKnownVuln("xxe",           r"/api/",                  "high"),
+            OIBenchKnownVuln("csrf",          r"/api/BasketItems/",      "medium"),
+        ],
+    ),
+    "dvwa": OIBenchTarget(
+        name="dvwa",
+        url="http://localhost:4280",
+        notes="Damn Vulnerable Web App — classic web vulnerability training target",
+        known_vulns=[
+            OIBenchKnownVuln("sqli",          r"/vulnerabilities/sqli/", "critical"),
+            OIBenchKnownVuln("xss_reflected", r"/vulnerabilities/xss_r/","medium"),
+            OIBenchKnownVuln("xss_stored",    r"/vulnerabilities/xss_s/","high"),
+            OIBenchKnownVuln("file_inclusion",r"/vulnerabilities/fi/",   "high"),
+            OIBenchKnownVuln("cmdi",          r"/vulnerabilities/exec/", "critical"),
+            OIBenchKnownVuln("csrf",          r"/vulnerabilities/csrf/", "medium"),
+            OIBenchKnownVuln("file_upload",   r"/vulnerabilities/upload/","high"),
+        ],
+    ),
+    "webgoat": OIBenchTarget(
+        name="webgoat",
+        url="http://localhost:8080/WebGoat",
+        notes="OWASP WebGoat — Java-based intentionally insecure web application",
+        known_vulns=[
+            OIBenchKnownVuln("sqli",          r"/WebGoat/SqlInjection",   "critical"),
+            OIBenchKnownVuln("xss",           r"/WebGoat/CrossSiteScripting","medium"),
+            OIBenchKnownVuln("idor",          r"/WebGoat/IDOR",           "high"),
+            OIBenchKnownVuln("jwt_weak",      r"/WebGoat/JWT",            "high"),
+            OIBenchKnownVuln("path_traversal",r"/WebGoat/PathTraversal",  "medium"),
+            OIBenchKnownVuln("ssrf",          r"/WebGoat/SSRF",           "high"),
+        ],
+    ),
+}
+
+
+class OIBench:
+    """
+    Phase 3 — oneinfinity-Bench: Internal Vulnerability Benchmark.
+
+    Scores existing scan findings against ground-truth known vulnerabilities
+    in deliberately vulnerable benchmark targets.
+
+    This is NOT an active scanner — it reads findings from an already-completed
+    scan (via get_findings()) and scores them against the ground truth.
+
+    Workflow:
+      1. Run a God Mode scan against a benchmark target (Juice Shop, DVWA, etc.)
+      2. Call OIBench().score(scan_id, target_name) to measure recall/precision
+      3. Results are stored in benchmark_history for trend tracking
+
+    CI/CD use: run OI-Bench after every deployment to detect regressions.
+    """
+
+    def __init__(self) -> None:
+        self._history: List[OIBenchResult] = []
+
+    def score(self, scan_id: str, target_name: str) -> OIBenchResult:
+        """
+        Score an existing scan against benchmark ground truth.
+
+        Reads findings from postgres via get_ingestion_engine().get_findings()
+        and matches them against the known vulnerability list for the target.
+        """
+        target = KNOWN_BENCH_TARGETS.get(target_name)
+        if target is None:
+            available = ", ".join(KNOWN_BENCH_TARGETS.keys())
+            raise KeyError(
+                f"Unknown benchmark target '{target_name}'. "
+                f"Available: {available}. "
+                f"Add custom targets to KNOWN_BENCH_TARGETS."
+            )
+
+        # Fetch findings for this scan
+        try:
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
+            findings = get_ingestion_engine().get_findings(scan_id=scan_id) or []
+        except Exception as exc:
+            log.warning("OIBench.score: failed to fetch findings for %s: %s", scan_id, exc)
+            findings = []
+
+        result = self._compute_score(scan_id, target, findings)
+        self._history.append(result)
+        log.info(result.summary())
+        return result
+
+    def score_from_findings(
+        self,
+        findings: List[dict],
+        target_name: str,
+        scan_id: str = "",
+    ) -> OIBenchResult:
+        """Score in-memory findings — useful for testing without postgres."""
+        target = KNOWN_BENCH_TARGETS.get(target_name)
+        if target is None:
+            raise KeyError(f"Unknown benchmark target '{target_name}'")
+        return self._compute_score(scan_id or _uuid.uuid4().hex[:8], target, findings)
+
+    def history(self) -> List[OIBenchResult]:
+        """Return all scored results for this session."""
+        return list(self._history)
+
+    def add_custom_target(
+        self,
+        name: str,
+        url: str,
+        known_vulns: List[dict],
+        notes: str = "",
+    ) -> None:
+        """
+        Register a custom benchmark target at runtime.
+
+        known_vulns: list of {vuln_type, url_pattern, severity} dicts.
+        """
+        KNOWN_BENCH_TARGETS[name] = OIBenchTarget(
+            name=name,
+            url=url,
+            notes=notes,
+            known_vulns=[
+                OIBenchKnownVuln(
+                    vuln_type=v.get("vuln_type", ""),
+                    url_pattern=v.get("url_pattern", ""),
+                    severity=v.get("severity", "medium"),
+                    description=v.get("description", ""),
+                )
+                for v in known_vulns
+            ],
+        )
+        log.info("OIBench: registered custom target '%s' with %d known vulns",
+                 name, len(known_vulns))
+
+    # ── Internal ─────────────────────────────────────────────────────────────
+
+    def _compute_score(
+        self,
+        scan_id: str,
+        target: OIBenchTarget,
+        findings: List[dict],
+    ) -> OIBenchResult:
+        """Match findings against known vulns and compute metrics."""
+        result = OIBenchResult(
+            target_name=target.name,
+            scan_id=scan_id,
+            known_count=len(target.known_vulns),
+        )
+
+        found_set: Set[str] = set()  # indices of known_vulns that were found
+
+        for i, kv in enumerate(target.known_vulns):
+            matched = self._find_match(kv, findings)
+            if matched:
+                found_set.add(str(i))
+                result.found_vulns.append({
+                    "known_vuln": {"vuln_type": kv.vuln_type, "url_pattern": kv.url_pattern},
+                    "matched_finding": matched,
+                })
+            else:
+                result.missed_vulns.append({
+                    "vuln_type": kv.vuln_type,
+                    "url_pattern": kv.url_pattern,
+                    "severity": kv.severity,
+                })
+
+        # Findings not matching any known vuln
+        known_finding_ids = {
+            f.get("finding_id")
+            for f in [v["matched_finding"] for v in result.found_vulns]
+            if f.get("finding_id")
+        }
+        extra = [f for f in findings if f.get("finding_id") not in known_finding_ids]
+
+        result.found_count  = len(found_set)
+        result.missed_count = result.known_count - result.found_count
+        result.extra_count  = len(extra)
+
+        total = result.found_count + result.extra_count
+        result.recall    = result.found_count / max(result.known_count, 1)
+        result.precision = result.found_count / max(total, 1)
+        result.fp_rate   = result.extra_count / max(len(findings), 1)
+
+        # Per-category breakdown
+        categories: Dict[str, dict] = {}
+        for kv in target.known_vulns:
+            cat = kv.vuln_type.split("_")[0]
+            categories.setdefault(cat, {"known": 0, "found": 0})
+            categories[cat]["known"] += 1
+        for v in result.found_vulns:
+            cat = v["known_vuln"]["vuln_type"].split("_")[0]
+            categories.setdefault(cat, {"known": 0, "found": 0})
+            categories[cat]["found"] += 1
+        result.coverage_by_category = {
+            cat: {**d, "recall": d["found"] / max(d["known"], 1)}
+            for cat, d in categories.items()
+        }
+
+        return result
+
+    @staticmethod
+    def _find_match(kv: OIBenchKnownVuln, findings: List[dict]) -> Optional[dict]:
+        """Find the best-matching finding for a known vulnerability."""
+        _vuln_type_norm = _VULN_ALIASES  # reuse existing normalisation map
+        kv_type = kv.vuln_type.lower().strip()
+        url_re = re.compile(kv.url_pattern, re.I) if kv.url_pattern else None
+
+        for f in findings:
+            f_type = str(f.get("vuln_type") or f.get("type") or "").lower()
+            f_type_norm = _vuln_type_norm.get(f_type, f_type)
+            if f_type_norm != kv_type and f_type != kv_type:
+                continue
+            if url_re:
+                f_url = str(f.get("url") or f.get("endpoint") or "")
+                if not url_re.search(f_url):
+                    continue
+            return f
+        return None
+
+
+def get_oi_bench() -> OIBench:
+    """Return a fresh OIBench instance."""
+    return OIBench()

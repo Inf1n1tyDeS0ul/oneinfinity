@@ -10135,6 +10135,72 @@ async def run_benchmark(request: Request):
     return result
 
 
+@app.post("/api/benchmark/oi-bench", dependencies=[Depends(_require_auth)])
+async def run_oi_bench(request: Request):
+    """
+    Phase 3 — oneinfinity-Bench: score an existing scan against benchmark ground truth.
+
+    Request body:
+      {
+        "scan_id":     "<scan-id of a completed scan against a benchmark target>",
+        "target_name": "juice_shop" | "dvwa" | "webgoat" | "<custom>",
+        "known_vulns": [  // optional: custom ground truth (overrides built-in)
+          {"vuln_type": "sqli", "url_pattern": "/login", "severity": "critical"}
+        ]
+      }
+
+    Returns: recall, precision, fp_rate, coverage_by_category, missed vulns.
+    """
+    data = await request.json()
+    scan_id     = (data.get("scan_id") or "").strip()
+    target_name = (data.get("target_name") or "").strip()
+    custom_vulns = data.get("known_vulns") or []
+
+    if not scan_id:
+        raise HTTPException(status_code=400, detail="scan_id required")
+    if not target_name:
+        raise HTTPException(status_code=400, detail="target_name required")
+
+    try:
+        from oneinfinity.core.benchmark_engine import OIBench, KNOWN_BENCH_TARGETS
+        bench = OIBench()
+
+        # Register custom target if known_vulns provided and target not in built-ins
+        if custom_vulns and target_name not in KNOWN_BENCH_TARGETS:
+            bench.add_custom_target(
+                name=target_name,
+                url=data.get("url", ""),
+                known_vulns=custom_vulns,
+            )
+
+        result = bench.score(scan_id=scan_id, target_name=target_name)
+        return result.to_dict()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        log.error("oi-bench failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Benchmark failed: {exc}")
+
+
+@app.get("/api/benchmark/oi-bench/targets", dependencies=[Depends(_require_auth)])
+async def list_oi_bench_targets():
+    """List available benchmark targets and their known vulnerability counts."""
+    try:
+        from oneinfinity.core.benchmark_engine import KNOWN_BENCH_TARGETS
+        return {
+            name: {
+                "url":        t.url,
+                "known_vulns": len(t.known_vulns),
+                "notes":      t.notes,
+                "vuln_types": [kv.vuln_type for kv in t.known_vulns],
+            }
+            for name, t in KNOWN_BENCH_TARGETS.items()
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+
 @app.post("/api/distributed/scan", dependencies=[Depends(_require_auth)])
 async def distributed_scan(request: Request):
     import json as _json
