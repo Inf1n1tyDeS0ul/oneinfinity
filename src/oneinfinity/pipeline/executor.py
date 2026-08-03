@@ -743,6 +743,10 @@ class CanonicalExecutor:
         elif pname == "browser_analysis":
             return self._inline_browser_analysis(target, out_path)
 
+        elif pname == "second_order":
+            return self._inline_second_order(target, out_path)
+
+
         elif pname == "smuggling_test":
             return self._inline_smuggling_test(target, out_path)
 
@@ -3408,6 +3412,105 @@ class CanonicalExecutor:
                 "count": len(findings),
             }, indent=2, default=str)
         )
+        return findings
+
+    def _inline_second_order(self, target: str, out: Path) -> List[dict]:
+        """
+        Second-order vulnerability scan.
+
+        1. Builds an observation grid from all discovered URLs.
+        2. Injects canary payloads at stored-input endpoints (POST/PUT forms,
+           API write endpoints, profile/comment/bio fields).
+        3. Triggers all rendering paths (admin views, exports, email previews,
+           audit logs, search results) and looks for canary execution.
+        4. Reports findings as second_order_xss, second_order_ssti, etc.
+        """
+        findings: List[dict] = []
+        probe_url = target if target.startswith("http") else f"https://{target}"
+        scan_id = getattr(self, "scan_id", "") or getattr(self, "_scan_id", "") or "unknown"
+
+        try:
+            from oneinfinity.scan.second_order_tracker import run_second_order_scan
+
+            # Gather URLs from prior phase outputs
+            urls: List[str] = []
+            for fname in ("adaptive_recon.json", "advanced_findings.json",
+                          "browser_findings.json", "findings.json"):
+                fpath = out / fname
+                if fpath.exists():
+                    try:
+                        data = json.loads(fpath.read_text())
+                        if isinstance(data, list):
+                            for item in data:
+                                u = item.get("url") or item.get("endpoint")
+                                if u and isinstance(u, str):
+                                    urls.append(u)
+                        elif isinstance(data, dict):
+                            for item in data.get("findings", []) + data.get("endpoints", []):
+                                if isinstance(item, str):
+                                    urls.append(item)
+                                elif isinstance(item, dict):
+                                    u = item.get("url") or item.get("endpoint")
+                                    if u:
+                                        urls.append(u)
+                    except Exception:
+                        pass
+
+            # Identify stored-input endpoints from recon
+            stored_inputs: List[dict] = []
+            recon_path = out / "adaptive_recon.json"
+            if recon_path.exists():
+                try:
+                    recon = json.loads(recon_path.read_text())
+                    endpoints = (recon.get("endpoints") or
+                                 recon.get("api_map", {}).get("endpoints") or [])
+                    for ep in endpoints:
+                        if not isinstance(ep, dict):
+                            continue
+                        method = ep.get("method", "GET").upper()
+                        if method not in ("POST", "PUT", "PATCH"):
+                            continue
+                        params = [
+                            {"name": p.get("name", p) if isinstance(p, dict) else p,
+                             "location": p.get("in", "body") if isinstance(p, dict) else "body"}
+                            for p in ep.get("parameters", ep.get("params", []))
+                            if p
+                        ]
+                        if params:
+                            stored_inputs.append({
+                                "url": ep.get("url") or ep.get("path", ""),
+                                "method": method,
+                                "params": params[:5],
+                            })
+                except Exception as exc:
+                    log.debug("second_order: recon parse failed: %s", exc)
+
+            if not stored_inputs:
+                log.info("second_order: no stored-input endpoints found — skipping for %s", target)
+            else:
+                auth_sessions = []
+                ctx = self._build_auth_context()
+                if ctx.get("headers"):
+                    auth_sessions.append({"role": "authenticated",
+                                          "headers": ctx["headers"]})
+
+                findings = run_second_order_scan(
+                    target=probe_url,
+                    scan_id=scan_id,
+                    urls=list(set(urls))[:200],
+                    stored_input_endpoints=stored_inputs[:30],
+                    auth_sessions=auth_sessions or None,
+                    session_headers=ctx.get("headers"),
+                )
+                log.info("second_order: %d findings for %s", len(findings), target)
+
+        except Exception as exc:
+            log.warning("second_order scan failed (non-fatal): %s", exc, exc_info=True)
+        finally:
+            (out / "second_order_findings.json").write_text(
+                json.dumps({"findings": findings, "count": len(findings)},
+                           indent=2, default=str)
+            )
         return findings
 
     def _inline_smuggling_test(self, target: str, out: Path) -> List[dict]:

@@ -151,6 +151,20 @@ CANONICAL_PHASES: List[PhaseConfig] = [
         skip_on_waf_passive=True,
     ),
     PhaseConfig(
+        name="second_order",
+        display_name="Second-Order Vulnerability Scan",
+        description="Inject canary payloads at stored-data inputs; trigger all rendering/processing paths (admin, export, email, audit) to detect deferred execution of XSS, SSTI, SQLi, header injection",
+        cli_command="_internal_second_order",
+        cli_extra_args=[],
+        output_file="second_order_findings.json",
+        mandatory=False,   # Non-mandatory — skipped gracefully if no stored inputs found
+        timeout_s=600,
+        pct_complete=60,
+        waf_adapt=True,
+        source_type="tool",
+        skip_on_waf_passive=False,
+    ),
+    PhaseConfig(
         name="auth_session",
         display_name="Authentication & Session Testing",
         description="Detect login endpoints, test default creds, maintain session tokens, CSRF/cookie/session OWASP gap checks",
