@@ -98,6 +98,20 @@ class AppModel:
     all_parameters: dict[str, list[str]] = field(default_factory=dict)  # path → params
     id_parameters: dict[str, list[str]] = field(default_factory=dict)   # path → id params
 
+    # ── Phase 1: Semantic Intent Model (LLM-synthesised) ─────────────────
+    # Populated by build_semantic_intent() after heuristic analysis.
+    # Empty lists/dicts mean intent modeling has not run yet (not that the
+    # application has no flows/invariants).
+    primary_flows: list[dict] = field(default_factory=list)
+    # Each flow: {name, steps:[str], invariants:[str], endpoints:[str]}
+    invariants: list[dict] = field(default_factory=list)
+    # Each invariant: {flow, rule, test_approach, severity}
+    trust_boundaries: dict[str, list[str]] = field(default_factory=dict)
+    # {public:[paths], authenticated:[paths], privileged:[paths]}
+    sensitive_objects: list[dict] = field(default_factory=list)
+    # Each object: {name, owner_field, endpoints:[str], contains:[str]}
+    intent_built: bool = False   # True once build_semantic_intent() has run
+
     def to_dict(self) -> dict:
         return {
             "target": self.target,
@@ -136,6 +150,12 @@ class AppModel:
             "export_endpoints": self.export_endpoints,
             "all_parameters": self.all_parameters,
             "id_parameters": self.id_parameters,
+            # Semantic intent fields
+            "primary_flows":    self.primary_flows,
+            "invariants":       self.invariants,
+            "trust_boundaries": self.trust_boundaries,
+            "sensitive_objects": self.sensitive_objects,
+            "intent_built":     self.intent_built,
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -159,6 +179,12 @@ class AppModel:
         model.export_endpoints = d.get("export_endpoints", [])
         model.all_parameters = d.get("all_parameters", {})
         model.id_parameters = d.get("id_parameters", {})
+        # Semantic intent fields (present only in models built with Phase 1)
+        model.primary_flows    = d.get("primary_flows", [])
+        model.invariants       = d.get("invariants", [])
+        model.trust_boundaries = d.get("trust_boundaries", {})
+        model.sensitive_objects = d.get("sensitive_objects", [])
+        model.intent_built     = d.get("intent_built", False)
         for sf in d.get("sensitive_features", []):
             model.sensitive_features.append(SensitiveFeature(
                 name=sf.get("name", ""),
@@ -244,6 +270,17 @@ _ERROR_PATTERNS = [
     "laravel", "symfony exception", "django traceback",
 ]
 
+_INTENT_SYSTEM_PROMPT = """\
+You are a senior penetration tester analysing a web application's attack surface.
+Your task is to model what the application INTENDS to do, so that a security
+scanner can systematically try to violate those intentions.
+
+You MUST respond with ONLY valid JSON — no prose, no markdown, no code fences.
+Focus on business logic vulnerabilities: IDORs, state-machine bypasses, race
+conditions, and authorization failures. Every invariant you list must be
+phrased as something a scanner can actively try to break.
+"""
+
 
 # ── ApplicationIntelligenceEngine ─────────────────────────────────────────────
 
@@ -299,12 +336,154 @@ class ApplicationIntelligenceEngine:
         # Detect roles from URLs/responses
         self._detect_roles(urls, alive_hosts)
 
+        # Phase 1: LLM semantic intent synthesis (non-blocking on failure)
+        try:
+            self.build_semantic_intent()
+        except Exception as exc:
+            log.warning("ApplicationIntelligenceEngine: semantic intent failed (non-fatal): %s", exc)
+
         # Save model to disk
         out_path = self.output_dir / "app_model.json"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(self._model.to_json())
 
         return self._model
+
+    def build_semantic_intent(self) -> AppModel:
+        """
+        Phase 1 — Application Intent Model: LLM synthesis pass.
+
+        Takes the already-built heuristic AppModel and asks an LLM to reason
+        about what the application is supposed to do, producing:
+          - primary_flows: multi-step user journeys the application supports
+          - invariants: per-flow business rules that must always hold
+          - trust_boundaries: public / authenticated / privileged path classification
+          - sensitive_objects: owned objects with their ownership fields
+
+        This is the semantic layer that enables invariant-violation scanning
+        (Pillar 2.1 of the enhancement masterplan): the scanner can then
+        systematically try to violate each invariant.
+
+        Returns the enriched AppModel (also modifies self._model in-place).
+        Fails gracefully — on any LLM error the model is returned unchanged.
+        """
+        from oneinfinity.orchestration.offensive_router import get_model_for_task
+        provider = get_model_for_task("business_logic_analysis")
+
+        prompt = self._build_intent_prompt()
+        try:
+            resp = provider.chat(
+                prompt=prompt,
+                system=_INTENT_SYSTEM_PROMPT,
+                max_tokens=2048,
+                temperature=0.2,
+            )
+            self._parse_intent_response(resp.text)
+            log.info(
+                "ApplicationIntelligenceEngine: intent model built — "
+                "flows=%d invariants=%d trust_zones=%d sensitive_objects=%d",
+                len(self._model.primary_flows),
+                len(self._model.invariants),
+                len(self._model.trust_boundaries),
+                len(self._model.sensitive_objects),
+            )
+        except Exception as exc:
+            log.warning("build_semantic_intent: LLM call failed: %s", exc)
+        return self._model
+
+    def _build_intent_prompt(self) -> str:
+        """Build the LLM prompt from the current heuristic AppModel."""
+        m = self._model
+        # Build compact endpoint summary (cap at 60 to stay within token budget)
+        endpoints_sample = m.api_structure[:60]
+        sensitive = [
+            f"{sf.name} ({sf.category}, {sf.risk_level}): {sf.endpoints[:3]}"
+            for sf in m.sensitive_features
+        ]
+        auth_summary = ", ".join(
+            f"{a.auth_type}@{a.endpoints[:2]}" for a in m.auth_flows
+        )
+        id_params_sample = dict(list(m.id_parameters.items())[:20])
+        roles = m.user_roles or ["unknown"]
+
+        return f"""You are analysing the security attack surface of a web application.
+
+TARGET: {m.target}
+TECH STACK: {', '.join(m.tech_stack[:10]) or 'unknown'}
+FRAMEWORKS: {', '.join(m.frameworks[:5]) or 'unknown'}
+AUTH SYSTEM: {m.auth_system} ({auth_summary})
+USER ROLES: {', '.join(roles)}
+
+DISCOVERED ENDPOINTS ({len(m.api_structure)} total, showing up to 60):
+{chr(10).join(endpoints_sample)}
+
+SENSITIVE FEATURES:
+{chr(10).join(sensitive) or 'none detected'}
+
+ENDPOINTS WITH ID PARAMETERS:
+{json.dumps(id_params_sample, indent=2)}
+
+FILE UPLOAD ENDPOINTS: {m.file_upload_endpoints[:5]}
+EXPORT ENDPOINTS: {m.export_endpoints[:5]}
+
+Based on the above, produce a JSON object with this exact schema:
+{{
+  "application_type": "<e-commerce|api-platform|saas|cms|banking|social|other>",
+  "primary_flows": [
+    {{
+      "name": "<flow name>",
+      "steps": ["<step 1 endpoint>", "<step 2 endpoint>", ...],
+      "invariants": [
+        "<business rule that must always hold, e.g. 'payment must complete before order confirmed'>",
+        ...
+      ]
+    }}
+  ],
+  "trust_boundaries": {{
+    "public": ["<path prefix or endpoint>", ...],
+    "authenticated": ["<path prefix or endpoint>", ...],
+    "privileged": ["<path prefix or endpoint>", ...]
+  }},
+  "sensitive_objects": [
+    {{
+      "name": "<object type, e.g. Order, Cart, Profile>",
+      "owner_field": "<field that identifies the owner, e.g. user_id>",
+      "endpoints": ["<endpoint that exposes this object>", ...],
+      "contains": ["<sensitive data this object holds>"]
+    }}
+  ]
+}}
+
+Rules:
+- Respond with ONLY the JSON object. No prose, no markdown, no code fences.
+- Infer flows from the endpoint set — only include flows supported by the endpoints.
+- Each invariant must be testable: phrase it as something a scanner can try to violate.
+- Limit to the 5 most important flows and 3 most critical invariants per flow.
+- Limit sensitive_objects to the 6 most important owned object types.
+"""
+
+    def _parse_intent_response(self, raw_text: str) -> None:
+        """Parse LLM JSON into AppModel semantic fields."""
+        import re as _re
+        text = raw_text.strip()
+        # Strip markdown fences
+        text = _re.sub(r"^```(?:json)?\s*", "", text, flags=_re.MULTILINE)
+        text = _re.sub(r"\s*```$", "", text, flags=_re.MULTILINE).strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            log.warning("_parse_intent_response: JSON parse failed: %s | raw=%r", exc, raw_text[:200])
+            return
+
+        self._model.primary_flows    = data.get("primary_flows", [])
+        self._model.invariants = [
+            {"flow": f["name"], "rule": inv, "test_approach": "invariant_violation"}
+            for f in self._model.primary_flows
+            for inv in f.get("invariants", [])
+        ]
+        self._model.trust_boundaries = data.get("trust_boundaries", {})
+        self._model.sensitive_objects = data.get("sensitive_objects", [])
+        self._model.intent_built = True
 
     def detect_authentication_flows(
         self,
