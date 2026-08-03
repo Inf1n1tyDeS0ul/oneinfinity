@@ -196,3 +196,4 @@ screenshots/
 
 # Local scan workspaces (laptop)
 ~/.oneinfinity/
+src/nim/bin/
