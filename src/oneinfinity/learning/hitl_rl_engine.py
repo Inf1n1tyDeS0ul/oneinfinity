@@ -61,6 +61,19 @@ CREATE TABLE IF NOT EXISTS vuln_type_stats (
     threshold   REAL DEFAULT 0.7,   -- minimum confidence to confirm
     updated_at  REAL NOT NULL
 );
+
+-- Phase 3: Prompt Engineering Feedback Loop (Pillar 5.2)
+-- Stores the best prompt strategy per (vuln_type, tech_stack_key) combination.
+CREATE TABLE IF NOT EXISTS prompt_strategies (
+    id              TEXT PRIMARY KEY,
+    vuln_type       TEXT NOT NULL,
+    tech_stack_key  TEXT NOT NULL DEFAULT '',
+    strategy_hint   TEXT NOT NULL,  -- prompt prefix/instruction derived from TP patterns
+    tp_rate         REAL DEFAULT 0.0,
+    sample_count    INTEGER DEFAULT 0,
+    updated_at      REAL NOT NULL,
+    UNIQUE(vuln_type, tech_stack_key)
+);
 """
 
 
@@ -169,6 +182,13 @@ class HITLRLEngine:
 
             # Recalibrate threshold for this vuln type
             self._update_validation_thresholds(vuln_type)
+
+            # Phase 3: Update prompt strategy for this vuln type + tech stack
+            tech_stack = finding.get("tech_stack") or finding.get("target_tech") or []
+            if isinstance(tech_stack, str):
+                tech_stack = [tech_stack]
+            self.update_prompt_strategy(vuln_type, tech_stack)
+
 
             # Push to Neo4j KB
             self._store_in_kb(finding, is_true_positive, researcher_notes)
@@ -298,6 +318,158 @@ class HITLRLEngine:
                 lines.append(f"  - Endpoint pattern: {ex['endpoint_pattern']} | Notes: {ex.get('notes', '') or 'false alarm'}")
 
         return "\n".join(lines)
+
+    # ── Phase 3: Prompt Engineering Feedback Loop ─────────────────────────────
+
+    def update_prompt_strategy(
+        self,
+        vuln_type: str,
+        tech_stack: list,
+    ) -> None:
+        """
+        Derive and store the best prompt strategy for this vuln_type + tech_stack.
+
+        Analyzes accumulated TP patterns and synthesizes a prompt hint that
+        will be prepended to LLM scan prompts for this vuln type + tech stack.
+
+        Called automatically from record_feedback() after each human verdict.
+        """
+        try:
+            tech_key = self._tech_stack_key(tech_stack)
+            hint = self._derive_strategy_from_feedback(vuln_type, tech_key)
+            if not hint:
+                return  # not enough data yet
+
+            tp_count, fp_count = self._get_counts(vuln_type)
+            sample_count = tp_count + fp_count
+            tp_rate = tp_count / max(sample_count, 1)
+
+            with self._lock, self._connect() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO prompt_strategies "
+                    "(id, vuln_type, tech_stack_key, strategy_hint, tp_rate, sample_count, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        hashlib.sha256(f"{vuln_type}:{tech_key}".encode()).hexdigest()[:16],
+                        vuln_type, tech_key, hint, tp_rate, sample_count, time.time(),
+                    ),
+                )
+                conn.commit()
+            log.debug(
+                "[HITL] Prompt strategy updated for %s/%s: %s",
+                vuln_type, tech_key or "any", hint[:80],
+            )
+        except Exception as exc:
+            log.debug("[HITL] update_prompt_strategy failed: %s", exc)
+
+    def get_best_prompt_strategy(
+        self,
+        vuln_type: str,
+        tech_stack: list | None = None,
+    ) -> str:
+        """
+        Return the best prompt strategy hint for a given vuln type + tech stack.
+
+        Used by scan agents to prepend learned context to LLM prompts:
+            strategy = hitl.get_best_prompt_strategy("xss", ["React", "JWT"])
+            prompt = f"{strategy}\n\n{base_prompt}"
+
+        Returns empty string if no strategy has been learned yet.
+        """
+        try:
+            tech_key = self._tech_stack_key(tech_stack or [])
+            with self._connect() as conn:
+                # Try exact tech_stack match first
+                row = conn.execute(
+                    "SELECT strategy_hint, tp_rate, sample_count FROM prompt_strategies "
+                    "WHERE vuln_type = ? AND tech_stack_key = ? "
+                    "ORDER BY sample_count DESC LIMIT 1",
+                    (vuln_type, tech_key),
+                ).fetchone()
+                if row:
+                    return str(row["strategy_hint"])
+                # Fall back to any-tech-stack strategy
+                row = conn.execute(
+                    "SELECT strategy_hint FROM prompt_strategies "
+                    "WHERE vuln_type = ? ORDER BY sample_count DESC LIMIT 1",
+                    (vuln_type,),
+                ).fetchone()
+                return str(row["strategy_hint"]) if row else ""
+        except Exception as exc:
+            log.debug("[HITL] get_best_prompt_strategy failed: %s", exc)
+            return ""
+
+    def _derive_strategy_from_feedback(self, vuln_type: str, tech_key: str) -> str:
+        """
+        Analyze TP patterns to synthesize a prompt strategy hint.
+
+        Strategy derivation rules (heuristic, no LLM call):
+          - High TP rate (≥80%) + specific endpoint pattern → focus prompt on that pattern
+          - High FP rate (≥50%) → prompt should emphasize evidence requirements
+          - Low sample count (< 3) → return None (not enough data)
+        """
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT endpoint_pattern, is_tp, notes FROM hitl_feedback "
+                    "WHERE vuln_type = ? ORDER BY timestamp DESC LIMIT 20",
+                    (vuln_type,),
+                ).fetchall()
+
+            if len(rows) < 3:
+                return ""   # insufficient data
+
+            tp_rows = [r for r in rows if r["is_tp"]]
+            fp_rows = [r for r in rows if not r["is_tp"]]
+            tp_rate = len(tp_rows) / len(rows)
+
+            # Common TP endpoint patterns
+            tp_patterns = [r["endpoint_pattern"] for r in tp_rows if r["endpoint_pattern"]]
+            fp_patterns = [r["endpoint_pattern"] for r in fp_rows if r["endpoint_pattern"]]
+
+            strategy_parts = [
+                f"Learned context for {vuln_type} scanning "
+                f"(from {len(rows)} researcher verdicts, {tp_rate:.0%} TP rate):"
+            ]
+
+            if tp_rate >= 0.8 and tp_patterns:
+                # High TP rate — guide towards productive patterns
+                strategy_parts.append(
+                    f"Focus testing on endpoints matching these patterns where "
+                    f"{vuln_type} has been confirmed: {', '.join(set(tp_patterns[:3]))}"
+                )
+            elif tp_rate <= 0.4 and fp_patterns:
+                # High FP rate — emphasize evidence quality
+                strategy_parts.append(
+                    f"Be conservative — {vuln_type} has a high false positive rate here. "
+                    f"Only report if there is conclusive evidence (not just pattern match). "
+                    f"Common FP patterns to ignore: {', '.join(set(fp_patterns[:3]))}"
+                )
+            else:
+                strategy_parts.append(
+                    f"Apply standard {vuln_type} testing methodology. "
+                    f"Historical accuracy: {tp_rate:.0%} true positive rate."
+                )
+
+            # Incorporate researcher notes
+            tp_notes = [r["notes"] for r in tp_rows if r.get("notes")][:2]
+            if tp_notes:
+                strategy_parts.append(f"Researcher notes on confirmed cases: {'; '.join(tp_notes)}")
+
+            return "\n".join(strategy_parts)
+
+        except Exception as exc:
+            log.debug("[HITL] _derive_strategy_from_feedback failed: %s", exc)
+            return ""
+
+    @staticmethod
+    def _tech_stack_key(tech_stack: list) -> str:
+        """Normalize a tech stack list to a canonical sorted key string."""
+        if not tech_stack:
+            return ""
+        normalized = sorted(str(t).lower().strip() for t in tech_stack if t)
+        return ",".join(normalized[:5])  # cap at 5 technologies
+
 
     # ── Neo4j KB integration ──────────────────────────────────────────────────
 
