@@ -10,14 +10,17 @@ Produces an AppModel that feeds the Vulnerability Theory Engine.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-
-from oneinfinity.infra.path_manager import resolve_output_dir
 from typing import Any, Optional
 from urllib.parse import urlparse, parse_qs
+
+from oneinfinity.infra.path_manager import resolve_output_dir
+
+log = logging.getLogger("oneinfinity.intelligence.application")
 
 
 # ── Data models ───────────────────────────────────────────────────────────────
