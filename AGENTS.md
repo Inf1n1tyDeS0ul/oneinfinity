@@ -831,7 +831,9 @@ sys.path.insert(0, 'web/backend')
 
 from oneinfinity.core.db_manager import get_db_manager
 from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
+from oneinfinity.findings.finding_judge import get_judge
 from oneinfinity.orchestration.god_mode_engine import GodModeSession
+from oneinfinity.orchestration.offensive_router import get_model_for_task
 from oneinfinity.scan.unified_scan_engine import UnifiedScanEngine
 from oneinfinity.agents.scan_agent import ScanAgent
 from oneinfinity.agents.exploit_agent import ExploitAgent
@@ -893,7 +895,9 @@ cd /home/ubuntu/oneinfinity && \
 import sys; sys.path.insert(0,'src'); sys.path.insert(0,'web/backend')
 from oneinfinity.core.db_manager import get_db_manager
 from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
+from oneinfinity.findings.finding_judge import get_judge
 from oneinfinity.orchestration.god_mode_engine import GodModeSession
+from oneinfinity.orchestration.offensive_router import get_model_for_task
 from oneinfinity.scan.unified_scan_engine import UnifiedScanEngine
 from oneinfinity.agents.scan_agent import ScanAgent
 from oneinfinity.agents.exploit_agent import ExploitAgent

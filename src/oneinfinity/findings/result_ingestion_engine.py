@@ -738,6 +738,18 @@ class ResultIngestionEngine:
             daemon=True,
             name=f"graph-update-{finding.finding_id[:8]}",
         ).start()
+
+        # Phase 0 — Verified Finding Architecture: LLM judge (non-blocking)
+        # Runs after DB write so the finding_id is guaranteed to exist.
+        # Uses evaluate_and_persist() which writes confirmed_tier + judge_verdict back.
+        # Daemon thread — never blocks the scan pipeline; failure is logged, not fatal.
+        _finding_dict = finding.to_dict()
+        threading.Thread(
+            target=self._run_judge,
+            args=(_finding_dict,),
+            daemon=True,
+            name=f"judge-{finding.finding_id[:8]}",
+        ).start()
         return finding
 
     def _check_and_store(self, finding: NormalizedFinding) -> bool:
@@ -903,6 +915,21 @@ class ResultIngestionEngine:
         except Exception as exc:
             log.error("_broadcast: callback raised [finding=%s]: %s",
                       finding.finding_id, exc)
+
+    def _run_judge(self, finding_dict: dict) -> None:
+        """
+        Run the LLM judge for a persisted finding (called from daemon thread).
+
+        Writes confirmed_tier + judge_verdict back to postgres via
+        evaluate_and_persist(). Never raises — all errors are logged.
+        Safe to run concurrently with other judge threads.
+        """
+        try:
+            from oneinfinity.findings.finding_judge import get_judge
+            get_judge().evaluate_and_persist(finding_dict)
+        except Exception as exc:
+            log.warning("_run_judge: judge failed [finding=%s]: %s",
+                        finding_dict.get("finding_id", "?"), exc)
 
 
 # ---------------------------------------------------------------------------
