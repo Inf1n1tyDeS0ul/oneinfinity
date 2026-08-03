@@ -849,6 +849,118 @@ class CacheDeceptionScanner:
 
         return None
 
+    # Phase 2: Fat GET + Web Cache Deception path (Pillar 4.7)
+
+    async def test_fat_get(self, url: str) -> Optional[CacheDeceptionFinding]:
+        """
+        Fat GET cache poisoning — body in GET request.
+
+        Some CDNs cache GET requests and include the request body in the cache key.
+        If the back-end uses the body to modify the response, the cache may serve
+        the poisoned response to other users who send the same GET URL (no body).
+        """
+        _poison_value = f"oneinfinity-fat-get-probe-{_finding_id(url)}"
+        try:
+            # Send GET with body containing poison marker
+            fat_req = self._http_client.build_request(
+                "GET", url,
+                content=f"poison={_poison_value}",
+                headers={"Content-Type": "application/x-www-form-urlencoded",
+                         "Content-Length": str(len(f"poison={_poison_value}"))},
+            )
+            fat_resp = await self._http_client.send(fat_req)
+
+            # Now fetch the same URL without body (as a normal user would)
+            plain_resp = await self._http_client.get(url)
+            is_cached, cache_raw = _is_cached(plain_resp.headers)
+
+            if is_cached and _poison_value in plain_resp.text:
+                return CacheDeceptionFinding(
+                    finding_id=_finding_id(f"fat_get_{url}"),
+                    vuln_type="fat_get_cache_poisoning",
+                    url=url,
+                    test_url=url,
+                    evidence=(
+                        f"Fat GET cache poisoning at {url}: body-injected value "
+                        f"'{_poison_value}' appeared in a subsequent no-body GET response. "
+                        f"CDN cached a response that includes body-controlled content."
+                    ),
+                    severity="high",
+                    confidence=0.90,
+                    cache_header_value=cache_raw,
+                )
+        except (httpx.RequestError, httpx.HTTPStatusError, AttributeError) as exc:
+            log.debug("test_fat_get failed for %s: %s", url, exc)
+        return None
+
+    async def test_web_cache_deception_path(
+        self,
+        url: str,
+        auth_headers: Optional[Dict[str, str]] = None,
+    ) -> Optional[CacheDeceptionFinding]:
+        """
+        Web Cache Deception via path suffix — /account/profile.css pattern.
+
+        When an authenticated endpoint is requested with a static file suffix
+        (.css, .js, .png), CDNs may cache the response because the URL looks
+        like a static asset. The next unauthenticated request to the same URL
+        receives the cached authenticated response.
+
+        This is distinct from test_web_cache_deception() which tests path traversal.
+        This test specifically targets authenticated endpoints with static suffixes.
+        """
+        _STATIC_SUFFIXES = [".css", ".js", ".png", ".ico", ".woff", ".svg", ".jpg"]
+        _AUTH_PATH_HINTS  = ["/account", "/profile", "/dashboard", "/settings",
+                              "/user", "/me", "/orders", "/admin", "/api/user"]
+
+        parsed = urlparse(url)
+        path_lower = parsed.path.lower()
+        is_auth_path = any(hint in path_lower for hint in _AUTH_PATH_HINTS)
+        if not is_auth_path:
+            return None   # Only test endpoints that look authenticated
+
+        _auth = auth_headers or {}
+        for suffix in _STATIC_SUFFIXES[:3]:  # test 3 suffixes per endpoint
+            test_url = _append_suffix(url, f"/nonexistent{suffix}")
+            try:
+                # Step 1: fetch as authenticated user with .css suffix
+                auth_resp = await self._http_client.get(
+                    test_url, headers=_auth
+                )
+                is_cached, cache_raw = _is_cached(auth_resp.headers)
+                auth_body = auth_resp.text
+
+                if not (auth_resp.status_code == 200 and _looks_authenticated(auth_body)):
+                    continue
+
+                # Step 2: fetch as unauthenticated — check if cache served auth content
+                anon_resp = await self._http_client.get(test_url)
+                anon_body = anon_resp.text
+
+                if _looks_authenticated(anon_body) and (
+                    is_cached or len(anon_body) > 50 and anon_body[:100] == auth_body[:100]
+                ):
+                    return CacheDeceptionFinding(
+                        finding_id=_finding_id(f"wcd_path_{url}_{suffix}"),
+                        vuln_type="web_cache_deception_path_suffix",
+                        url=url,
+                        test_url=test_url,
+                        evidence=(
+                            f"Web Cache Deception at {test_url}: CDN cached an authenticated "
+                            f"response because the URL ends with '{suffix}'. "
+                            f"Unauthenticated request received authenticated content. "
+                            f"Cache header: {cache_raw}"
+                        ),
+                        severity="critical",
+                        confidence=0.85,
+                        cache_header_value=cache_raw,
+                    )
+            except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+                log.debug("test_web_cache_deception_path failed [%s %s]: %s",
+                          test_url, suffix, exc)
+        return None
+
+
     # ── Top-level scan ────────────────────────────────────────────────────────
 
     async def scan(
@@ -897,12 +1009,14 @@ class CacheDeceptionScanner:
                 self.test_host_header_cache_poison(url),
                 self.test_path_cache_poison(url),
                 self.test_response_header_injection(url),
+                self.test_fat_get(url),                               # Phase 2: fat GET
             ]
             if _auth:
                 tasks += [
                     self.test_web_cache_deception(url, _auth),
                     self.test_cdn_normalisation(url, _auth),
                     self.test_vary_bypass(url, _auth),
+                    self.test_web_cache_deception_path(url, _auth),   # Phase 2: .css suffix
                 ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for r in results:
