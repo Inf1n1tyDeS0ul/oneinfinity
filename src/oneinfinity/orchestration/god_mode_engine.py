@@ -2298,6 +2298,25 @@ class ReportMission(Mission):
         except Exception as exc:
             log.warning("[GOD MODE] Report: learning update failed (non-fatal): %s", exc, exc_info=True)
 
+        # Step 5: Cross-target knowledge distillation (Phase 3 — Pillar 5.3)
+        # Writes scan patterns into the global Neo4j KB and postgres tool_performance
+        # so future scans of similar tech stacks start with better prioritisation.
+        try:
+            from oneinfinity.learning.knowledge_distiller import get_distiller
+            _app_model_dict = {}
+            if hasattr(session, "_foundation_app_model"):
+                _app_model_dict = session._foundation_app_model or {}
+            get_distiller().distill(
+                scan_id=session.scan_id,
+                target=session.target,
+                findings=validated,
+                app_model_dict=_app_model_dict,
+                scan_duration_s=session.elapsed(),
+            )
+        except Exception as exc:
+            log.warning("[GOD MODE] Report: knowledge distillation failed (non-fatal): %s", exc)
+
+
         session.phases_complete.append("report")
         self._result = {"validated_findings": len(validated)}
 
