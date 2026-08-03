@@ -455,48 +455,6 @@ def _canonicalize_vuln_type(vuln_type: str) -> str:
     return vuln_type  # no mapping found — keep original
 
 
-def _canonicalize_vuln_type(vt: str) -> str:
-    """Normalize a raw scanner vuln_type tag to a canonical Vuln.* string."""
-    if not vt:
-        return vt
-    try:
-        from oneinfinity.pipeline.executor import _CANONICAL_VULN_MAP
-        canonical = _CANONICAL_VULN_MAP.get(vt) or _CANONICAL_VULN_MAP.get(vt.lower())
-        if canonical:
-            return canonical
-    except ImportError:
-        pass
-    # Substring fallback
-    vt_l = vt.lower()
-    if vt_l.startswith("js_secret") or "secret" in vt_l or "api_key" in vt_l or "password_in_js" in vt_l:
-        return "Secret / Credential Exposure"
-    if "cors" in vt_l:
-        return "CORS Misconfiguration"
-    if "sqli" in vt_l or "sql" in vt_l:
-        return "SQL Injection"
-    if "xss" in vt_l:
-        return "Cross-Site Scripting (XSS)" if "dom" not in vt_l else "DOM-based XSS"
-    if "ssrf" in vt_l:
-        return "Server-Side Request Forgery (SSRF)"
-    if "idor" in vt_l or "bola" in vt_l:
-        return "Insecure Direct Object Reference (IDOR)"
-    if "oauth" in vt_l:
-        return "OAuth/OIDC Vulnerability"
-    if "mfa" in vt_l or "otp" in vt_l or "2fa" in vt_l:
-        return "MFA/2FA Bypass"
-    if "jwt" in vt_l:
-        return "JWT Vulnerability"
-    if "rate_limit" in vt_l or "ratelimit" in vt_l:
-        return "Missing Rate Limiting"
-    if "prototype" in vt_l:
-        return "Prototype Pollution"
-    if "session_replay" in vt_l or "session replay" in vt_l:
-        return "Broken Authentication"
-    if "file_upload" in vt_l or "upload_bypass" in vt_l:
-        return "Insecure File Upload"
-    return vt
-
-
 def _parse_generic(raw: dict, scan_id: str, source: str) -> Optional[NormalizedFinding]:
     """Fallback parser using raw.get fields."""
     try:
@@ -590,7 +548,13 @@ class ResultIngestionEngine:
     # ------------------------------------------------------------------
 
     # Phase E: vuln types that trigger synchronous pre-store validation (low FP, fast probe)
-    _SYNC_VALIDATE_TYPES = frozenset({"xss", "sqli", "ssti", "lfi", "open_redirect", "xxe"})
+    # cors_origin_reflected / cors_misconfiguration added: CORS is fast to re-probe (one OPTIONS
+    # request) and has a high FP rate from tools that flag permissive-but-intentional wildcard
+    # CORS policies as vulnerabilities without checking ACAC.
+    _SYNC_VALIDATE_TYPES = frozenset({
+        "xss", "sqli", "ssti", "lfi", "open_redirect", "xxe",
+        "cors_origin_reflected", "cors_misconfiguration", "cors",
+    })
     # Async validation (fire-and-forget; too slow/risky to block ingest)
     _ASYNC_VALIDATE_TYPES = frozenset({"ssrf", "cmdi", "rce", "auth_bypass", "idor"})
 
@@ -649,7 +613,9 @@ class ResultIngestionEngine:
         try:
             from urllib.parse import urlparse as _up
             scheme = _up(scan_target).scheme or 'https'
-            if '/' in cleaned or cleaned.startswith(('vulnbank', 'localhost', '127')):
+            # Generic: prepend scheme to any string that looks like host/path.
+            # Condition: cleaned contains a dot (hostname) or a slash (path) after stripping.
+            if '.' in cleaned or '/' in cleaned:
                 return f"{scheme}://{cleaned}"
         except Exception:
             pass

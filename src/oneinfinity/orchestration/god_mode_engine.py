@@ -2250,6 +2250,26 @@ class AdvancedScanMission(Mission):
 
         session.phases_complete.append("advanced_scan_mission")
         log.info("[GOD MODE] AdvancedScanMission complete — %d findings", new_count)
+
+        # ── Gap Detectors (run only when FullScanMission is not present, i.e. standalone
+        # AdvancedScan) to avoid duplicate probes against the same target in one session.
+        # FullScanMission already runs gap detectors when it is present in the pipeline.
+        if self._full_scan_mission is None:
+            try:
+                from oneinfinity.findings.gap_detectors import run_gap_detectors
+                from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine as _gie_gd, RawResult as _RR_gd
+                _gd_findings = run_gap_detectors(session.target)
+                if _gd_findings:
+                    _gd_bus = _gie_gd()
+                    for _gf in _gd_findings:
+                        _gf["scan_id"] = session.scan_id
+                        _gf.setdefault("target", session.target)
+                        _gd_bus.ingest(_RR_gd(scan_id=session.scan_id, source="gap-detector", raw=_gf))
+                    session.add_findings(len(_gd_findings))
+                    log.info("[GOD MODE] AdvancedScanMission GapDetectors: %d new findings", len(_gd_findings))
+            except Exception as _gd_exc:
+                log.debug("[GOD MODE] AdvancedScanMission GapDetectors failed (non-fatal): %s", _gd_exc)
+
         self._result = {"findings": new_count, "output_dir": out_dir}
 
 

@@ -10055,7 +10055,7 @@ async def intelligence_loop_status():
         status["scanner_to_findings"] = {
             "connected": rie is not None,
             "component": "ResultIngestionEngine",
-            "worker_pool_active": not rie._worker_pool._shutdown,
+            "broadcast_wired": rie._broadcast_cb is not None if rie else False,
         }
     except Exception as exc:
         status["scanner_to_findings"] = {"connected": False, "error": str(exc)}
