@@ -431,6 +431,15 @@ function FindingsTab({ scanFilter, onClearFilter, isMobile }) {
                       {(v.source_type === 'mobile' || v.tool === 'mobile' || v.scan_id?.startsWith('mobile_')) && (
                         <span className="shrink-0 text-[8px] font-black uppercase px-1.5 py-0.5 rounded border border-purple-500/30 bg-purple-500/10 text-purple-400">Mobile</span>
                       )}
+                      {v.confirmed_tier === 'CONFIRMED' && (
+                        <span className="shrink-0 text-[8px] font-black uppercase px-1.5 py-0.5 rounded border border-emerald-500/40 bg-emerald-500/10 text-emerald-400">✓ Confirmed</span>
+                      )}
+                      {v.confirmed_tier === 'INFERRED' && (
+                        <span className="shrink-0 text-[8px] font-black uppercase px-1.5 py-0.5 rounded border border-yellow-500/30 bg-yellow-500/10 text-yellow-400">~ Inferred</span>
+                      )}
+                      {v.confirmed_tier === 'CANDIDATE' && (
+                        <span className="shrink-0 text-[8px] font-black uppercase px-1.5 py-0.5 rounded border border-slate-600/40 bg-slate-800/50 text-slate-500">? Candidate</span>
+                      )}
                     </div>
                     <div className="text-[10px] text-slate-500 font-mono truncate">{v.url || v.target}</div>
                  </div>

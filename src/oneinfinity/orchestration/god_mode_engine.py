@@ -1103,6 +1103,27 @@ class FullScanMission(Mission):
                 log.warning("[GOD MODE] FullScanMission findings_pipeline_cb failed: %s", _cb_exc)
 
         log.info("[GOD MODE] FullScanMission complete — %d findings", new_count)
+
+        # Step: Second-Order Vulnerability Tracker (Phase 1 — Pillar 1.2)
+        # Tracks inputs that get stored and re-rendered later — stored XSS, SQLi etc.
+        # Non-fatal: never blocks the scan pipeline.
+        if result and result.findings:
+            try:
+                from oneinfinity.scan.second_order_tracker import SecondOrderTracker
+                from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine as _gie_sot, RawResult as _RR_sot
+                _sot = SecondOrderTracker(target=session.target, scan_id=session.scan_id)
+                _sot_findings = _sot.run(
+                    findings=[f if isinstance(f, dict) else (f.__dict__ if hasattr(f, "__dict__") else {})
+                              for f in result.findings],
+                )
+                if _sot_findings:
+                    _gie_sot_bus = _gie_sot()
+                    for _sf in _sot_findings:
+                        _gie_sot_bus.ingest(_RR_sot(scan_id=session.scan_id, source="second-order-tracker", raw=_sf))
+                    session.add_findings(len(_sot_findings))
+                    log.info("[GOD MODE] SecondOrderTracker: %d second-order findings", len(_sot_findings))
+            except Exception as _sot_exc:
+                log.debug("[GOD MODE] SecondOrderTracker non-fatal: %s", _sot_exc)
         self._result = {"findings": new_count, "output_dir": out_dir}
 
 
@@ -2297,6 +2318,28 @@ class ReportMission(Mission):
             log.info("[GOD MODE] Report: learning system updated")
         except Exception as exc:
             log.warning("[GOD MODE] Report: learning update failed (non-fatal): %s", exc, exc_info=True)
+
+        # Step 6: Post-scan verification — replay 20% of findings to confirm tier
+        # (Phase 3 — Pillar 1.2 / CyberGym verify_agent pattern)
+        # Runs as daemon thread — never blocks ReportMission from completing.
+        try:
+            from oneinfinity.findings.post_scan_verifier import PostScanVerifier as _PSV
+            import threading as _threading
+            def _run_psv():
+                try:
+                    _psv = _PSV(sample_rate=0.20)
+                    _psv.verify_scan(
+                        scan_id=session.scan_id,
+                        target=session.target,
+                        auth_headers=None,
+                    )
+                    log.info("[GOD MODE] PostScanVerifier complete for scan %s", session.scan_id)
+                except Exception as _e:
+                    log.debug("[GOD MODE] PostScanVerifier non-fatal: %s", _e)
+            _threading.Thread(target=_run_psv, daemon=True,
+                              name=f"psv-{session.scan_id[:8]}").start()
+        except Exception as _psv_exc:
+            log.debug("[GOD MODE] PostScanVerifier spawn non-fatal: %s", _psv_exc)
 
         # Step 5: Cross-target knowledge distillation (Phase 3 — Pillar 5.3)
         # Writes scan patterns into the global Neo4j KB and postgres tool_performance

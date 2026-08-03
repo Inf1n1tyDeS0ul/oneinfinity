@@ -1450,6 +1450,11 @@ def _finding_to_api(f) -> dict:
         "impact_score": f.get("impact_score", ""),
         "suggested_fix": f.get("suggested_fix", ""),
         "raw": f.get("raw", {}),
+        # ── Judge / Confirmed Tier (Phase 0) ─────────────────────────────────
+        "confirmed_tier":  f.get("confirmed_tier"),          # CONFIRMED | INFERRED | CANDIDATE | None
+        "judge_verdict":   f.get("data", {}).get("judge_verdict") if isinstance(f.get("data"), dict) else f.get("judge_verdict"),
+        "discovered_by":   f.get("discovered_by") or [],
+        "judge_ran_at":    f.get("judge_ran_at"),
     }
 
 
