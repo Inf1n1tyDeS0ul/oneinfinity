@@ -1216,13 +1216,18 @@ class SwarmMission(Mission):
         # rather than just the root URL.
         _endpoints: list[str] = []
         for _candidate in [
-            GOD_MODE_DIR / session.scan_id / "full_scan" / "adaptive_recon.json",
+            GOD_MODE_DIR / session.scan_id / "recon" / "adaptive_recon.json",   # primary: Foundation saves here
+            GOD_MODE_DIR / session.scan_id / "full_scan" / "adaptive_recon.json",  # legacy fallback
             GOD_MODE_DIR / session.scan_id / "recon" / "urls.json",
         ]:
             try:
                 if _candidate.exists():
                     _d = _json.loads(_candidate.read_text())
-                    _urls = _d if isinstance(_d, list) else _d.get("urls", [])
+                    # adaptive_recon.json uses 'all_urls'; urls.json is a list; others use 'urls'
+                    if isinstance(_d, list):
+                        _urls = _d
+                    else:
+                        _urls = _d.get("all_urls") or _d.get("urls") or []
                     _endpoints.extend(u for u in _urls if u not in _endpoints)
             except Exception:
                 pass
@@ -1357,13 +1362,17 @@ class AuthTestMission(Mission):
 
         _endpoints: list[str] = [session.target]
         for _candidate in [
-            GOD_MODE_DIR / session.scan_id / "full_scan" / "adaptive_recon.json",
+            GOD_MODE_DIR / session.scan_id / "recon" / "adaptive_recon.json",   # primary
+            GOD_MODE_DIR / session.scan_id / "full_scan" / "adaptive_recon.json",  # legacy
             GOD_MODE_DIR / session.scan_id / "recon" / "urls.json",
         ]:
             try:
                 if _candidate.exists():
                     _d = _json.loads(_candidate.read_text())
-                    _urls = _d if isinstance(_d, list) else _d.get("urls", [])
+                    if isinstance(_d, list):
+                        _urls = _d
+                    else:
+                        _urls = _d.get("all_urls") or _d.get("urls") or []
                     _endpoints.extend(_urls)
             except Exception:
                 pass
