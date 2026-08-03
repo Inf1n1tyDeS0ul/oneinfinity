@@ -20,11 +20,11 @@ import VulnChainGraph from '../components/Graph/VulnChainGraph'
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const PRESETS = [
-  { id: 'quick',    no_swarm: true,  no_research: true },
-  { id: 'standard', no_swarm: false, no_research: false },
-  { id: 'deep',     no_swarm: false, no_research: false },
-  { id: 'stealth',  no_swarm: true,  no_research: true, stealth: true },
-  { id: 'custom',   no_swarm: false, no_research: false },
+  { id: 'quick',    scan_tier: 'quick',    no_swarm: true,  no_research: true },
+  { id: 'standard', scan_tier: 'standard', no_swarm: false, no_research: false },
+  { id: 'deep',     scan_tier: 'deep',     no_swarm: false, no_research: false },
+  { id: 'stealth',  scan_tier: 'quick',    no_swarm: true,  no_research: true, stealth: true },
+  { id: 'custom',   scan_tier: 'standard', no_swarm: false, no_research: false },
 ]
 
 const TYPE_TO_PRESET = {
@@ -417,7 +417,8 @@ export default function GodMode() {
 
       await endpoints.godModeRun({
         target:       target.trim(),
-        max_time:     '0',
+        scan_tier:    activePreset.scan_tier || 'deep',
+        max_time:     0,
         max_findings: 0,
         no_swarm:     activePreset.no_swarm,
         no_research:  activePreset.no_research,
