@@ -511,6 +511,118 @@ class WebSocketScanner:
 
         return None
 
+    # Phase 2: Auth-State Divergence (Pillar 4.5)
+
+    def test_auth_state_divergence(
+        self,
+        ws_path: str,
+        session_cookie: str = "",
+    ) -> Optional[WSFinding]:
+        """
+        Test WebSocket authentication state divergence.
+
+        Establishes a WebSocket connection while authenticated, then simulates
+        authentication revocation (sends a logout-equivalent message), and checks
+        whether the WebSocket connection still accepts privileged messages.
+
+        Vulnerability: server validates auth only at handshake time. After the
+        handshake, the connection remains open indefinitely — auth revocation
+        (logout, token expiry) does not close the existing WebSocket.
+
+        An attacker who steals an active WebSocket connection (via XSS, network
+        interception, or shared device) can continue receiving data even after
+        the victim logs out.
+        """
+        key = _ws_key()
+        ws_url = f"{'wss' if self.use_tls else 'ws'}://{self.host}:{self.port}{ws_path}"
+        try:
+            # Step 1: Establish connection with auth cookie (or without if none provided)
+            extra_headers = {}
+            if session_cookie:
+                extra_headers["Cookie"] = session_cookie
+
+            sock = _open_ws_socket(self.host, self.port, self.use_tls, self.timeout)
+            req = _build_upgrade_request(
+                f"{self.host}:{self.port}", ws_path, key,
+                origin=self.target, extra_headers=extra_headers,
+            )
+            sock.sendall(req)
+            upgrade_resp = _recv_http_response(sock, timeout=3.0)
+
+            if not _is_101(upgrade_resp):
+                sock.close()
+                return None
+
+            # Step 2: Send a probe message to confirm the connection is live
+            probe = json.dumps({"type": "ping"}).encode()
+            sock.sendall(_encode_ws_frame(probe))
+            try:
+                sock.settimeout(2.0)
+                data = sock.recv(4096)
+                if not data:
+                    sock.close()
+                    return None
+            except socket.timeout:
+                # No response to ping — connection may be uni-directional
+                pass
+
+            # Step 3: Simulate logout — send a logout message over the SAME connection
+            logout_msgs = [
+                json.dumps({"type": "logout"}),
+                json.dumps({"action": "logout"}),
+                json.dumps({"event": "session_expired"}),
+            ]
+            for msg in logout_msgs:
+                sock.sendall(_encode_ws_frame(msg.encode()))
+
+            import time as _time; _time.sleep(0.5)
+
+            # Step 4: Try to send a privileged message on the same connection
+            # If auth-state divergence exists, this should still work
+            priv_probe = json.dumps({
+                "type": "subscribe",
+                "action": "list_users",
+                "channel": "admin",
+            }).encode()
+            sock.sendall(_encode_ws_frame(priv_probe))
+            try:
+                sock.settimeout(3.0)
+                resp_data = sock.recv(4096)
+                if resp_data:
+                    opcode, payload = _decode_ws_frame(resp_data)
+                    # Connection still active after logout simulation
+                    if payload and len(payload) > 5:
+                        sock.close()
+                        return WSFinding(
+                            finding_id=f"WS-AUTHSTATE-{uuid.uuid4().hex[:8].upper()}",
+                            vuln_type="websocket_auth_state_divergence",
+                            title="WebSocket Auth-State Divergence — Connection Persists After Logout",
+                            severity="high",
+                            url=ws_url,
+                            evidence=(
+                                f"WebSocket connection at {ws_url} remains active and responsive "
+                                f"after logout event was sent. Server returned {len(payload)} bytes "
+                                f"to a post-logout privileged probe. "
+                                f"Auth revocation does not terminate existing WebSocket connections."
+                            ),
+                            confidence=0.80,
+                            exploitation_steps=[
+                                "1. Attacker steals active WebSocket connection (XSS, shared device)",
+                                "2. Victim logs out — server-side session invalidated",
+                                "3. WebSocket connection not closed — attacker still receives live data",
+                                "4. Attacker can continue subscribing to events, reading messages",
+                                "Remediation: server MUST terminate all WebSocket connections on logout/token revocation",
+                            ],
+                        )
+            except socket.timeout:
+                pass
+            sock.close()
+        except (socket.error, ssl.SSLError, OSError) as exc:
+            log.debug("WS auth-state divergence test failed: %s", exc)
+
+        return None
+
+
     # ------------------------------------------------------------------ #
     # Async CSWSH — accepts full ws_url with configurable evil origin
     # ------------------------------------------------------------------ #
@@ -726,6 +838,7 @@ class WebSocketScanner:
                 self.test_auth_bypass(path),
                 self.test_dos(path),
                 self.test_subprotocol_confusion(path),
+                self.test_auth_state_divergence(path),   # Phase 2: post-logout persistence
             ]
 
             for result in tests_and_results:
