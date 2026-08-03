@@ -10564,6 +10564,7 @@ class _GodModeCanonicalRequest(BaseModel):
     auth_config: Dict[str, Any] = {}
     max_time: int = 0
     max_findings: int = 0
+    scan_tier: str = ""   # quick | standard | deep | marathon
     modules: List[str] = []
     intensities: Dict[str, Any] = {}
     app_context: str = ""
@@ -10635,6 +10636,7 @@ async def scan_god_mode(req: _GodModeCanonicalRequest, background_tasks: Backgro
                 _override_scan_id=scan_id,
                 max_time=req.max_time,
                 max_findings=req.max_findings,
+                scan_tier=req.scan_tier or "",
             )
             state = conductor.status(scan_id)
             if state and scan_id in SCANS:

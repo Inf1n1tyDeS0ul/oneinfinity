@@ -34,6 +34,108 @@ EVENT_UNLOCK_VULN_THRESHOLD = 1        # Reduced from 3 — unlock Research earl
 EVENT_UNLOCK_ENDPOINT_THRESHOLD = 5   # Reduced from 10 — unlock Swarm earlier in God Mode
 
 
+# ── Scan Tier — max_time defaults (Phase 1: Extended Time Budget Tiers) ───────
+# Maps scan_tier name → default max_time in seconds.
+# GodModeConductor.run() uses this when scan_tier is set and max_time is 0.
+# ExploitGym finding: frontier models keep climbing with more time — no plateau.
+SCAN_TIER_MAX_TIME: dict[str, int] = {
+    "quick":    30 * 60,        #  30 minutes — CI/CD, rapid check
+    "standard": 2 * 3600,       #   2 hours   — regular pentest
+    "deep":     6 * 3600,       #   6 hours   — critical targets, HVA
+    "marathon": 24 * 3600,      #  24 hours   — full red team simulation
+}
+
+# Finding rate monitor settings
+_RATE_WINDOW_SEC   = 20 * 60   # 20-minute observation window
+_RATE_MIN_FINDINGS = 1         # below this per window → rate too low
+_RATE_EXTEND_PCT   = 0.30      # extend budget by 30% of remaining time
+
+
+class FindingRateMonitor:
+    """
+    Phase 1 (Pillar 3.3) — Adaptive time extension.
+
+    Runs as a daemon thread during God Mode scans. Monitors the finding rate
+    (new findings per 20-minute window). When max_time is approaching and
+    findings are still being discovered, extends the deadline by 30% of
+    the remaining budget.
+
+    From ExploitGym: Claude Mythos Preview kept climbing from 127→204 exploits
+    when time budget was extended from 2h to 6h — no plateau. This implements
+    that adaptive extension for 'deep' and 'marathon' tiers.
+
+    Only activates for deep and marathon tiers (>= 6h), not for quick/standard.
+    """
+
+    def __init__(self, session: "GodModeSession") -> None:
+        self._session = session
+        self._last_count = 0
+        self._window_counts: list[int] = []   # findings per 20-min window
+        self._stopped = threading.Event()
+
+    def start(self) -> None:
+        """Start monitoring in a background daemon thread."""
+        t = threading.Thread(
+            target=self._monitor_loop,
+            daemon=True,
+            name=f"finding-rate-{self._session.scan_id[:8]}",
+        )
+        t.start()
+
+    def stop(self) -> None:
+        self._stopped.set()
+
+    def _monitor_loop(self) -> None:
+        session = self._session
+        # Only activate for tiers with meaningful budgets
+        if session.scan_tier not in ("deep", "marathon"):
+            return
+        if session.max_time <= 0:
+            return
+
+        log.debug("[rate-monitor] Started for session %s tier=%s max_time=%ds",
+                  session.scan_id, session.scan_tier, session.max_time)
+
+        while not self._stopped.wait(timeout=_RATE_WINDOW_SEC):
+            elapsed   = session.elapsed()
+            remaining = session.max_time - elapsed
+            if remaining <= 0:
+                break
+
+            # Count new findings in this window
+            current_count = session.finding_count
+            window_new    = current_count - self._last_count
+            self._last_count = current_count
+            self._window_counts.append(window_new)
+
+            log.info("[rate-monitor] %s — window_new=%d remaining=%.0fs",
+                     session.scan_id, window_new, remaining)
+
+            # Check if we're in the final 20% of the budget and still finding
+            if remaining < session.max_time * 0.20 and window_new >= _RATE_MIN_FINDINGS:
+                extension = int(remaining * _RATE_EXTEND_PCT)
+                session.max_time += extension
+                log.info(
+                    "[rate-monitor] %s — findings active (window=%d), "
+                    "extending budget by %ds → new max_time=%ds",
+                    session.scan_id, window_new, extension, session.max_time,
+                )
+
+            # Check for consecutive idle windows (finding rate dropped to zero)
+            if len(self._window_counts) >= 2:
+                recent = self._window_counts[-2:]
+                if all(c < _RATE_MIN_FINDINGS for c in recent):
+                    log.info(
+                        "[rate-monitor] %s — finding rate exhausted "
+                        "(2 consecutive empty windows) — scan may finalize early",
+                        session.scan_id,
+                    )
+                    # Do not force-stop — GodModeConductor controls termination.
+                    # Just log the signal; conductor checks elapsed vs max_time.
+                    break
+
+        log.debug("[rate-monitor] Stopped for session %s", session.scan_id)
+
 
 def _is_ai_target(target: str, app_context: str, recon) -> bool:
     """Return True if the target appears to be an AI/LLM/chatbot endpoint."""
@@ -143,6 +245,7 @@ class GodModeSession:
     app_context: str = ""
     max_time: int = 0
     max_findings: int = 0
+    scan_tier: str = ""   # quick | standard | deep | marathon (empty = no tier, max_time applies directly)
     # WAF bypass state — populated by FoundationMission Step 4, consumed by all missions
     waf_vendor: str = ""                              # "cloudflare"|"akamai"|"aws_waf"|...
     waf_bypass_payloads: dict = field(default_factory=dict)  # {vuln_type: [bypass_payloads]}
@@ -2821,6 +2924,7 @@ class GodModeConductor:
         app_context: str = "",
         max_time: int = 0,
         max_findings: int = 0,
+        scan_tier: str = "",
     ) -> GodModeSession:
         """
         Run GOD MODE against target.
@@ -2837,7 +2941,8 @@ class GodModeConductor:
             background=background,
             auth_config=auth_config or {},
             app_context=app_context or "",
-            max_time=int(max_time or 0),
+            scan_tier=scan_tier or "",
+            max_time=int(SCAN_TIER_MAX_TIME.get(scan_tier, max_time) or 0),
             max_findings=int(max_findings or 0),
         )
         self._session = session
@@ -2854,6 +2959,14 @@ class GodModeConductor:
             print(f"    Max time:  {session.max_time}s")
         if session.max_findings:
             print(f"    Max finds: {session.max_findings}")
+
+        if session.scan_tier:
+            print(f"    Tier:      {session.scan_tier} ({session.max_time//3600}h budget)")
+
+        # Start finding rate monitor for deep/marathon tiers
+        _rate_monitor = FindingRateMonitor(session)
+        _rate_monitor.start()
+
 
         # ── Stage 1: Foundation (blocking) ─────────────────────────────────
         print(f"\n[*] Stage 1: Foundation...")
@@ -2926,6 +3039,7 @@ class GodModeConductor:
 
         # ── Foreground: run stages 2–5 directly ───────────────────────────
         self._run_stages_2_to_5(session, foundation, no_swarm, no_research, report_fmt)
+        _rate_monitor.stop()
         return session
 
     def _run_stages_2_to_5(
