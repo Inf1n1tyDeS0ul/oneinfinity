@@ -3316,6 +3316,41 @@ class GodModeConductor:
             except Exception as _fp:
                 log.warning("[GOD MODE] Findings pipeline (score+confirm+aggregate) failed: %s", _fp)
 
+            # Stage 4c: Ensemble scan — parallel multi-model analysis pass (Phase 2, Pillar 3.1)
+            # Runs after all findings are collected; provides a second opinion from
+            # a different model using a different prompting strategy.
+            # Non-fatal: failure produces no output and scan continues to report.
+            try:
+                from oneinfinity.orchestration.model_orchestrator import EnsembleScanOrchestrator
+                from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
+                _app_model_dict = {}
+                if foundation and foundation.app_model:
+                    _app_model_dict = foundation.app_model.to_dict()
+                _existing = get_ingestion_engine().get_findings(
+                    scan_id=session.scan_id, target=session.target
+                ) or []
+                _ensemble = EnsembleScanOrchestrator()
+                _ensemble_findings = _ensemble.run(
+                    target=session.target,
+                    scan_id=session.scan_id,
+                    app_model_dict=_app_model_dict,
+                    existing_findings=_existing,
+                    timeout=90,
+                )
+                if _ensemble_findings:
+                    _bus = get_ingestion_engine()
+                    for _ef in _ensemble_findings:
+                        _bus.ingest(RawResult(
+                            scan_id=session.scan_id,
+                            source="god-mode-ensemble",
+                            raw=_ef,
+                        ))
+                    session.add_findings(len(_ensemble_findings))
+                    log.info("[GOD MODE] Ensemble scan: %d new findings ingested", len(_ensemble_findings))
+            except Exception as _ens_exc:
+                log.warning("[GOD MODE] Ensemble scan failed (non-fatal): %s", _ens_exc)
+
+
             # Stage 5: ReportMission (always)
             print(f"\n[*] Stage 5: Finalization...")
             report.run_sync(session)

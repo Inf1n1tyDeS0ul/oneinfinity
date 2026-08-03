@@ -1509,3 +1509,189 @@ class ParallelModelRacer:
             "tool":        "parallel_model_racer",
             "models_raced": len(result["all_results"]),
         }
+
+
+# ── EnsembleScanOrchestrator ─────────────────────────────────────────────────
+
+class EnsembleScanOrchestrator:
+    """
+    Phase 2 — Parallel LLM Ensemble Scanning (Pillar 3.1).
+
+    From ExploitGym: Claude and GPT share only 91/157+ successes.
+    56 targets solved exclusively by Claude, 26 exclusively by GPT.
+    This 30%+ unique coverage gap motivates running both in parallel.
+
+    Each model receives the same application context (endpoints, tech stack,
+    existing findings) with a model-specific prompting strategy, independently
+    generates a list of additional vulnerability hypotheses, and the results
+    are union-merged with the existing finding set.
+
+    Model strategies (from masterplan):
+      Claude  → adversarial reasoning: "how would an attacker abuse this?"
+      GPT     → logic analysis: "what invariants does this application assume?"
+      Local   → structured enumeration: pattern completion, zero API cost
+
+    Each finding gets 'discovered_by: [model_ids]'. When multiple models
+    independently find the same finding, confidence auto-promotes to CONFIRMED
+    (handled by finding_judge.py).
+
+    Runs as a non-blocking pass in GodModeConductor._run_stages_2_to_5()
+    between the findings pipeline and ReportMission.
+    """
+
+    _CLAUDE_SYSTEM = (
+        "You are an offensive security expert. Your task is to find vulnerabilities "
+        "that automated scanners MISS. Focus on: business logic flaws, authentication "
+        "bypasses, insecure direct object references, race conditions, second-order "
+        "injections, and privilege escalation paths. Think like an attacker."
+    )
+    _GPT_SYSTEM = (
+        "You are a security architect analysing application logic. Your task is to "
+        "identify assumptions the application makes that could be violated: "
+        "what invariants does it assume about user ownership, state transitions, "
+        "rate limits, and privilege boundaries? List only assumptions that, if "
+        "violated, would constitute a security vulnerability."
+    )
+    _LOCAL_SYSTEM = (
+        "You are a systematic security scanner. Enumerate all vulnerability classes "
+        "that apply to this endpoint set. Be exhaustive, not creative."
+    )
+
+    _FINDING_SCHEMA = """
+Respond with ONLY a JSON array of finding objects. Each object:
+{
+  "vuln_type": "<string>",
+  "title": "<one-line description>",
+  "severity": "<critical|high|medium|low>",
+  "url": "<target endpoint>",
+  "evidence": "<why you believe this is present>",
+  "confidence": <float 0.0-1.0>,
+  "test_request": "<exact HTTP request or curl command to test this>"
+}
+Limit to your 5 highest-confidence findings. Empty array [] if none found.
+"""
+
+    def run(
+        self,
+        target: str,
+        scan_id: str,
+        app_model_dict: dict,
+        existing_findings: list,
+        max_findings_per_model: int = 5,
+        timeout: int = 120,
+    ) -> list:
+        """
+        Run parallel ensemble analysis and return new finding dicts.
+
+        Args:
+            target:              scan target URL
+            scan_id:             active scan ID for finding attribution
+            app_model_dict:      AppModel.to_dict() — endpoints, tech stack, etc.
+            existing_findings:   already-found findings (provides context)
+            max_findings_per_model: cap per model (cost control)
+            timeout:             per-model timeout in seconds
+
+        Returns:
+            List of new finding dicts tagged with discovered_by=[model_id].
+            Empty list on failure (non-fatal).
+        """
+        import concurrent.futures as _cf
+        from oneinfinity.infra.llm_provider import get_factory
+
+        prompt = self._build_prompt(target, app_model_dict, existing_findings)
+        model_tasks = self._build_model_tasks(get_factory())
+        if not model_tasks:
+            log.info("[ensemble] No models available — skipping ensemble scan")
+            return []
+
+        log.info("[ensemble] Running %d-model ensemble for %s", len(model_tasks), target)
+        all_new_findings = []
+        seen_keys: set = set()
+
+        with _cf.ThreadPoolExecutor(max_workers=len(model_tasks)) as pool:
+            futures = {
+                pool.submit(self._run_single_model, name, provider, prompt, timeout): name
+                for name, provider in model_tasks.items()
+            }
+            for future in _cf.as_completed(futures, timeout=timeout + 10):
+                model_name = futures[future]
+                try:
+                    findings = future.result()
+                    for f in findings[:max_findings_per_model]:
+                        key = f"{f.get('vuln_type','')}::{f.get('url','')}".lower()
+                        if key in seen_keys:
+                            continue
+                        seen_keys.add(key)
+                        f["scan_id"]      = scan_id
+                        f["target"]       = target
+                        f["tool"]         = "ensemble_scanner"
+                        f["source_type"]  = "ai_theory"
+                        f["discovered_by"] = [model_name]
+                        all_new_findings.append(f)
+                    log.info("[ensemble] %s → %d findings", model_name, len(findings))
+                except Exception as exc:
+                    log.debug("[ensemble] %s failed: %s", model_name, exc)
+
+        log.info("[ensemble] Total new findings from ensemble: %d", len(all_new_findings))
+        return all_new_findings
+
+    def _build_model_tasks(self, factory) -> dict:
+        """Return dict of {model_name: provider} for available providers, max 3."""
+        available = factory.available_providers()
+        tasks = {}
+        # Prefer one Claude, one OpenAI, one local — diverse strategies
+        for p in available:
+            if p.name in ("bedrock", "anthropic") and "claude" not in tasks:
+                tasks["claude"] = p
+            elif p.name == "openai" and "gpt" not in tasks:
+                tasks["gpt"] = p
+            elif p.name in ("ollama", "groq") and "local" not in tasks:
+                tasks["local"] = p
+            if len(tasks) >= 3:
+                break
+        return tasks
+
+    def _build_prompt(self, target: str, app_model: dict, existing_findings: list) -> str:
+        """Build the analysis prompt from app model and existing findings."""
+        endpoints = (app_model.get("api_structure") or [])[:30]
+        tech = app_model.get("tech_stack") or []
+        auth = app_model.get("auth_system") or "unknown"
+        found_types = list({f.get("vuln_type","") for f in existing_findings if f.get("vuln_type")})[:10]
+        sensitive = [sf.get("name","") for sf in (app_model.get("sensitive_features") or [])][:5]
+
+        return (
+            f"TARGET: {target}\n"
+            f"TECH STACK: {', '.join(tech[:8]) or 'unknown'}\n"
+            f"AUTH: {auth}\n"
+            f"SENSITIVE FEATURES: {', '.join(sensitive) or 'none detected'}\n\n"
+            f"ENDPOINTS ({len(endpoints)} shown):\n" +
+            "\n".join(endpoints) +
+            f"\n\nALREADY FOUND ({len(found_types)} types): {', '.join(found_types) or 'none'}\n\n"
+            f"Find vulnerabilities NOT YET in the 'already found' list.\n"
+            f"{self._FINDING_SCHEMA}"
+        )
+
+    def _run_single_model(self, model_name: str, provider, prompt: str, timeout: int) -> list:
+        """Run one model's analysis pass and parse findings."""
+        import json as _json, re as _re
+        system = {
+            "claude": self._CLAUDE_SYSTEM,
+            "gpt":    self._GPT_SYSTEM,
+        }.get(model_name, self._LOCAL_SYSTEM)
+        try:
+            resp = provider.chat(
+                prompt=prompt,
+                system=system,
+                max_tokens=1024,
+                temperature=0.3,
+            )
+            text = resp.text.strip()
+            text = _re.sub(r"^```(?:json)?\s*", "", text, flags=_re.MULTILINE)
+            text = _re.sub(r"\s*```$", "", text, flags=_re.MULTILINE).strip()
+            data = _json.loads(text)
+            if isinstance(data, list):
+                return [f for f in data if isinstance(f, dict) and f.get("vuln_type")]
+            return []
+        except Exception as exc:
+            log.debug("[ensemble] %s parse/call error: %s", model_name, exc)
+            return []
