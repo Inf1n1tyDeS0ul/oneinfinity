@@ -184,6 +184,36 @@ class FindingJudge:
         finding_id = finding.get("finding_id", "unknown")
         heuristic_confidence = float(finding.get("confidence", 0.5))
 
+        # ── Scope guard ─────────────────────────────────────────────────────
+        # Off-scope findings (URL belongs to a different domain than the scan
+        # target) must never be CONFIRMED or INFERRED by heuristic alone.
+        # The ingest pipeline already caps confidence to < _INFERRED_MIN for
+        # off-scope findings, but we double-check here in case the finding
+        # arrives via a different path (e.g. post_scan_verifier batch).
+        _url  = finding.get("url", "") or ""
+        _target = finding.get("target", "") or ""
+        _off_scope = False
+        if _url and _target:
+            try:
+                from urllib.parse import urlparse as _up
+                _url_host = _up(_url).netloc.split(":")[0].lstrip("www.") if "://" in _url else ""
+                _tgt_host = _up(_target).netloc.split(":")[0].lstrip("www.") if "://" in _target else _target.split("/")[0].lstrip("www.")
+                if _url_host and _tgt_host and _url_host not in ("localhost", "127.0.0.1"):
+                    _off_scope = not (_url_host == _tgt_host or _url_host.endswith("." + _tgt_host))
+            except Exception:
+                pass
+
+        if _off_scope:
+            # Hard cap: heuristic promotes max to CANDIDATE for off-scope URLs.
+            # If there is real evidence the LLM judge may still upgrade to INFERRED,
+            # but never CONFIRMED — that requires in-scope replay proof.
+            if heuristic_confidence >= _CONFIRMED_MIN:
+                heuristic_confidence = _INFERRED_MIN - 0.01  # force below CONFIRMED
+            log.debug(
+                "FindingJudge: off-scope URL [%s @ %s vs target=%s] — capping heuristic",
+                finding_id, _url, _target,
+            )
+
         # Fast path: skip LLM call for very low-confidence findings
         if heuristic_confidence < _SKIP_THRESHOLD:
             log.debug("FindingJudge: skip LLM for %s (confidence=%.2f < %.2f)",
@@ -194,7 +224,11 @@ class FindingJudge:
         provider = self._get_provider()
         if provider is None:
             log.warning("FindingJudge: no provider available — falling back to heuristic")
-            return self._heuristic_verdict(finding, self._heuristic_tier(heuristic_confidence))
+            tier = self._heuristic_tier(heuristic_confidence)
+            # Off-scope: if heuristic says CONFIRMED, cap at INFERRED
+            if _off_scope and tier == TIER_CONFIRMED:
+                tier = TIER_INFERRED
+            return self._heuristic_verdict(finding, tier)
 
         prompt = self._build_prompt(finding)
         try:
@@ -205,6 +239,20 @@ class FindingJudge:
                 temperature=0.1,   # low temperature — we want deterministic evaluation
             )
             verdict = self._parse_response(finding_id, resp.text, provider.name)
+            # Off-scope cap: LLM should not auto-CONFIRM findings at unrelated domains.
+            # The LLM sees the URL and might correctly identify a real vuln on a third-party
+            # host, but we can't replay-confirm cross-origin, so max tier is INFERRED.
+            if _off_scope and verdict.tier == TIER_CONFIRMED:
+                verdict.tier = TIER_INFERRED
+                verdict.confirmed = False
+                verdict.fp_reasoning = (
+                    f"[scope-guard] URL {_url!r} is off-scope for target {_target!r}. "
+                    "Downgraded from CONFIRMED→INFERRED: replay confirmation requires in-scope target."
+                )
+                log.info(
+                    "FindingJudge: scope-guard downgraded %s CONFIRMED→INFERRED (off-scope host)",
+                    finding_id,
+                )
             log.info(
                 "FindingJudge: %s → %s (fp_risk=%s, confidence=%.2f) [model=%s]",
                 finding_id, verdict.tier, verdict.fp_risk, verdict.confidence, provider.name,
@@ -326,6 +374,24 @@ class FindingJudge:
             extra_context_parts.append(f"Reproduction command: {finding['reproduction_cmd']}")
         if raw.get("chain_context"):
             extra_context_parts.append(f"Chain context: {raw['chain_context']}")
+        # Add scan target so the LLM judge can flag cross-origin findings as higher FP risk.
+        _tgt = finding.get("target", "") or finding.get("scan_target", "")
+        if _tgt:
+            extra_context_parts.append(f"Scan target (in-scope domain): {_tgt}")
+        _furl = finding.get("url", "") or ""
+        if _tgt and _furl and _tgt not in _furl and "://" in _furl:
+            try:
+                from urllib.parse import urlparse as _up
+                _fhost = _up(_furl).netloc
+                _thost = _up(_tgt).netloc if "://" in _tgt else _tgt.split("/")[0]
+                if _fhost and _thost and _fhost != _thost:
+                    extra_context_parts.append(
+                        f"WARNING: finding URL host ({_fhost!r}) differs from scan target ({_thost!r}). "
+                        "Treat as cross-origin / out-of-scope — assign fp_risk=high unless the finding "
+                        "describes a server-side issue that directly affects the scan target."
+                    )
+            except Exception:
+                pass
 
         # Truncate large fields to avoid token blowout
         def _trunc(s: str, limit: int = 800) -> str:

@@ -616,6 +616,80 @@ class ResultIngestionEngine:
         except Exception:
             return url
 
+    # ── URL sanitization helper ──────────────────────────────────────────────
+    @staticmethod
+    def _sanitize_url(url: str, scan_target: str) -> str:
+        """Fix malformed agent-generated URLs and return the canonical form.
+
+        Agents sometimes build URLs by string-concatenating a scan target that
+        already has a scheme with a path, producing garbage like:
+          ://vulnbank.org/login          (missing scheme)
+          ://://vulnbank.org/login       (double garbage)
+          ://://://                      (fully garbled)
+
+        Root cause: code like  f"{scheme}://{target}{path}"  where `scheme`
+        was already '' (empty) because target had no detected scheme.
+
+        Fix strategy:
+          1. Strip leading '://' repetitions.
+          2. If result has no scheme, prepend the scheme from scan_target.
+          3. If still no valid host, return the original (let dedup handle it).
+        """
+        if not url:
+            return url
+        import re as _re
+        # Strip leading '://' garbage (1 or more times)
+        cleaned = _re.sub(r'^(://)+', '', url)
+        if not cleaned:
+            return url
+        # If it now looks like a valid URL, return it
+        if cleaned.startswith(('http://', 'https://')):
+            return cleaned
+        # No scheme — prepend from scan_target
+        try:
+            from urllib.parse import urlparse as _up
+            scheme = _up(scan_target).scheme or 'https'
+            if '/' in cleaned or cleaned.startswith(('vulnbank', 'localhost', '127')):
+                return f"{scheme}://{cleaned}"
+        except Exception:
+            pass
+        return url
+
+    @staticmethod
+    def _is_in_scope(url: str, scan_target: str) -> bool:
+        """Return True if `url` belongs to the same host/domain as scan_target.
+
+        A finding is in-scope when:
+          - url is empty/None (network-level finding with no specific URL)
+          - url host ends with the scan target's registered domain
+          - url host IS the scan target host exactly
+          - url is localhost / 127.x (internal probe targets are in-scope)
+
+        Off-scope = url points to a completely different domain
+        (e.g. sandbox.gimmeit.net.au when scanning vulnbank.org).
+        Off-scope findings are NEVER false-positived; they are CANDIDATE-capped
+        so a human reviewer can investigate cross-origin issues separately.
+        """
+        if not url:
+            return True   # no URL = network-level finding; always in-scope
+        try:
+            from urllib.parse import urlparse as _up
+            host = _up(url).netloc.split(':')[0].lstrip('www.')
+            if not host:
+                return True
+            if host in ('localhost', '127.0.0.1', '::1'):
+                return True
+            target_host = _up(scan_target).netloc.split(':')[0].lstrip('www.')
+            if not target_host:
+                # scan_target has no scheme — try as plain host
+                target_host = scan_target.split('/')[0].lstrip('www.')
+            if not target_host:
+                return True   # unknown target — don't filter
+            # Match: exact or subdomain
+            return host == target_host or host.endswith('.' + target_host)
+        except Exception:
+            return True   # on parse error, let it through
+
     def ingest(self, result: RawResult, confidence_threshold: float = 0.5) -> Optional[NormalizedFinding]:
         """Parse → validate → semantic-dedup → filter → store → graph → broadcast.
         Phase E: FindingValidationEngine pre-filter + AI confidence rescoring.
@@ -636,6 +710,31 @@ class ResultIngestionEngine:
             log.debug("ingest: skipping empty finding stub (no vuln_type, no url) target=%s",
                       finding.target)
             return None
+
+        # Fix malformed agent-generated URLs (e.g. ://vulnbank.org/login)
+        # Root cause: agents concatenate empty scheme + target + path.
+        # Must happen before dedup so the fixed URL is what gets stored/deduped.
+        if _url.startswith('://') or _url == '://':
+            fixed = self._sanitize_url(_url, result.scan_id and finding.target or "")
+            if fixed != _url:
+                log.debug("ingest: fixed malformed URL [%s] → [%s]", _url, fixed)
+                finding.url = fixed
+
+        # Mark whether this finding's URL is in-scope for the scan target.
+        # Off-scope findings (e.g. sandbox.gimmeit.net.au when scanning vulnbank.org)
+        # are allowed through — they may be valid cross-origin issues — but the judge
+        # must not promote them past CANDIDATE without explicit confirmation.
+        # We tag the finding so the judge thread can use this signal.
+        _scan_target = finding.target or ""
+        finding._off_scope = not self._is_in_scope(finding.url, _scan_target)  # type: ignore[attr-defined]
+        if finding._off_scope:  # type: ignore[attr-defined]
+            log.info(
+                "ingest: off-scope URL [%s @ %s] (scan target=%s) — capping at CANDIDATE",
+                finding.vuln_type, finding.url, _scan_target,
+            )
+            # Hard-cap confidence so heuristic judge can't auto-promote to CONFIRMED/INFERRED.
+            # The LLM judge will still run and may upgrade if evidence is conclusive.
+            finding.confidence = min(finding.confidence, 0.59)  # below _INFERRED_MIN (0.60)
 
         # 1. Confidence Filtering (Noise Reduction)
         if finding.confidence < confidence_threshold:

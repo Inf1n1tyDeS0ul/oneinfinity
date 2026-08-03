@@ -1126,6 +1126,26 @@ class FullScanMission(Mission):
                 log.debug("[GOD MODE] SecondOrderTracker non-fatal: %s", _sot_exc)
         self._result = {"findings": new_count, "output_dir": out_dir}
 
+        # ── Gap Detectors (non-blocking, non-fatal) ──────────────────────────
+        # Run lightweight active probes for vuln classes that the main scan
+        # pipeline historically misses: JWT no-sig, BOPLA, debug password,
+        # forgot-password PIN, CORS reflection, rate-limit gaps.
+        # Added after pentest comparison on vulnbank.org (2026-08-03).
+        try:
+            from oneinfinity.findings.gap_detectors import run_gap_detectors
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine as _gie_gd, RawResult as _RR_gd
+            _gd_findings = run_gap_detectors(session.target)
+            if _gd_findings:
+                _gd_bus = _gie_gd()
+                for _gf in _gd_findings:
+                    _gf["scan_id"] = session.scan_id
+                    _gf.setdefault("target", session.target)
+                    _gd_bus.ingest(_RR_gd(scan_id=session.scan_id, source="gap-detector", raw=_gf))
+                session.add_findings(len(_gd_findings))
+                log.info("[GOD MODE] GapDetectors: %d new findings ingested", len(_gd_findings))
+        except Exception as _gd_exc:
+            log.debug("[GOD MODE] GapDetectors failed (non-fatal): %s", _gd_exc)
+
 
 # ── ResearchMission ────────────────────────────────────────────────────────────
 
