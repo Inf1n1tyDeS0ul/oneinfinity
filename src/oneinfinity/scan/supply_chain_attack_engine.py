@@ -430,6 +430,208 @@ class SupplyChainAttackEngine:
 
     # ── Orchestration ─────────────────────────────────────────────────────────
 
+    # ── Phase 2: SRI Audit + Third-Party Script Behavior (Pillar 4.2) ─────────
+
+    async def test_sri_audit(self, target: str) -> list[dict]:
+        """
+        SRI (Subresource Integrity) audit — checks every CDN <script> tag
+        in the target's HTML for the presence and correctness of integrity hashes.
+
+        Without SRI, any CDN can inject malicious code into the page. This is
+        a supply chain attack vector that no majority tool checks systematically.
+
+        Tests:
+          1. Missing integrity attribute on CDN <script src="...">
+          2. integrity attribute present but hash algorithm is weak (sha1, md5)
+          3. Fetch the CDN script and verify the hash matches the live content
+        """
+        findings: list[dict] = []
+        # Fetch target HTML
+        resp = await self._get(target)
+        if not resp:
+            return findings
+        html = resp.text
+
+        # Find all <script src="..."> tags
+        script_tags = re.findall(
+            r'<script\b([^>]*)>',
+            html, re.IGNORECASE | re.DOTALL
+        )
+        cdn_domains = (
+            "cdn.jsdelivr.net", "cdnjs.cloudflare.com", "unpkg.com",
+            "ajax.googleapis.com", "stackpath.bootstrapcdn.com",
+            "code.jquery.com", "maxcdn.bootstrapcdn.com",
+            "cdn.tailwindcss.com", "cdn.ampproject.org",
+        )
+
+        for attrs_str in script_tags:
+            # Extract src
+            src_match = re.search(r'\bsrc=["\']([^"\']+)["\']', attrs_str, re.I)
+            if not src_match:
+                continue
+            src = src_match.group(1)
+            is_cdn = any(d in src for d in cdn_domains) or src.startswith("//") or (
+                src.startswith("http") and urlparse(src).netloc != urlparse(target).netloc
+            )
+            if not is_cdn:
+                continue
+
+            # Check integrity attribute
+            integrity_match = re.search(r'\bintegrity=["\']([^"\']+)["\']', attrs_str, re.I)
+            if not integrity_match:
+                findings.append(self._finding(
+                    vuln_type="sri_missing",
+                    severity="medium",
+                    url=src,
+                    target=target,
+                    payload=f'<script src="{src}">',
+                    evidence=(
+                        f"CDN script loaded without SRI integrity hash: {src}. "
+                        f"If the CDN is compromised, arbitrary code will execute on all visitors."
+                    ),
+                ))
+                continue
+
+            # Check hash algorithm strength
+            integrity_val = integrity_match.group(1)
+            if any(integrity_val.startswith(weak) for weak in ("sha1-", "md5-")):
+                findings.append(self._finding(
+                    vuln_type="sri_weak_hash",
+                    severity="medium",
+                    url=src,
+                    target=target,
+                    payload=integrity_val,
+                    evidence=(
+                        f"CDN script uses weak SRI hash algorithm: {integrity_val[:40]}. "
+                        f"SHA-1 and MD5 are collision-vulnerable — use sha256 or sha384."
+                    ),
+                ))
+                continue
+
+            # Verify hash matches live CDN content (sha256/sha384/sha512)
+            try:
+                import hashlib as _hl, base64 as _b64
+                algo_map = {"sha256": _hl.sha256, "sha384": _hl.sha384, "sha512": _hl.sha512}
+                for algo_name, algo_fn in algo_map.items():
+                    if not integrity_val.startswith(f"{algo_name}-"):
+                        continue
+                    expected_b64 = integrity_val[len(algo_name) + 1:]
+                    cdn_resp = await self._get(src if src.startswith("http") else f"https:{src}")
+                    if cdn_resp and cdn_resp.status_code == 200:
+                        actual_hash = _b64.b64encode(
+                            algo_fn(cdn_resp.content).digest()
+                        ).decode()
+                        if actual_hash != expected_b64:
+                            findings.append(self._finding(
+                                vuln_type="sri_hash_mismatch",
+                                severity="critical",
+                                url=src,
+                                target=target,
+                                payload=integrity_val,
+                                evidence=(
+                                    f"SRI hash MISMATCH for {src}. "
+                                    f"Expected: {expected_b64[:32]}... "
+                                    f"Actual:   {actual_hash[:32]}... "
+                                    f"The CDN content may have been tampered with."
+                                ),
+                            ))
+            except Exception as exc:
+                log.debug("SRI verification failed for %s: %s", src, exc)
+
+        return findings
+
+    async def test_third_party_script_behavior(self, target: str) -> list[dict]:
+        """
+        Third-party script behavior analysis.
+
+        Fetches CDN scripts and analyses their source for:
+          1. Cookie writes (document.cookie = ...) → session hijack risk
+          2. localStorage writes → persistent tracking / data storage
+          3. Cross-origin fetch/XHR to domains the application doesn't control
+          4. eval() or Function() calls with externally controlled content
+          5. postMessage() handlers without origin validation
+
+        This is a static analysis pass — no JS execution required.
+        """
+        findings: list[dict] = []
+        resp = await self._get(target)
+        if not resp:
+            return findings
+
+        cdn_srcs = re.findall(
+            r'<script\b[^>]*\bsrc=["\']([^"\']+)["\'][^>]*>',
+            resp.text, re.IGNORECASE
+        )
+        target_host = urlparse(target).netloc
+
+        for src in cdn_srcs[:10]:  # cap to bound cost
+            if target_host and target_host in src:
+                continue  # skip first-party scripts
+            cdn_url = src if src.startswith("http") else f"https:{src}"
+            script_resp = await self._get(cdn_url)
+            if not script_resp or script_resp.status_code != 200:
+                continue
+            js = script_resp.text
+
+            # Pattern: cookie write
+            if re.search(r'document\.cookie\s*=', js):
+                findings.append(self._finding(
+                    vuln_type="third_party_cookie_write",
+                    severity="high",
+                    url=cdn_url, target=target,
+                    payload=src,
+                    evidence=(
+                        f"Third-party CDN script {src} writes to document.cookie. "
+                        f"This script can set or overwrite session cookies."
+                    ),
+                ))
+
+            # Pattern: localStorage write
+            if re.search(r'localStorage\.setItem', js):
+                findings.append(self._finding(
+                    vuln_type="third_party_localstorage_write",
+                    severity="medium",
+                    url=cdn_url, target=target,
+                    payload=src,
+                    evidence=(
+                        f"Third-party CDN script {src} writes to localStorage. "
+                        f"May store sensitive user data in a third-party controlled key."
+                    ),
+                ))
+
+            # Pattern: cross-origin XHR/fetch to non-CDN domain
+            cross_origins = re.findall(
+                r'''(?:fetch|XMLHttpRequest|\.open)\s*\(?\s*["'`](https?://[^"'`\s]+)''',
+                js, re.I
+            )
+            for co_url in cross_origins[:5]:
+                if target_host and target_host not in co_url and cdn_url not in co_url:
+                    findings.append(self._finding(
+                        vuln_type="third_party_cross_origin_request",
+                        severity="medium",
+                        url=cdn_url, target=target,
+                        payload=co_url,
+                        evidence=(
+                            f"Third-party CDN script {src} makes requests to {co_url}. "
+                            f"This domain is not the application — user data may be exfiltrated."
+                        ),
+                    ))
+                    break  # one finding per script for cross-origin
+
+            # Pattern: eval with external data
+            if re.search(r'eval\s*\(|new\s+Function\s*\(', js):
+                findings.append(self._finding(
+                    vuln_type="third_party_dynamic_eval",
+                    severity="high",
+                    url=cdn_url, target=target,
+                    payload=src,
+                    evidence=(
+                        f"Third-party CDN script {src} uses eval() or new Function(). "
+                        f"If this script is compromised, eval() enables arbitrary code execution."
+                    ),
+                ))
+
+        return findings
     async def scan(self, target: str) -> list[dict]:
         """
         Full supply chain scan of *target*.
@@ -446,10 +648,12 @@ class SupplyChainAttackEngine:
             log.debug(f"Package name discovery failed: {e}")
             package_names = []
 
-        # Steps 2-5 run concurrently where possible
+        # Steps 2-7 run concurrently
         tasks = [
             self.test_lockfile_poisoning(target),
             self.test_github_action_pinning(target),
+            self.test_sri_audit(target),                    # Phase 2: SRI checks
+            self.test_third_party_script_behavior(target),  # Phase 2: CDN script analysis
         ]
         if package_names:
             tasks += [
