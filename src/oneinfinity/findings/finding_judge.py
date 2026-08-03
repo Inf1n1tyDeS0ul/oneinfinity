@@ -246,6 +246,18 @@ class FindingJudge:
                 log.warning("FindingJudge: db not available — verdict not persisted for %s", finding_id)
         except Exception as exc:
             log.warning("FindingJudge: persist failed for %s: %s", finding_id, exc)
+
+        # Phase 3 (Pillar 5.4): Auto-generate nuclei template for CONFIRMED findings.
+        # Fires in the same thread (daemon) — non-blocking relative to the scan.
+        if verdict.tier == TIER_CONFIRMED:
+            try:
+                # Merge confirmed_tier into finding dict so auto_generate checks pass
+                enriched = {**finding, "confirmed_tier": TIER_CONFIRMED}
+                from oneinfinity.attack.nuclei_template_generator import auto_generate_from_confirmed
+                auto_generate_from_confirmed(enriched)
+            except Exception as exc:
+                log.debug("FindingJudge: nuclei auto-gen failed for %s: %s", finding_id, exc)
+
         return verdict
 
     def evaluate_batch(

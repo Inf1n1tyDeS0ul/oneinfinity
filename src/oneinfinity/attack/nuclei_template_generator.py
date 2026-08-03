@@ -14,6 +14,7 @@ import re
 import tempfile
 import urllib.parse
 from pathlib import Path
+from typing import Optional
 
 log = logging.getLogger("oneinfinity.attack.nuclei_template_generator")
 
@@ -938,3 +939,42 @@ def get_generator() -> NucleiTemplateGenerator:
     if _generator is None:
         _generator = NucleiTemplateGenerator()
     return _generator
+
+
+def auto_generate_from_confirmed(
+    finding: dict,
+    output_dir: str = "~/.oneinfinity/nuclei-templates/",
+) -> Optional[str]:
+    """
+    Phase 3 (Pillar 5.4) — Auto-generate a nuclei template from a CONFIRMED finding.
+
+    Called automatically by the finding judge after writing a CONFIRMED verdict.
+    Only generates templates for CONFIRMED findings — INFERRED and CANDIDATE
+    findings are not reliable enough to add to the permanent scanner toolkit.
+
+    Returns the saved template path, or None if generation was skipped/failed.
+
+    Usage:
+        # Called from finding_judge.py in a daemon thread after judge run
+        path = auto_generate_from_confirmed(finding_dict)
+        if path:
+            log.info("Nuclei template saved: %s", path)
+    """
+    # Only process CONFIRMED findings
+    if finding.get("confirmed_tier") != "CONFIRMED":
+        return None
+    # Skip findings without a URL or vuln_type
+    if not finding.get("url") or not finding.get("vuln_type"):
+        return None
+
+    try:
+        gen = get_generator()
+        path = gen.save(finding, output_dir=output_dir)
+        log.info(
+            "[NucleiAutoGen] Template saved for CONFIRMED %s at %s → %s",
+            finding.get("vuln_type"), finding.get("url", "")[:80], path,
+        )
+        return path
+    except Exception as exc:
+        log.debug("[NucleiAutoGen] auto_generate_from_confirmed failed: %s", exc)
+        return None
