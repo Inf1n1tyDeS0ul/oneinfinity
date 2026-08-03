@@ -230,7 +230,7 @@ def cmd_zero_day(args):
     oneinfinity zero-day <target> — run zero-day anomaly detection engine.
     Probes the target for unusual behaviors, data leakage, and access control flips.
     """
-    from oneinfinity.zero_day_engine import main_cli
+    from oneinfinity.attack.zero_day_engine import main_cli
     main_cli(args)
 
 
