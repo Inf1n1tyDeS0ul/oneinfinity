@@ -288,6 +288,39 @@ COVERAGE GAPS
 [ ] Does it add a new DENYLIST file that isn't listed in the DENYLIST?
 [ ] Does it add new asyncio.run() patterns the hygiene script won't catch?
 
+GOD MODE INTEGRITY
+[ ] Does new scan logic bypass god_mode_engine.py and run only through a standalone endpoint?
+    (= God Mode blind spot — CRITICAL if scan findings are not reachable via God Mode)
+[ ] Does new finding logic break the chain: god_mode_engine → result_ingestion_engine → postgres → API?
+[ ] Does any LLM call in scan context bypass offensive_router.py / model_orchestrator.py?
+
+FULL-STACK SYNC
+[ ] Does it add a new API endpoint without updating the frontend API client?
+[ ] Does it add a new finding field without a postgres migration AND frontend update?
+[ ] Does it change a response shape without updating all frontend consumers?
+[ ] Does it affect Redis keys or Neo4j schema without documenting the change?
+
+DUPLICATE FEATURES
+[ ] Does this add a function/module that duplicates existing scan, agent, or orchestration code?
+[ ] Does this add a new API route that is semantically identical to an existing route?
+[ ] Does this add a new frontend component when an existing component could be parameterized?
+[ ] Does this add a new finding vuln_type that duplicates an existing type in VULNERABILITIES{}?
+
+OVER-ENGINEERING
+[ ] Does it introduce a new abstraction (base class, factory, registry, manager) with only one use?
+[ ] Does it add async wrappers around sync code with no concurrency benefit?
+
+ROOT CAUSE
+[ ] Does it add a try/except or guard that masks a bug instead of fixing the root cause?
+    (= deferred bug, label [HIGH])
+[ ] Does it suppress an error log without explaining why the error is safe to ignore?
+
+STABILITY CONTRACT
+[ ] After this change, do all existing API endpoints still return correct responses?
+[ ] After this change, does the God Mode scan still complete successfully?
+[ ] Is any existing finding in postgres at risk of being lost or becoming inaccessible?
+[ ] Does it leave any service (frontend/backend/postgres/redis/neo4j) in an inconsistent state?
+
 ## Output format (required):
 ROLE: Verifier
 
@@ -410,6 +443,226 @@ Gate summary:
   G4 hygiene  → bash scripts/check_process_hygiene.sh → exit 0
 ```
 ---
+
+## Engineering Principles & Full-Stack Coherence (Hard Rules)
+
+These rules apply to **every change** — feature, fix, refactor, or documentation.
+They are not guidelines; they are non-negotiable constraints enforced at Verifier time.
+
+---
+
+### God Mode is the Primary Scan — Everything Orbits It
+
+God Mode (`orchestration/god_mode_engine.py`, launched at `POST /api/god-mode/start`) is the
+**canonical scan path** for oneinfinity. Every scan capability that exists must be reachable
+through God Mode. Every new scan module, agent, or finding type **must** integrate with God Mode
+first. Standalone endpoints are secondary wrappers, never the source of truth.
+
+Rules:
+- New scan logic → wire it into `GodModeSession` before exposing a standalone endpoint.
+- New finding type → confirm it surfaces in `/api/god-mode/{scan_id}/findings`.
+- New LLM call in scan context → route through `offensive_router.py` / `model_orchestrator.py`.
+- Never create a parallel scan pipeline that bypasses `god_mode_engine.py`.
+- God Mode findings flow: `god_mode_engine` → `result_ingestion_engine.get_findings()` →
+  postgres → API → frontend. Break this chain and findings are lost.
+
+---
+
+### Full-Stack Service Sync — All Services Must Move Together
+
+oneinfinity has five runtime services. A feature is not done until **all affected services
+reflect the change consistently**. Partial deployments that leave services out of sync
+are production bugs.
+
+```
+Service         Role                                    Change trigger
+──────────────  ──────────────────────────────────────  ──────────────────────────────────────
+Backend         FastAPI, scan engine, findings API      Always — every feature touches this
+Frontend        React UI (web/frontend/)                Any new endpoint, finding type, or UX
+PostgreSQL       Findings, scan history, state          Schema change, new column, new table
+Redis           Session cache, rate limits, scan state  New caching layer, session change
+Neo4j           Attack graph, asset relationships       New node type, new relationship type
+```
+
+**Before shipping any feature**, answer each question:
+
+| Question | If YES → action required |
+|---|---|
+| New API endpoint? | Add to frontend API client; update UI if user-visible |
+| New finding field? | Migrate postgres schema; update frontend finding card |
+| New scan module? | Wire into God Mode; verify findings appear in dashboard |
+| New session/state key? | Update Redis key schema; document TTL |
+| New graph relationship? | Add Neo4j migration; update attack graph queries |
+| Changed response shape? | Update all frontend consumers; re-run Gate 2 imports |
+
+**Sync verification** — after any feature that touches ≥2 services, the Checker must
+confirm each service reflects the change:
+
+```bash
+# Backend health
+curl -s http://localhost:3000/health
+
+# Postgres — confirm schema/data reflects change
+psql -U oneinfinity -c "\d findings"    # or relevant table
+
+# Redis — confirm no stale keys from old schema
+redis-cli keys "oneinfinity:*" | head -20
+
+# Neo4j — confirm graph is populated if attack-graph change was made
+cypher-shell -u neo4j "MATCH (n) RETURN labels(n), count(n) LIMIT 10"
+
+# Frontend — confirm UI renders without console errors (check browser devtools)
+curl -sf http://localhost:3001/ > /dev/null && echo "Frontend: UP"
+```
+
+---
+
+### UI-First Discovery — Reuse Before Building
+
+Before writing a single line of frontend code for a new feature, search for existing
+UI capabilities. One duplicate component or redundant page is tech debt that outlasts
+the sprint that created it.
+
+**Mandatory discovery steps** (Maker must complete before writing new UI):
+
+1. Search `web/frontend/src/` for components, pages, hooks, or utilities that cover
+   the needed capability:
+   ```bash
+   # Find existing components by keyword
+   grep -r "keyword" web/frontend/src/components/ --include="*.tsx" -l
+   grep -r "keyword" web/frontend/src/pages/ --include="*.tsx" -l
+   ```
+2. Check existing API hooks in `web/frontend/src/hooks/` or `web/frontend/src/api/` —
+   an API client method may already exist.
+3. Check the existing findings display (`FindingCard`, `FindingsList`, `VulnTable`, or
+   equivalent) — new finding types must render through existing cards with new data,
+   not a new card component.
+4. Only if no reusable capability exists: build new. Document why reuse was not possible
+   in the Maker handoff.
+
+**Prohibited UI patterns:**
+- A second scan status panel when one already exists
+- A second findings list when `FindingsList` can be parameterized
+- A duplicate API hook for the same endpoint
+- A new page that duplicates an existing page with minor label differences
+- Hardcoded mock/stub data in a component when a real API endpoint exists
+
+---
+
+### Root-Cause Mandate — Fix the Source, Never the Symptom
+
+When a bug is found:
+1. Identify the **root cause** — the earliest point in the call chain where the invariant breaks.
+2. Fix it there, not in a downstream guard or a try/except that swallows the error.
+3. Remove any symptom-masking code added before the root cause was understood.
+
+**Prohibited symptom fixes:**
+```python
+# WRONG — hides a schema mismatch:
+try:
+    return finding["confirmed_tier"]
+except KeyError:
+    return "UNKNOWN"
+
+# RIGHT — fix the schema so the key is always present, or migrate existing rows.
+```
+```python
+# WRONG — masks a stale-cache bug:
+if findings_from_cache != findings_from_db:
+    return findings_from_db   # silently drops cache
+
+# RIGHT — find why cache diverged; fix the write path that failed to invalidate.
+```
+
+The Verifier must call out any change that **adds a guard without removing the root cause**.
+Label it `[HIGH]` — it is always a deferred bug, not a fix.
+
+---
+
+### No Duplicate Features
+
+Before adding any capability, search the codebase for existing implementations:
+
+```bash
+# Use the code-review-graph MCP first:
+# semantic_search_nodes("XSS scanner")  →  finds existing XSS detection code
+# query_graph(pattern="callers_of", node="scan_for_xss")
+
+# Fallback grep:
+grep -r "xss\|cross.site" src/oneinfinity/ --include="*.py" -l
+```
+
+Duplicate feature checklist (Verifier enforces):
+- [ ] Does a function with the same purpose already exist in `scan/`, `agents/`, or
+      `orchestration/`? If yes → extend it, don't create a parallel one.
+- [ ] Does an API endpoint with the same semantic already exist in `main.py`? If yes →
+      reuse it with new parameters rather than adding a new route.
+- [ ] Does a finding type with the same `vuln_type` string already exist in
+      `main.py:VULNERABILITIES` or the postgres schema? If yes → reuse the type.
+- [ ] Would this feature be reachable via God Mode after this change? If not → incomplete.
+
+---
+
+### No Over-Engineering
+
+Every abstraction must earn its place. The cost of a wrong abstraction is higher than the
+cost of a small amount of repetition.
+
+**Signs of over-engineering (Verifier flags as [MEDIUM] or [HIGH]):**
+- A new base class or ABC with only one subclass
+- A factory function that unconditionally returns one concrete type
+- A config dataclass for a value that will never change
+- A "manager" or "registry" class wrapping a dict that is simpler to use directly
+- Async wrappers around sync code that gains nothing from being async
+- A plugin system for a use-case that has two fixed variants
+
+Rule of three: abstract only when the same pattern appears in three or more concrete places.
+Until then, keep it inline and readable.
+
+---
+
+### Enhancement Mindset — Always Look for Improvement
+
+Every code touch is an opportunity. When reading existing code to implement a change,
+note — and act on — improvements that are safe to make in the same commit:
+
+- A stale comment that no longer matches the code → delete or correct it.
+- A raw `print()` in a module that has a `log` → replace with `log.debug()`.
+- An `except Exception: pass` that silently swallows errors → add `log.error(..., exc_info=True)`.
+- A hardcoded string that appears twice → extract to a module constant.
+- A God Mode result that is computed but never surfaced in the API response → wire it up.
+- A finding that reaches postgres but is never displayed on the frontend → fix the display.
+
+**Scope constraint:** enhancements must be in the same file or directly adjacent module.
+Do not chase enhancement rabbits across unrelated files in a single commit — open a
+separate task for those.
+
+**Enhancement in Verifier scope:** the Verifier should note `[LOW] Enhancement opportunity`
+items even when they are not blockers. The Approver decides whether to include them in the
+current commit or defer.
+
+---
+
+### Non-Negotiable Stability Contract
+
+Every change must leave the system in a state where:
+
+1. **All existing API endpoints still return correct responses.** Run Gate 3 after every
+   backend change. If an endpoint's shape changes, all callers must be updated in the
+   same commit — never leave a consumer broken.
+2. **All existing findings in postgres remain accessible.** The `get_findings()` contract
+   in `result_ingestion_engine.py` must not change shape without a migration.
+3. **God Mode scan completes successfully on a known target.** If your change touches
+   `god_mode_engine.py` or any module it imports, trigger a test scan and confirm
+   findings are returned.
+4. **Frontend renders without runtime errors.** After any frontend change, open the
+   dashboard and confirm no uncaught JS exceptions in the browser console.
+5. **No finding is lost.** If you change how findings are written or read, verify the count
+   before and after your change is identical (or intentionally changed and documented).
+
+These are not acceptance criteria for a PR — they are baseline hygiene. A change that
+fails any of them is not done; it is broken.
+
 
 ## Code Sync — Local ↔ GitHub ↔ EC2 (Hard Rule)
 
