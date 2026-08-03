@@ -693,8 +693,14 @@ class DBManager:
                 )
                 await conn.commit()
         except Exception as exc:
-            log.warning("DBManager._pg_save_scan failed: %s", exc)
-            raise
+            # PoolClosed fires when save_scan is called during/after shutdown.
+            # Don't re-raise — the ASGI handler has nowhere to send the error
+            # and it produces a noisy unhandled exception in the log.
+            _is_pool_closed = type(exc).__name__ in ("PoolClosed", "PoolTimeout") or "already closed" in str(exc)
+            log.warning("DBManager._pg_save_scan failed%s: %s",
+                        " (pool closed — shutdown race)" if _is_pool_closed else "", exc)
+            if not _is_pool_closed:
+                raise
 
     def _sqlite_save_scan(self, scan: dict) -> None:
         import sqlite3 as _sq

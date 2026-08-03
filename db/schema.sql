@@ -45,6 +45,13 @@ CREATE TABLE IF NOT EXISTS findings (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     data         JSONB NOT NULL DEFAULT '{}'
 );
+-- ── Idempotent column additions (safe to re-run on existing DBs) ─────────────
+-- These columns were added after initial table creation in some deployments.
+-- ADD COLUMN IF NOT EXISTS is a no-op when the column already exists.
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS chain_id     TEXT DEFAULT '';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS source_tool  TEXT DEFAULT '';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS evidence     TEXT DEFAULT '';
+
 CREATE INDEX IF NOT EXISTS idx_findings_scan_id    ON findings(scan_id);
 CREATE INDEX IF NOT EXISTS idx_findings_severity   ON findings(severity);
 CREATE INDEX IF NOT EXISTS idx_findings_target     ON findings(target);
