@@ -20,12 +20,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Load .env before anything else so all modules see the correct env vars
+# Load .env before anything else so all modules see the correct env vars.
+# override=True: .env values WIN over system env — critical for AWS_REGION,
+# POSTGRES_URL etc. that may be absent or empty in the system environment
+# when the process is started via nohup without sourcing .env first.
 try:
     from dotenv import load_dotenv as _load_dotenv
     _env_file = Path(__file__).parent.parent.parent / ".env"
     if _env_file.exists():
-        _load_dotenv(_env_file, override=False)
+        _load_dotenv(_env_file, override=True)
 except ImportError:
     pass
 

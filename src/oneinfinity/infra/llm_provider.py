@@ -645,7 +645,11 @@ class BedrockProvider(LLMProvider):
       AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY env vars  (highest priority)
       ~/.aws/credentials                                   (fallback)
       IAM instance role                                    (EC2/ECS)
-    Region: AWS_REGION or AWS_DEFAULT_REGION env var, defaulting to us-east-1.
+    Region: AWS_REGION or AWS_DEFAULT_REGION env var, then .env file fallback,
+            defaulting to eu-central-1 (where inference profile is confirmed working).
+
+    Model: eu.anthropic.claude-sonnet-4-6 (cross-region inference profile for eu-central-1).
+    Override via BEDROCK_DEFAULT_MODEL env var or .env entry.
     """
 
     name = "bedrock"
@@ -654,12 +658,17 @@ class BedrockProvider(LLMProvider):
     cost_per_1m_input  = 3.00   # Claude Sonnet pricing (USD)
     cost_per_1m_output = 15.00
 
-    # Default to the model verified working in eu-central-1.
-    # Override by setting BEDROCK_DEFAULT_MODEL env var.
-    _DEFAULT_MODEL = "eu.anthropic.claude-sonnet-4-6"
+    # Confirmed working inference profile for eu-central-1.
+    # Override by setting BEDROCK_DEFAULT_MODEL in .env or environment.
+    _DEFAULT_MODEL  = "eu.anthropic.claude-sonnet-4-6"
+    _DEFAULT_REGION = "eu-central-1"   # fallback when AWS_REGION not in env
 
     def __init__(self) -> None:
-        self.default_model = os.environ.get("BEDROCK_DEFAULT_MODEL", self._DEFAULT_MODEL)
+        self.default_model = (
+            os.environ.get("BEDROCK_DEFAULT_MODEL")
+            or self._env_file_value("BEDROCK_DEFAULT_MODEL")
+            or self._DEFAULT_MODEL
+        )
         self._boto3_ok = False
         self._creds_ok: Optional[bool] = None  # cached
         try:
@@ -669,11 +678,44 @@ class BedrockProvider(LLMProvider):
             log.debug("[bedrock] boto3 not installed — BedrockProvider unavailable")
 
     def _region(self) -> str:
+        """
+        Resolve the AWS region for Bedrock API calls.
+
+        Priority:
+          1. AWS_REGION environment variable
+          2. AWS_DEFAULT_REGION environment variable
+          3. AWS_REGION from .env file (handles nohup start without sourcing .env)
+          4. Hard default: eu-central-1 (where eu.anthropic.* profiles live)
+        """
         return (
             os.environ.get("AWS_REGION")
             or os.environ.get("AWS_DEFAULT_REGION")
-            or "us-east-1"
+            or self._env_file_value("AWS_REGION")
+            or self._env_file_value("AWS_DEFAULT_REGION")
+            or self._DEFAULT_REGION
         )
+
+    @staticmethod
+    def _env_file_value(key: str) -> str:
+        """
+        Read a single key from the .env file without loading the whole file.
+        Used as a last-resort fallback when os.environ doesn't have the key
+        (e.g. process started via nohup before .env was sourced).
+        Returns empty string if not found — never raises.
+        """
+        try:
+            env_path = Path(__file__).resolve().parent.parent.parent.parent / ".env"
+            if env_path.exists():
+                for line in env_path.read_text().splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, _, v = line.partition("=")
+                        if k.strip() == key:
+                            return v.strip().strip('"').strip("'")
+        except Exception:
+            pass
+        return ""
+
 
     def is_available(self) -> bool:
         if not self._boto3_ok:
