@@ -31,15 +31,20 @@ const MISSION_LABELS = {
 }
 
 const STATUS_CONFIG = {
-  done:    { icon: CheckCircle2, color: 'text-accent-success', bg: 'bg-accent-success/10 border-accent-success/30', label: 'Done' },
-  running: { icon: Loader2,      color: 'text-accent-primary animate-spin', bg: 'bg-accent-primary/10 border-accent-primary/50 shadow-glow-cyan', label: 'Running' },
-  failed:  { icon: XCircle,      color: 'text-red-400',         bg: 'bg-red-500/10 border-red-500/30', label: 'Failed' },
-  skipped: { icon: AlertCircle,  color: 'text-yellow-400',      bg: 'bg-yellow-500/10 border-yellow-500/30', label: 'Skipped' },
-  pending: { icon: Clock,        color: 'text-slate-600',       bg: 'bg-bg-elevated border-bg-border', label: 'Pending' },
+  done:    { icon: CheckCircle2, color: 'text-accent-success',                          bg: 'bg-accent-success/10 border-accent-success/30',     label: 'Done' },
+  running: { icon: Loader2,      color: 'text-accent-primary animate-spin',             bg: 'bg-accent-primary/10 border-accent-primary/50 shadow-glow-cyan', label: 'Running' },
+  failed:  { icon: XCircle,      color: 'text-red-400',                                bg: 'bg-red-500/10 border-red-500/30',                   label: 'Failed' },
+  stopped: { icon: StopCircle,   color: 'text-yellow-400',                             bg: 'bg-yellow-500/10 border-yellow-500/30',             label: 'Stopped' },
+  skipped: { icon: AlertCircle,  color: 'text-yellow-400',                             bg: 'bg-yellow-500/10 border-yellow-500/30',             label: 'Skipped' },
+  pending: { icon: Clock,        color: 'text-slate-600',                              bg: 'bg-bg-elevated border-bg-border',                  label: 'Pending' },
 }
 
-function MissionCard({ name, status }) {
-  const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.pending
+// A scan is "terminal" when terminated_by is any non-null value.
+// In that state, any mission still showing "running" is a stale backend status —
+// the scan has already stopped, so we render it as "stopped" instead.
+function MissionCard({ name, status, isTerminal }) {
+  const displayStatus = (isTerminal && status === 'running') ? 'stopped' : status
+  const cfg = STATUS_CONFIG[displayStatus] || STATUS_CONFIG.pending
   const Icon = cfg.icon
   const label = MISSION_LABELS[name] || name.replace(/_/g, ' ')
   return (
@@ -48,7 +53,12 @@ function MissionCard({ name, status }) {
       cfg.bg
     )}>
       <Icon size={12} className={cfg.color} />
-      <span className={clsx('truncate max-w-[90px]', status === 'running' ? 'text-accent-primary' : status === 'done' ? 'text-accent-success' : 'text-slate-500')}>
+      <span className={clsx('truncate max-w-[90px]',
+        displayStatus === 'running' ? 'text-accent-primary' :
+        displayStatus === 'done'    ? 'text-accent-success' :
+        displayStatus === 'stopped' ? 'text-yellow-400' :
+        'text-slate-500'
+      )}>
         {label}
       </span>
     </div>
@@ -56,13 +66,19 @@ function MissionCard({ name, status }) {
 }
 
 export default function MissionPipeline({ missions = {}, phases_complete = [], recursionLayer = 0, terminated_by = null }) {
-  const missionEntries = Object.entries(missions)
-  const runningCount  = missionEntries.filter(([, s]) => s === 'running').length
-  const doneCount     = missionEntries.filter(([, s]) => s === 'done').length
-  const totalCount    = missionEntries.length
-
+  const isTerminal    = !!terminated_by
   const isUserStopped = terminated_by === 'stop'
+  const isTimeout     = terminated_by === 'time'
+  const isError       = terminated_by === 'error'
   const isComplete    = ['all_done', 'convergence'].includes(terminated_by)
+
+  // When terminal, treat "running" missions as "stopped" for count display too
+  const missionEntries = Object.entries(missions)
+  const effectiveEntries = missionEntries.map(([n, s]) => [n, isTerminal && s === 'running' ? 'stopped' : s])
+  const runningCount  = effectiveEntries.filter(([, s]) => s === 'running').length
+  const doneCount     = effectiveEntries.filter(([, s]) => s === 'done').length
+  const stoppedCount  = effectiveEntries.filter(([, s]) => s === 'stopped').length
+  const totalCount    = effectiveEntries.length
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -70,14 +86,27 @@ export default function MissionPipeline({ missions = {}, phases_complete = [], r
       <div className="flex items-center gap-4 text-[10px] font-bold uppercase tracking-widest text-slate-500 px-1">
         <span className="text-accent-success">{doneCount} done</span>
         {runningCount > 0 && <span className="text-accent-primary">{runningCount} running</span>}
-        {totalCount - doneCount - runningCount > 0 && (
-          <span>{totalCount - doneCount - runningCount} pending</span>
+        {stoppedCount > 0 && <span className="text-yellow-400">{stoppedCount} stopped</span>}
+        {totalCount - doneCount - runningCount - stoppedCount > 0 && (
+          <span>{totalCount - doneCount - runningCount - stoppedCount} pending</span>
         )}
-        {/* Terminated state indicator in the summary bar */}
+        {/* Terminal state indicator */}
         {isUserStopped && (
           <span className="flex items-center gap-1 text-yellow-400 ml-auto">
             <StopCircle size={10} />
             Aborted by user
+          </span>
+        )}
+        {isTimeout && (
+          <span className="flex items-center gap-1 text-orange-400 ml-auto">
+            <Clock size={10} />
+            Time limit reached
+          </span>
+        )}
+        {isError && (
+          <span className="flex items-center gap-1 text-red-400 ml-auto">
+            <XCircle size={10} />
+            Terminated (error)
           </span>
         )}
         {isComplete && (
@@ -97,7 +126,7 @@ export default function MissionPipeline({ missions = {}, phases_complete = [], r
       ) : (
         <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-2">
           {missionEntries.map(([name, status]) => (
-            <MissionCard key={name} name={name} status={status} />
+            <MissionCard key={name} name={name} status={status} isTerminal={isTerminal} />
           ))}
         </div>
       )}

@@ -3323,6 +3323,20 @@ class GodModeConductor:
                     if m._thread.is_alive():
                         log.warning("[GOD MODE] Mission '%s' still running after stop timeout — proceeding", m.name)
 
+            # Force any mission that never self-updated its status to 'stopped'.
+            # This covers: thread was alive when stop() was called but took longer than
+            # the 15s join window (blocking subprocess, asyncio call, etc.).
+            # Without this, missions stay "running" forever in the persisted state file.
+            _forced = []
+            for m in self._missions:
+                if m.status == "running":
+                    m.status = "stopped"
+                    _forced.append(m.name)
+            if _forced:
+                log.info("[GOD MODE] Force-closed missions as 'stopped' (terminated_by=%s): %s",
+                         session.terminated_by, _forced)
+            self._update_session_missions()
+            self._state_file.write(session)   # persist corrected statuses immediately
             # ── Also start ChainsMission if findings were found but it hasn't run ──────
             if (session.finding_count > 0) and chains.status == "pending":
                 log.info("[GOD MODE] Triggering ChainsMission post-convergence (findings found)")
