@@ -215,3 +215,208 @@ class Deduplicator:
         canonical_url = _normalize_url(str(url))
         raw = f"{canonical_type}::{canonical_url}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+# ── SemanticDeduplicator ──────────────────────────────────────────────────────
+
+class SemanticDeduplicator:
+    """
+    Phase 1 — Semantic Root-Cause Deduplication.
+
+    The existing Deduplicator deduplicates by URL + vuln_type + parameter.
+    This class goes one level deeper: it clusters findings that share the
+    same UNDERLYING ROOT CAUSE, even if they appear at different URLs.
+
+    Example: a SQLi in a shared ORM query that affects 400 endpoints is
+    reported as ONE finding with 400 affected_urls, not 400 separate findings.
+    This is how a senior penetration tester writes a report.
+
+    Strategy (two-tier):
+      1. Heuristic pre-clustering: group by (vuln_type, path_template, parameter_class).
+         Path template = URL with all numeric path segments replaced by {id}.
+         Fast, no LLM cost.
+      2. LLM validation: for groups with >1 member, ask the LLM whether they
+         truly share a root cause or just look similar. Small LLM call per group.
+
+    Called from ReportMission Step 2a, after the existing Deduplicator step.
+    Input:  list of finding dicts (already URL-deduplicated by Deduplicator)
+    Output: list of finding dicts — one representative per root-cause cluster,
+            with an 'affected_urls' list and 'instance_count' field added.
+    """
+
+    # Path template: replace numeric segments and UUIDs with {id}
+    _ID_SEGMENT = re.compile(
+        r"(?<=/)\d{1,10}(?=/|$)|"
+        r"(?<=/)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?=/|$)",
+        re.I,
+    )
+
+    def cluster_root_causes(
+        self,
+        findings: List[Dict[str, Any]],
+        use_llm: bool = True,
+        max_llm_groups: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """
+        Cluster findings by root cause and return one representative per cluster.
+
+        Each representative gains two extra fields:
+          affected_urls:  list of all URLs in the cluster
+          instance_count: number of findings merged into this one
+
+        use_llm=True:  LLM validates ambiguous clusters (recommended)
+        use_llm=False: heuristic-only (zero cost, less accurate)
+        max_llm_groups: cap on LLM calls per batch (cost control)
+        """
+        if not findings:
+            return findings
+
+        # Step 1: heuristic pre-clustering
+        clusters = self._heuristic_cluster(findings)
+        log.info(
+            "SemanticDeduplicator: %d findings → %d heuristic clusters",
+            len(findings), len(clusters),
+        )
+
+        # Step 2: LLM validation for ambiguous clusters (>1 member)
+        if use_llm:
+            ambiguous = [c for c in clusters if len(c) > 1][:max_llm_groups]
+            if ambiguous:
+                clusters = self._llm_validate_clusters(clusters, ambiguous)
+                log.info(
+                    "SemanticDeduplicator: %d clusters after LLM validation",
+                    len(clusters),
+                )
+
+        # Step 3: build output — one representative per cluster
+        result = []
+        for cluster in clusters:
+            if len(cluster) == 1:
+                f = dict(cluster[0])
+                f.setdefault("affected_urls", [f.get("url", "")])
+                f.setdefault("instance_count", 1)
+                result.append(f)
+                continue
+
+            # Pick the representative: highest confidence in the cluster
+            representative = max(cluster, key=lambda x: float(x.get("confidence", 0)))
+            rep = dict(representative)
+            rep["affected_urls"] = list({
+                f.get("url", "") for f in cluster if f.get("url")
+            })
+            rep["instance_count"] = len(cluster)
+            # Boost confidence slightly when multiple instances confirm root cause
+            rep["confidence"] = min(1.0, float(rep.get("confidence", 0.8)) + 0.05)
+            result.append(rep)
+
+        log.info(
+            "SemanticDeduplicator: final output %d root-cause findings "
+            "(from %d URL-deduplicated findings)",
+            len(result), len(findings),
+        )
+        return result
+
+    # ── Internals ─────────────────────────────────────────────────────────────
+
+    def _path_template(self, url: str) -> str:
+        """Replace numeric/UUID path segments with {id} to get a path template."""
+        try:
+            parsed = urlparse(url)
+            path = self._ID_SEGMENT.sub("{id}", parsed.path)
+            return f"{parsed.netloc.lower()}{path}"
+        except Exception:
+            return url.lower()
+
+    def _param_class(self, finding: Dict[str, Any]) -> str:
+        """Classify parameter name into a semantic class."""
+        param = (
+            finding.get("parameter") or finding.get("param") or ""
+        ).lower()
+        if any(k in param for k in ["id", "uid", "uuid", "ref", "key"]):
+            return "id_param"
+        if any(k in param for k in ["search", "q", "query", "filter", "keyword"]):
+            return "search_param"
+        if any(k in param for k in ["user", "name", "login", "email"]):
+            return "user_param"
+        if any(k in param for k in ["file", "path", "dir", "upload"]):
+            return "file_param"
+        return "generic_param"
+
+    def _cluster_key(self, finding: Dict[str, Any]) -> str:
+        """Heuristic cluster key: vuln_type + path_template + param_class."""
+        vt = _canonical_vuln_type(
+            finding.get("vuln_type") or finding.get("type") or "unknown"
+        )
+        pt = self._path_template(
+            finding.get("url") or finding.get("endpoint") or ""
+        )
+        pc = self._param_class(finding)
+        return f"{vt}::{pt}::{pc}"
+
+    def _heuristic_cluster(
+        self, findings: List[Dict[str, Any]]
+    ) -> List[List[Dict[str, Any]]]:
+        """Group findings by heuristic cluster key."""
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+        for f in findings:
+            key = self._cluster_key(f)
+            groups.setdefault(key, []).append(f)
+        return list(groups.values())
+
+    def _llm_validate_clusters(
+        self,
+        all_clusters: List[List[Dict[str, Any]]],
+        ambiguous: List[List[Dict[str, Any]]],
+    ) -> List[List[Dict[str, Any]]]:
+        """
+        Ask LLM whether heuristically-grouped clusters truly share a root cause.
+        Splits clusters that the LLM says are NOT the same root cause.
+        """
+        try:
+            from oneinfinity.orchestration.offensive_router import get_model_for_task
+            provider = get_model_for_task("passive_analysis")
+        except Exception as exc:
+            log.debug("SemanticDeduplicator: LLM unavailable: %s", exc)
+            return all_clusters
+
+        validated_clusters = [c for c in all_clusters if len(c) == 1]
+        for cluster in ambiguous:
+            keep_merged = self._ask_llm_same_root(provider, cluster)
+            if keep_merged:
+                validated_clusters.append(cluster)
+            else:
+                # Split: each finding becomes its own cluster
+                validated_clusters.extend([[f] for f in cluster])
+        return validated_clusters
+
+    @staticmethod
+    def _ask_llm_same_root(provider, cluster: List[Dict[str, Any]]) -> bool:
+        """
+        Ask the LLM: do these findings share the same root cause?
+        Returns True to merge, False to split.
+        """
+        sample = cluster[:5]  # cap prompt size
+        items = "\n".join(
+            f"  [{i+1}] vuln_type={f.get('vuln_type')} url={f.get('url','')} "
+            f"param={f.get('parameter') or f.get('param','')} "
+            f"evidence={str(f.get('evidence',''))[:80]}"
+            for i, f in enumerate(sample)
+        )
+        prompt = (
+            f"These {len(cluster)} security findings have the same vulnerability type "
+            f"and similar URL patterns.\n\n{items}\n\n"
+            f"Do they share the SAME root cause (same vulnerable code path, "
+            f"same parameter class, same underlying flaw)? "
+            f"Answer with ONLY 'yes' or 'no'."
+        )
+        try:
+            resp = provider.chat(
+                prompt=prompt,
+                system="You are a security expert. Answer only 'yes' or 'no'.",
+                max_tokens=10,
+                temperature=0.0,
+            )
+            return resp.text.strip().lower().startswith("y")
+        except Exception as exc:
+            log.debug("SemanticDeduplicator._ask_llm_same_root failed: %s", exc)
+            return True  # default: merge on LLM failure (conservative)

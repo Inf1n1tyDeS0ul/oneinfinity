@@ -2100,6 +2100,23 @@ class ReportMission(Mission):
         except Exception as exc:
             log.warning("[GOD MODE] Report: dedup failed (non-fatal): %s", exc, exc_info=True)
 
+        # Step 2a: semantic root-cause deduplication (Phase 1 — Pillar 1.3)
+        # Clusters findings that share the same underlying root cause even if
+        # at different URLs (e.g. same SQLi in a shared ORM = 1 finding, not 400).
+        try:
+            from oneinfinity.core.deduplicator import SemanticDeduplicator
+            before = len(validated)
+            validated = SemanticDeduplicator().cluster_root_causes(validated)
+            after = len(validated)
+            if before > after:
+                log.info(
+                    "[GOD MODE] Report: semantic dedup merged %d → %d root-cause findings",
+                    before, after,
+                )
+        except Exception as exc:
+            log.warning("[GOD MODE] Report: semantic dedup failed (non-fatal): %s", exc)
+
+
         # Step 3: capmap coverage
         # Use ALL ingested findings for this scan (not just the post-dedup slice)
         # so the coverage map reflects what was actually tested, not just what
