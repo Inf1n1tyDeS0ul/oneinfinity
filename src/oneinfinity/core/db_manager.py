@@ -233,10 +233,15 @@ class DBManager:
                     """
                     INSERT INTO findings
                         (finding_id, scan_id, target, title, severity, vuln_type, url,
-                         tool, confidence, cvss, status, source_type, created_at, data)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s)
+                         tool, confidence, cvss, status, source_type, created_at, data,
+                         confirmed_tier, discovered_by, judge_ran_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s,%s,%s)
                     ON CONFLICT (finding_id) DO UPDATE SET
-                        status=EXCLUDED.status, data=EXCLUDED.data
+                        status=EXCLUDED.status,
+                        data=EXCLUDED.data,
+                        confirmed_tier=EXCLUDED.confirmed_tier,
+                        discovered_by=EXCLUDED.discovered_by,
+                        judge_ran_at=EXCLUDED.judge_ran_at
                     """,
                     (
                         finding["finding_id"],
@@ -252,6 +257,9 @@ class DBManager:
                         finding.get("status", "new"),
                         finding.get("source_type", "tool"),
                         json.dumps(data, default=str),
+                        finding.get("confirmed_tier"),            # None → NULL
+                        finding.get("discovered_by") or [],       # list → TEXT[]
+                        finding.get("judge_ran_at"),              # None → NULL
                     ),
                 )
                 await conn.commit()
@@ -298,7 +306,8 @@ class DBManager:
             async with (await self._pool()).connection() as conn:
                 rows = await conn.execute(
                     f"SELECT finding_id,scan_id,target,title,severity,vuln_type,url,"
-                    f"tool,confidence,cvss,status,source_type,created_at,data "
+                    f"tool,confidence,cvss,status,source_type,created_at,data,"
+                    f"confirmed_tier,discovered_by,judge_ran_at "
                     f"FROM findings {where} ORDER BY created_at DESC LIMIT %s",
                     params,
                 )
@@ -306,13 +315,18 @@ class DBManager:
                 async for row in rows:
                     d = dict(zip(
                         ["finding_id","scan_id","target","title","severity","vuln_type",
-                         "url","tool","confidence","cvss","status","source_type","created_at","data"],
+                         "url","tool","confidence","cvss","status","source_type",
+                         "created_at","data","confirmed_tier","discovered_by","judge_ran_at"],
                         row
                     ))
                     extra = d.pop("data") or {}
                     if isinstance(extra, str):
                         extra = json.loads(extra)
                     d.update(extra)
+                    # Ensure new columns are always present with a default
+                    d.setdefault("confirmed_tier", None)
+                    d.setdefault("discovered_by", [])
+                    d.setdefault("judge_ran_at", None)
                     results.append(d)
                 return results
         except Exception as exc:
@@ -338,8 +352,9 @@ class DBManager:
                     """
                     INSERT INTO findings
                         (finding_id, scan_id, target, title, severity, vuln_type, url,
-                         tool, confidence, cvss, status, source_type, created_at, data)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s)
+                         tool, confidence, cvss, status, source_type, created_at, data,
+                         confirmed_tier, discovered_by, judge_ran_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s,%s,%s)
                     ON CONFLICT (scan_id, vuln_type, url) DO NOTHING
                     RETURNING finding_id
                     """,
@@ -357,6 +372,9 @@ class DBManager:
                         finding.get("status", "new"),
                         finding.get("source_type", "tool"),
                         json.dumps(data, default=str),
+                        finding.get("confirmed_tier"),
+                        finding.get("discovered_by") or [],
+                        finding.get("judge_ran_at"),
                     ),
                 )
                 row = await result.fetchone()
@@ -1823,3 +1841,60 @@ class DBManager:
 
     def sync_finding_count(self, scan_id: str) -> int:
         return self._run_sync(self.finding_count(scan_id))
+
+    async def update_finding_judge(
+        self,
+        finding_id: str,
+        confirmed_tier: str,
+        judge_verdict: dict,
+        discovered_by: Optional[list] = None,
+    ) -> bool:
+        """
+        Persist the judge's verdict for a finding.
+
+        confirmed_tier: 'CONFIRMED' | 'INFERRED' | 'CANDIDATE'
+        judge_verdict:  dict with keys confirmed, confidence, fp_risk,
+                        confirmation_step, severity_assessment, reasoning
+        discovered_by:  list of model IDs that found this finding (optional)
+
+        Updates the finding row; merges judge_verdict into the data JSONB column
+        so it surfaces automatically in every get_findings() call.
+        Returns True on success.
+        """
+        if self.mode not in ("distributed", "postgres"):
+            log.warning("update_finding_judge: postgres not available — skipping")
+            return False
+        try:
+            async with (await self._pool()).connection() as conn:
+                await conn.execute(
+                    """
+                    UPDATE findings
+                    SET confirmed_tier = %s,
+                        judge_ran_at   = NOW(),
+                        discovered_by  = COALESCE(%s, discovered_by),
+                        data           = data || %s::jsonb
+                    WHERE finding_id = %s
+                    """,
+                    (
+                        confirmed_tier,
+                        discovered_by,
+                        json.dumps({"judge_verdict": judge_verdict}, default=str),
+                        finding_id,
+                    ),
+                )
+                await conn.commit()
+            return True
+        except Exception as exc:
+            log.warning("DBManager.update_finding_judge failed [%s]: %s", finding_id, exc)
+            return False
+
+    def sync_update_finding_judge(
+        self,
+        finding_id: str,
+        confirmed_tier: str,
+        judge_verdict: dict,
+        discovered_by: Optional[list] = None,
+    ) -> bool:
+        return self._run_sync(
+            self.update_finding_judge(finding_id, confirmed_tier, judge_verdict, discovered_by)
+        )

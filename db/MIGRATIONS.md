@@ -93,11 +93,51 @@ CREATE UNIQUE INDEX idx_findings_dedup ON findings(scan_id, vuln_type, url);
 **Downtime:** None (online migration)
 
 ---
+### Migration 002: Three-Tier Confidence System (Phase 0 — Verified Finding Architecture)
+
+**Date:** 2026-08-03
+**Version:** 2.0 → 3.0
+**Required:** Yes (for PostgreSQL users)
+**Breaking:** No (all new columns are nullable / have defaults)
+
+**What Changed:**
+- Added `confirmed_tier VARCHAR(12)` column: `CONFIRMED` | `INFERRED` | `CANDIDATE` | `NULL`
+- Added `discovered_by TEXT[]` column: model IDs that independently discovered this finding
+- Added `judge_ran_at TIMESTAMPTZ` column: timestamp of last judge evaluation
+- Added `migrations_registry` table (if not exists) for tracking applied migrations
+- `judge_verdict` dict is stored inside the existing `data JSONB` column (no separate column)
+
+**Apply Migration:**
+
+```bash
+psql $POSTGRES_URL -f db/migrations/002_add_confirmed_tier.sql
+```
+
+**Verification:**
+
+```sql
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_name = 'findings'
+  AND column_name IN ('confirmed_tier', 'discovered_by', 'judge_ran_at');
+-- Must return 3 rows
+
+SELECT * FROM migrations_registry WHERE migration_id = '002_add_confirmed_tier';
+-- Must return 1 row
+```
+
+**Rollback:** See bottom of `db/migrations/002_add_confirmed_tier.sql`.
+
+**Downtime:** None (online migration — all columns are additive).
+
+---
+
 
 ## Migration History
 
 | Version | Date | Description | Required |
 |---------|------|-------------|----------|
+| 3.0 | 2026-08-03 | Three-tier confidence (confirmed_tier, discovered_by, judge_ran_at) | ✅ Yes |
 | 2.0 | 2026-05-26 | Content-based dedup | ✅ Yes |
 | 1.0 | 2026-04-01 | Initial schema | N/A |
 

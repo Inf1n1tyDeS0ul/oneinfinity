@@ -81,6 +81,10 @@ class NormalizedFinding:
     raw: dict = field(default_factory=dict)
     poc_steps: list = field(default_factory=list)     # ordered PoC reproduction steps
     reproduction_cmd: str = ""                         # exact CLI command to reproduce
+    # Phase 0: Verified Finding Architecture — three-tier confidence system
+    # Set by finding_judge.py after judge evaluation; None until judged.
+    confirmed_tier: Optional[str] = None  # CONFIRMED | INFERRED | CANDIDATE | None
+    discovered_by: list = field(default_factory=list)  # model IDs that found this
 
     def to_dict(self) -> dict:
         return {
@@ -102,6 +106,8 @@ class NormalizedFinding:
             "raw":              self.raw,
             "poc_steps":        self.poc_steps,
             "reproduction_cmd": self.reproduction_cmd,
+            "confirmed_tier":   self.confirmed_tier,
+            "discovered_by":    self.discovered_by,
         }
 
     def safe_raw_json(self) -> str:

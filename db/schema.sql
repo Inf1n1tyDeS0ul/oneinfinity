@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS findings (
     source_type  TEXT DEFAULT 'tool',
     chain_id     TEXT DEFAULT '',
     evidence     TEXT DEFAULT '',
+    -- Phase 0: Verified Finding Architecture — three-tier confidence system
+    confirmed_tier VARCHAR(12) DEFAULT NULL,  -- CONFIRMED | INFERRED | CANDIDATE | NULL
+    discovered_by  TEXT[] DEFAULT '{}',       -- model IDs that found this finding
+    judge_ran_at   TIMESTAMPTZ DEFAULT NULL,  -- when judge last evaluated this finding
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     data         JSONB NOT NULL DEFAULT '{}'
 );
@@ -48,6 +52,8 @@ CREATE INDEX IF NOT EXISTS idx_findings_created_at ON findings(created_at);
 CREATE INDEX IF NOT EXISTS idx_findings_chain_id   ON findings(chain_id);
 CREATE INDEX IF NOT EXISTS idx_findings_source_tool ON findings(source_tool);
 CREATE INDEX IF NOT EXISTS idx_findings_data       ON findings USING GIN(data);
+CREATE INDEX IF NOT EXISTS idx_findings_confirmed_tier ON findings(confirmed_tier);
+CREATE INDEX IF NOT EXISTS idx_findings_discovered_by  ON findings USING GIN(discovered_by);
 -- Dedup constraint: same (scan_id, vuln_type, url) is a duplicate within a scan.
 -- Enables ON CONFLICT (scan_id, vuln_type, url) DO NOTHING RETURNING finding_id.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_findings_dedup

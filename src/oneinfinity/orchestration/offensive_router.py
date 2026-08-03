@@ -497,3 +497,64 @@ def classify_offensive_task(task: str) -> str:
         return "code_exploit"
 
     return "exploit"
+
+
+
+# ── Phase 0: Semantic Model Routing Table ────────────────────────────────────
+#
+# Routes each task category to the optimal model.
+# Single source of truth for model assignment across the codebase.
+#
+# Rationale per masterplan:
+#   - GPT-5.6 activation classifiers block payload generation →
+#     route all payload/attack work to Claude (no pentest safety filters).
+#   - ExploitGym finding: conservative analytical model for judge/verification
+#     to prevent hallucination anchoring from the scan agent.
+#
+# Format: task_category → {preferred_task_type, reason, fallback_task_type}
+# task_type strings map into llm_provider._TASK_ROUTING.
+
+MODEL_ROUTING_TABLE: dict = {
+    # Passive / analytical — conservative model, high precision
+    "passive_analysis":        {"preferred_task_type": "judge",    "fallback_task_type": "analysis"},
+    "business_logic_analysis": {"preferred_task_type": "judge",    "fallback_task_type": "analysis"},
+    "report_generation":       {"preferred_task_type": "report",   "fallback_task_type": "analysis"},
+    "finding_verification":    {"preferred_task_type": "judge",    "fallback_task_type": "validation"},
+    "secret_analysis":         {"preferred_task_type": "analysis", "fallback_task_type": "analysis"},
+    "mobile_analysis":         {"preferred_task_type": "analysis", "fallback_task_type": "code"},
+    "ai_llm_target_testing":   {"preferred_task_type": "analysis", "fallback_task_type": "analysis"},
+    # Active / offensive — attack-optimised model, unconstrained payload generation
+    "xss_payload_generation":  {"preferred_task_type": "exploit",  "fallback_task_type": "exploit"},
+    "sqli_payload_mutation":   {"preferred_task_type": "exploit",  "fallback_task_type": "exploit"},
+    "exploit_chain_generation":{"preferred_task_type": "chain",    "fallback_task_type": "exploit"},
+    "recon":                   {"preferred_task_type": "recon",    "fallback_task_type": "analysis"},
+    "social_engineering":      {"preferred_task_type": "exploit",  "fallback_task_type": "exploit"},
+    # Default
+    "default":                 {"preferred_task_type": "analysis", "fallback_task_type": "analysis"},
+}
+
+
+def get_model_for_task(task_category: str):
+    """
+    Return the LLMProvider for a given semantic task category.
+
+    Consults MODEL_ROUTING_TABLE, then delegates to llm_provider.get_provider().
+    Falls back through preferred → fallback → auto_detect.
+
+    Usage:
+        provider = get_model_for_task("finding_verification")
+        response = provider.chat(prompt=judge_prompt, system=judge_system)
+    """
+    from oneinfinity.infra.llm_provider import get_factory, get_provider
+    entry = MODEL_ROUTING_TABLE.get(task_category, MODEL_ROUTING_TABLE["default"])
+    preferred = entry["preferred_task_type"]
+    fallback  = entry["fallback_task_type"]
+    try:
+        return get_provider(preferred)
+    except Exception:
+        log.debug("get_model_for_task: '%s' unavailable for '%s', trying fallback '%s'",
+                  preferred, task_category, fallback)
+        try:
+            return get_provider(fallback)
+        except Exception:
+            return get_factory().auto_detect()

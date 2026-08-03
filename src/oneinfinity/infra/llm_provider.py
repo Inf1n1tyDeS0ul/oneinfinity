@@ -744,6 +744,7 @@ class BedrockProvider(LLMProvider):
 # ---------------------------------------------------------------------------
 
 _TASK_ROUTING: Dict[str, Tuple[str, str]] = {
+    # ── Standard task types ───────────────────────────────────────────────
     "analysis":   ("bedrock", "eu.anthropic.claude-sonnet-4-6"),
     "report":     ("bedrock", "eu.anthropic.claude-sonnet-4-6"),
     "exploit":    ("bedrock", "eu.anthropic.claude-sonnet-4-6"),
@@ -752,6 +753,11 @@ _TASK_ROUTING: Dict[str, Tuple[str, str]] = {
     "chain":      ("bedrock", "eu.anthropic.claude-sonnet-4-6"),
     "recon":      ("bedrock", "eu.anthropic.claude-sonnet-4-6"),
     "validation": ("bedrock", "eu.anthropic.claude-sonnet-4-6"),
+    # ── Phase 0: Verified Finding Architecture ────────────────────────────
+    # Judge uses the same provider but is a semantically distinct task type.
+    # Routed to the conservative/analytical model (not the attack model) so
+    # the judge's confidence is independent from the scan agent's.
+    "judge":      ("bedrock", "eu.anthropic.claude-sonnet-4-6"),
 }
 
 # ---------------------------------------------------------------------------
