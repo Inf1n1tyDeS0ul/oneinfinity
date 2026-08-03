@@ -13,10 +13,16 @@ export function useWebSocket(onMessage) {
     // Fetch token for WebSocket auth (query param — browsers can't set WS headers)
     let tokenParam = ''
     try {
-      const r = await fetch('/api/auth-token')
-      if (r.ok) {
-        const { token } = await r.json()
-        tokenParam = `?token=${encodeURIComponent(token)}`
+      // Use server-injected key first (avoids a round-trip that 403s for non-localhost)
+      const injected = window.__OI_API_KEY__
+      if (injected) {
+        tokenParam = `?token=${encodeURIComponent(injected)}`
+      } else {
+        const r = await fetch('/api/auth-token')
+        if (r.ok) {
+          const { token } = await r.json()
+          if (token) tokenParam = `?token=${encodeURIComponent(token)}`
+        }
       }
     } catch {}
     const url = `${proto}://${host}/ws/logs${tokenParam}`

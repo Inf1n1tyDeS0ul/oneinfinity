@@ -23,6 +23,134 @@ from urllib.parse import urljoin
 
 import httpx
 
+import re as _re
+
+
+def _canary_in_executable_context(canary: str, html: str) -> bool:
+    """
+    Return True only when the canary appears in an executable HTML context —
+    NOT inside a JSON data blob like window.__INITIAL_STATE__ = {...}.
+
+    The common SSR false-positive: every URL parameter is reflected as the
+    REFERER field in __INITIAL_STATE__ JSON. The canary IS in the DOM source
+    but inside a quoted JSON string value, never parsed as HTML or executed.
+    """
+    if canary not in html:
+        return False
+
+    idx = html.find(canary)
+    window = html[max(0, idx - 250): idx + len(canary) + 250]
+
+    # Reject: canary is inside a JSON key:value pair (SSR data blob)
+    # Pattern: "KEY":"...canary..." or "KEY":  "...url...canary..."
+    if _re.search(r'"[A-Za-z_]{2,40}"\s*:\s*"[^"]*' + _re.escape(canary[:12]), window):
+        return False
+
+    # Reject: canary appears URL-percent-encoded (still inside a URL string)
+    pct_encoded = ''.join(f'%{ord(c):02X}' if not c.isalnum() else c for c in canary[:8])
+    if pct_encoded[:6].lower() in html.lower():
+        return False
+
+    # Reject: known SSR data blob markers appearing before the canary
+    for marker in ('__INITIAL_STATE__', '__NEXT_DATA__', '__NUXT__', 'window.__APP'):
+        if marker in html:
+            m_idx = html.find(marker)
+            # If canary is within 500KB after the blob marker, treat as data
+            if m_idx < idx < m_idx + 500_000:
+                return False
+
+    # Accept: event-handler attribute  onerror="...canary..."
+    if _re.search(r'on[a-z]+\s*=\s*["\']?[^>]*' + _re.escape(canary[:12]), window, _re.I):
+        return True
+
+    # Accept: javascript: URI
+    if 'javascript:' in window and canary[:8] in window:
+        return True
+
+    # Accept: canary in a <style> block
+    style_blocks = _re.findall(r'<style[^>]*>(.*?)</style>', html, _re.S | _re.I)
+    for sb in style_blocks:
+        if canary in sb:
+            return True
+
+    # Accept: canary in inline script that is NOT a JSON assignment
+    # (no "KEY": preceding the canary within 50 chars)
+    script_blocks = _re.findall(r'<script[^>]*>(.*?)</script>', html, _re.S | _re.I)
+    for sb in script_blocks:
+        if canary not in sb:
+            continue
+        ci = sb.find(canary)
+        local = sb[max(0, ci - 60): ci + len(canary) + 10]
+        # If it looks like a JSON value assignment — skip
+        if _re.search(r'["\']:?\s*"[^"]*' + _re.escape(canary[:8]), local):
+            continue
+        return True
+
+    return False
+
+
+def _payload_in_html_context(payload: str, html: str) -> bool:
+    """
+    Return True only when the XSS payload appears in an executable HTML context.
+    SSR apps embed every URL param in __INITIAL_STATE__/REFERER as a URL-encoded
+    string — the payload is IN the text but inside a JSON value, not executable.
+    """
+    if payload not in html:
+        return False
+
+    idx = html.find(payload)
+    window = html[max(0, idx - 200): idx + len(payload) + 200]
+
+    # Reject: payload is URL-percent-encoded
+    if _re.search(r'%[0-9A-Fa-f]{2}' + _re.escape(payload[:4]), window):
+        return False
+
+    # Reject: payload appears inside a JSON key:value string
+    if _re.search(r'"[A-Za-z_]{2,40}"\s*:\s*"[^"]*' + _re.escape(payload[:10]), window, _re.I):
+        return False
+
+    # Reject: inside a known SSR data blob
+    for marker in ('__INITIAL_STATE__', '__NEXT_DATA__', '__NUXT__'):
+        if marker in html:
+            m_idx = html.find(marker)
+            if m_idx < idx < m_idx + 500_000:
+                return False
+
+    # Accept: event handler attribute
+    if _re.search(r'on[a-z]+\s*=\s*["\']?[^>]*' + _re.escape(payload[:12]), window, _re.I):
+        return True
+
+    # Accept: broken out of attribute — unencoded < adjacent to payload
+    if ('<' + payload[:4]) in window or (payload[-4:] + '>') in window:
+        return True
+
+    # Accept: javascript: URI with payload
+    if 'javascript:' in window and payload[:8] in window:
+        return True
+
+    # Fallback: unencoded payload in HTML context (not JSON string/URL)
+    if '<' in window and '>' in window:
+        return True
+    return False
+
+
+def _css_payload_in_style_context(payload: str, html: str) -> bool:
+    """
+    Return True only when the CSS payload appears inside a <style> block or
+    a style= attribute — NOT just anywhere in the page (every page has CSS).
+    """
+    # Check <style> blocks
+    for style_body in _re.findall(r'<style[^>]*>(.*?)</style>', html, _re.S | _re.I):
+        if payload[:20] in style_body:
+            return True
+    # Check inline style attributes
+    for style_val in _re.findall(r'style\s*=\s*["\']([^"\']*)["\']', html, _re.I):
+        if payload[:20] in style_val:
+            return True
+    return False
+
+
+
 try:
     from .blind_xss_engine import BlindXSSEngine
     _BLIND_XSS = True
@@ -328,7 +456,7 @@ class ClientSideAttackScanner:
                 resp = await self.http_client.get(test_url)
 
                 # Check if CSS injected
-                if "background:" in resp.text and "url(" in resp.text:
+                if _css_payload_in_style_context(payload, resp.text):
                     finding_id = hashlib.md5(f"css_inject_{url}".encode()).hexdigest()[:16]
 
                     # Capture attack traffic
@@ -404,7 +532,7 @@ class ClientSideAttackScanner:
                 test_url = f"{url}?{param}={payload}"
                 resp = await self.http_client.get(test_url)
                 # Only flag truly unescaped reflection (raw < or > present)
-                if payload in resp.text and "<" in resp.text and ">" in resp.text:
+                if payload in resp.text and _payload_in_html_context(payload, resp.text):
                     finding_id = hashlib.md5(f"rxss_{url}_{param}_{payload}".encode()).hexdigest()[:16]
                     self._capture_traffic("GET", test_url, payload, resp, finding_id, "reflected_xss")
                     findings.append(ClientSideFinding(

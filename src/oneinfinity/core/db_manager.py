@@ -196,7 +196,7 @@ class DBManager:
 
     async def _ensure_schema(self) -> None:
         """Apply db/schema.sql to Postgres if tables don't exist."""
-        schema_path = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
+        schema_path = Path(__file__).resolve().parent.parent.parent.parent / "db" / "schema.sql"
         if not schema_path.exists():
             log.warning("DBManager: schema.sql not found at %s — skipping", schema_path)
             return
@@ -1752,7 +1752,15 @@ class DBManager:
         return self._run_sync(self.save_finding(finding))
 
     def sync_save_scan(self, scan: dict) -> str:
-        return self._run_sync(self.save_scan(scan))
+        try:
+            return self._run_sync(self.save_scan(scan))
+        except Exception as _exc:
+            if "PoolClosed" in type(_exc).__name__ or "PoolClosed" in str(_exc):
+                log.warning(
+                    "sync_save_scan: pool closed during shutdown — skipping persist for scan %s",
+                    scan.get("scan_id", "?"))
+                return ""
+            raise
 
     def sync_get_findings(self, **kwargs) -> list:
         return self._run_sync(self.get_findings(**kwargs))

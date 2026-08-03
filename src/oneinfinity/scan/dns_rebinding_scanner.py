@@ -122,12 +122,12 @@ class DNSRebindingScanner:
             await loop.getaddrinfo(hostname, None)
             elapsed = time.monotonic() - start
 
-            # Heuristic: fast resolution (<0.1s) suggests cached, slow suggests fresh lookup
-            # Not accurate but better than nothing
-            if elapsed < 0.05:
-                return 300  # Likely cached
-            else:
-                return 30  # Likely fresh lookup with short TTL
+            # Without dnspython we cannot read actual TTL from DNS wire data.
+            # Timing-based TTL guessing produced systematic false positives on
+            # CDN-fronted targets (slow first-lookup ≠ short TTL). Return None
+            # so callers skip the TTL-based rebinding check entirely.
+            _ = elapsed  # consumed; not used for TTL estimation
+            return None
 
         except Exception as e:
             log.debug(f"DNS TTL check failed for {hostname}: {e}")

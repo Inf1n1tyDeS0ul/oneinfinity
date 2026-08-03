@@ -237,8 +237,9 @@ async def _lifespan(application):
         # the UI does not show a perpetual spinner and the scan can be retried.
         _startup_ts = _dt.datetime.utcnow().isoformat()
         for _sid, _scan in SCANS.items():
-            if _scan.get("scan_type") == "god_mode" and _scan.get("status") == "running":
-                log.warning("Marking orphaned god_mode scan %s as failed (no live task)", _sid)
+            if _scan.get("status") == "running":
+                log.warning("Marking orphaned scan %s (%s) as failed (no live task)",
+                            _sid, _scan.get("scan_type", "unknown"))
                 _scan["status"] = "failed"
                 _scan["error"] = "Server restarted while scan was running"
                 _scan["completed_at"] = _startup_ts

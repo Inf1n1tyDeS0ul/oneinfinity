@@ -624,7 +624,7 @@ class ResultAggregator:
             results_dir = self.RESULTS_DIR
             results_dir.mkdir(parents=True, exist_ok=True)
             out_file = results_dir / f"{result.session_id}.json"
-            out_file.write_text(json.dumps(result.to_dict(), indent=2))
+            out_file.write_text(json.dumps(result.to_dict(), indent=2, default=str))
             log.info("[aggregator] Stored result: %s", out_file)
 
             with self._lock:

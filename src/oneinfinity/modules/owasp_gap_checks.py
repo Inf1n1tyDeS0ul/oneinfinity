@@ -123,6 +123,65 @@ def check_cookie_attributes(url: str, response_headers: Dict[str, str]) -> GapCh
     return result
 
 
+
+# ── Internal Domain Cookie Leak ───────────────────────────────────────────────
+_INTERNAL_DOMAIN_RE = re.compile(
+    r'Domain=([^;\s]+)',
+    re.I
+)
+_INTERNAL_DOMAIN_SUFFIXES = (
+    '.cluster.local', '.internal', '.svc', '.local',
+    '.corp', '.intra', '.lan', '.home'
+)
+
+def check_internal_domain_cookie_leak(response_headers: Dict[str, str]) -> GapCheckResult:
+    """
+    Detect cookies whose Domain= attribute exposes internal hostnames.
+    e.g. Dynatrace setting Domain=.cluster.local leaks k8s cluster topology
+    to any JavaScript on the page.
+    """
+    result = GapCheckResult(check_id="OI-SESS-DOMAIN", vuln_name="Internal Domain Cookie Leak")
+    all_cookies = response_headers.get("Set-Cookie", "") + " " + response_headers.get("set-cookie", "")
+    leaks = []
+    for m in _INTERNAL_DOMAIN_RE.finditer(all_cookies):
+        domain = m.group(1).strip()
+        if any(domain.lower().endswith(suf) for suf in _INTERNAL_DOMAIN_SUFFIXES):
+            leaks.append(domain)
+    if not leaks:
+        return result
+    result.passive_finding = True
+    result.confidence = 0.90
+    result.evidence = (
+        f"Cookie Domain attribute exposes internal network topology: "
+        f"{', '.join(set(leaks))}. "
+        f"Attackers can infer container orchestration platform, service names, and namespace layout."
+    )
+    return result
+
+
+# ── Envoy Internal Topology Disclosure ───────────────────────────────────────
+def check_envoy_topology_leak(response_headers: Dict[str, str]) -> GapCheckResult:
+    """
+    Detect x-envoy-decorator-operation header exposing internal k8s service FQDNs.
+    e.g. eshop-oneshop-nginx.eshop-plh-uat.svc.cluster.local:80/*
+    """
+    result = GapCheckResult(check_id="OI-INFRA-ENVOY", vuln_name="Internal Service Topology Disclosure")
+    decorator = (
+        response_headers.get("x-envoy-decorator-operation", "") or
+        response_headers.get("X-Envoy-Decorator-Operation", "")
+    )
+    if not decorator:
+        return result
+    if ".svc.cluster.local" in decorator or ".svc." in decorator or ".cluster.local" in decorator:
+        result.passive_finding = True
+        result.confidence = 0.85
+        result.evidence = (
+            f"x-envoy-decorator-operation header exposes internal Kubernetes service FQDN: "
+            f"'{decorator}'. Reveals namespace, service name, and cluster domain."
+        )
+    return result
+
+
 # ── WSTG-SESS-05: CSRF Token Validation ───────────────────────────────────────
 
 _CSRF_PATTERNS = [
@@ -135,7 +194,7 @@ def check_csrf(url: str, response_body: str, response_headers: Dict[str, str],
     result = GapCheckResult(check_id="WSTG-SESS-05", vuln_name="Missing CSRF Protection")
 
     token_found = any(p.search(response_body) for p in _CSRF_PATTERNS)
-    samesite = "samesite=strict" in response_headers.get("Set-Cookie", "").lower()
+    samesite = bool(re.search(r"samesite=(strict|lax)", response_headers.get("Set-Cookie", ""), re.I))
     if token_found or samesite:
         return result
 

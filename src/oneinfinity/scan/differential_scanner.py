@@ -59,7 +59,9 @@ _PII_PATTERNS = [
     re.compile(r"\b4[0-9]{12}(?:[0-9]{3})?\b"),         # Visa card
     re.compile(r"\b5[1-5][0-9]{14}\b"),                 # Mastercard
     re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"),  # Email
-    re.compile(r"\b\d{3}\s?\d{3}\s?\d{4}\b"),           # Phone
+    # Phone: require separators (555-867-5309) or explicit phone context to avoid
+    # matching integer constants like Integer.MAX_VALUE (2147483647).
+    re.compile(r"\b\d{3}[\-.]\d{3}[\-.]\d{4}\b"),         # Phone with separators
     re.compile(r'"password"\s*:\s*"[^"]+"', re.I),
     re.compile(r'(api_key|secret|token)\s*[:=]\s*["\']?\w{16,}', re.I),
 ]

@@ -90,7 +90,7 @@ _FP_VALUES = frozenset({
 })
 
 # AWS Secret Key requires nearby context
-_AWS_SECRET_CONTEXT_RE = re.compile(r"(?:secret|aws|key)", re.I)
+_AWS_SECRET_CONTEXT_RE = re.compile(r"(?:aws_secret|aws.*secret|secret.*access|AWS_SECRET)", re.I)
 
 
 def _entropy(s: str) -> float:
@@ -135,6 +135,63 @@ class JSSecretScanner:
         self._ssl_ctx.verify_mode = ssl.CERT_NONE
 
     # ── Public API ────────────────────────────────────────────────────────────
+
+
+    def _scan_initial_state(self, target: str, url: str, content: str) -> List[dict]:
+        """
+        Detect API keys embedded in window.__INITIAL_STATE__ server-side blobs.
+        These configs are injected into HTML on every page load and expose backend
+        API keys to any visitor — a critical finding missed by JS-only scanners.
+        """
+        import json
+        findings: List[dict] = []
+        # Match window.__INITIAL_STATE__ = { ... }
+        m = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{)', content)
+        if not m:
+            return findings
+        # Extract JSON: use </script> boundary instead of brace-counting.
+        # Brace-counting fails when string values contain { or } (e.g. CSS).
+        start = m.start(1)
+        script_end = content.find('</script>', start)
+        raw = content[start:script_end].strip().rstrip(';').rstrip() if script_end > 0 else content[start:start + 2_000_000]
+        try:
+            blob = json.loads(raw)
+        except Exception:
+            return findings
+        app_data = blob.get('appData', blob)
+        _KEY_RE = re.compile(
+            r'(?:_KEY|_SECRET|_TOKEN|_PASSWORD|_API_KEY|_APIKEY|_CREDENTIAL|_AUTH)$',
+            re.I
+        )
+        for key, val in app_data.items():
+            if not isinstance(val, str) or len(val) < 8:
+                continue
+            if not _KEY_RE.search(key):
+                continue
+            # Skip empty / placeholder values
+            if val.lower() in ('', 'none', 'null', 'undefined', 'false', 'true', '0'):
+                continue
+            finding_id = hashlib.md5(f"ois_{key}_{val[:12]}_{target}".encode()).hexdigest()[:16]
+            findings.append({
+                'finding_id': finding_id,
+                'vuln_type': 'client_side_secret_exposure',
+                'name': f'window.__INITIAL_STATE__ key: {key}',
+                'title': f'API key exposed in window.__INITIAL_STATE__: {key}',
+                'severity': 'high',
+                'url': url,
+                'value_preview': val[:8] + '...' + val[-4:] if len(val) > 12 else val,
+                'confidence': 0.90,
+                'tool': 'js_secret_scanner',
+                'source_type': 'active',
+                'target': target,
+                'evidence': (
+                    f"window.__INITIAL_STATE__.appData.{key} = '{val[:8]}...' "
+                    f"(exposed to all visitors in server-rendered HTML)"
+                ),
+                'from_source_map': False,
+                'entropy': round(_entropy(val), 2),
+            })
+        return findings
 
     def scan_urls(
         self,
@@ -277,7 +334,10 @@ class JSSecretScanner:
             if len(value) < 6:
                 continue
 
-            finding_id = hashlib.md5(f"jss_{name}_{url}".encode()).hexdigest()[:16]
+            # Deduplicate by (name, value, target) — same secret on multiple pages
+            # of the same target is one finding, not N.
+            _val_key = value[:12] if len(value) >= 12 else value
+            finding_id = hashlib.md5(f"jss_{name}_{_val_key}_{target}".encode()).hexdigest()[:16]
             finding = {
                 "finding_id": finding_id,
                 "vuln_type": "js_secret",
@@ -300,6 +360,8 @@ class JSSecretScanner:
                 finding = self._validate_firebase_db(finding, m.group(0))
 
             findings.append(finding)
+        # Check for window.__INITIAL_STATE__ API key exposure in page HTML
+        findings.extend(self._scan_initial_state(target, url, content))
         return findings
 
     # ── jsluice subprocess (Tier 4) ───────────────────────────────────────────

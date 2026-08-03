@@ -2393,8 +2393,24 @@ class CanonicalExecutor:
                                 with _ur_sr.urlopen(_sr_req, timeout=6, context=_ssl_ctx_sr) as _sr_resp:
                                     _sr_status = _sr_resp.status
                                     _sr_body = _sr_resp.read(4096).decode("utf-8", errors="replace")
-                                # If the endpoint responds 200 with a different session → auth-state vuln
-                                if _sr_status == 200:
+                                # If the endpoint responds 200 with a different session → auth-state vuln.
+                                # Skip public-area URLs: product pages, category listings, basket, offers
+                                # etc. are intentionally accessible without authentication.
+                                _PUBLIC_PATH_RE = re.compile(
+                                    r"/(?:oferta|kategoria|basket|koszyk|produkt|product|"  
+                                    r"kategoria|list|lista|produkty|static|assets|cdn|"  
+                                    r"sw\.js|service-worker|robots\.txt)"
+                                    r"|\.(js|css|png|jpg|svg|ico|woff|ttf)$",
+                                    re.I
+                                )
+                                _PRIVATE_PATH_RE = re.compile(
+                                    r"/(?:api|account|user|admin|dashboard|profile|order|"  
+                                    r"checkout|payment|my-|settings|config|manage)",
+                                    re.I
+                                )
+                                _is_public = (_PUBLIC_PATH_RE.search(_cf_url) and
+                                              not _PRIVATE_PATH_RE.search(_cf_url))
+                                if _sr_status == 200 and not _is_public:
                                     _sr_finding = {
                                         "vuln_type": "session_replay_access",
                                         "severity": "high",
