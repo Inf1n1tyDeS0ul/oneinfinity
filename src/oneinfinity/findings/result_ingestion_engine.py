@@ -682,7 +682,7 @@ class ResultIngestionEngine:
         # Root cause: agents concatenate empty scheme + target + path.
         # Must happen before dedup so the fixed URL is what gets stored/deduped.
         if _url.startswith('://') or _url == '://':
-            fixed = self._sanitize_url(_url, result.scan_id and finding.target or "")
+            fixed = self._sanitize_url(_url, finding.target or result.scan_id or "")
             if fixed != _url:
                 log.debug("ingest: fixed malformed URL [%s] → [%s]", _url, fixed)
                 finding.url = fixed
