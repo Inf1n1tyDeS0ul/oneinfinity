@@ -4150,8 +4150,13 @@ async def submit_finding_feedback(finding_id: str, body: Dict[str, Any]):
         # only by ID format mismatch.
         finding: Dict[str, Any] = {}
         _cached = VULNERABILITIES.get(finding_id)
-        if _cached:
-            finding = _cached if isinstance(_cached, dict) else {}
+        if _cached and isinstance(_cached, dict):
+            # VULNERABILITIES dicts use 'attack_type' (from _finding_to_api mapping).
+            # HITL engine expects 'vuln_type'. Normalise before passing.
+            _c = dict(_cached)
+            if not _c.get("vuln_type") and _c.get("attack_type"):
+                _c["vuln_type"] = _c["attack_type"]
+            finding = _c
         if not finding:
             try:
                 mgr = await get_mgr()
