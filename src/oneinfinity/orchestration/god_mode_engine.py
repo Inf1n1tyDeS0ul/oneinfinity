@@ -2318,6 +2318,9 @@ class AdvancedScanMission(Mission):
                     bus = get_ingestion_engine()
                     for f in findings:
                         if isinstance(f, dict):
+                            # Skip chain_suggestion stubs — no URL, no evidence, not confirmed findings
+                            if f.get("source") == "chain_suggestion":
+                                continue
                             bus.ingest(RawResult(scan_id=session.scan_id,
                                                  source="god-mode-advanced-mission", raw=f))
             except Exception as exc:
@@ -2371,6 +2374,9 @@ class AdvancedScanMission(Mission):
                     bus = get_ingestion_engine()
                     for f in findings:
                         if isinstance(f, dict):
+                            # Skip chain_suggestion stubs — speculative, no URL, not confirmed
+                            if f.get("source") == "chain_suggestion":
+                                continue
                             bus.ingest(RawResult(scan_id=session.scan_id, source="god-mode-advanced-mission", raw=f))
                 except Exception as exc:
                     log.warning("[GOD MODE] AdvancedScanMission ingestion failed: %s", exc)
