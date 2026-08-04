@@ -4155,21 +4155,24 @@ async def submit_finding_feedback(finding_id: str, body: Dict[str, Any]):
         if not finding:
             try:
                 mgr = await get_mgr()
-                if mgr and hasattr(mgr, "sync_pg_execute_read"):
-                    _rows = mgr.sync_pg_execute_read(
+                if mgr and hasattr(mgr, "pg_execute_read"):
+                    # Use the async method directly — sync wrappers can deadlock in
+                    # the FastAPI async context when the DB background loop is busy.
+                    import json as _jmod
+                    _rows = await mgr.pg_execute_read(
                         "SELECT finding_id, scan_id, target, title, severity, vuln_type, "
                         "url, tool, confidence, cvss, status, source_type, data "
                         "FROM findings WHERE finding_id = %s LIMIT 1",
                         (finding_id,),
                     )
                     if _rows:
-                        _r = _rows[0]
-                        # Merge JSONB data column into top-level dict (same as get_findings)
-                        import json as _jmod
+                        _r = dict(_rows[0])
                         _extra = _r.pop("data", None) or {}
                         if isinstance(_extra, str):
                             _extra = _jmod.loads(_extra)
                         finding = {**_r, **_extra}
+                        log.debug("[HITL] Finding loaded from DB: id=%s vuln=%s",
+                                  finding_id, finding.get("vuln_type"))
             except Exception as _fe:
                 log.warning("[HITL] Finding DB lookup failed: %s", _fe)
         if not finding:
