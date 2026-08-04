@@ -471,7 +471,7 @@ class HITLRLEngine:
                 )
 
             # Incorporate researcher notes
-            tp_notes = [r["notes"] for r in tp_rows if r.get("notes")][:2]
+            tp_notes = [r["notes"] for r in tp_rows if r["notes"]][:2]
             if tp_notes:
                 strategy_parts.append(f"Researcher notes on confirmed cases: {'; '.join(tp_notes)}")
 
