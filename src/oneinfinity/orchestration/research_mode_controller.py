@@ -587,11 +587,38 @@ class ResearchModeController:
                 try:
                     self._log("Phase 0: Adaptive recon (first iteration only)...")
                     from oneinfinity.recon.adaptive_recon_engine import AdaptiveReconEngine
+                    _auth_ctx = None
+                    if self.auth_config and any(self.auth_config.values()):
+                        try:
+                            from oneinfinity.auth.session_manager import LoginSession
+                            from oneinfinity.auth.auth_session_context import AuthSessionContext
+                            import uuid as _uuid, time as _time
+                            _cookies = []
+                            _sc = self.auth_config.get("session_cookie", "")
+                            if _sc:
+                                for pair in _sc.split(";"):
+                                    pair = pair.strip()
+                                    if "=" in pair:
+                                        n, _, v = pair.partition("=")
+                                        _cookies.append({"name": n.strip(), "value": v.strip()})
+                            _hdrs = {}
+                            _bt = self.auth_config.get("bearer_token") or self.auth_config.get("auth_header", "")
+                            if _bt:
+                                _hdrs["Authorization"] = _bt if _bt.startswith("Bearer ") else f"Bearer {_bt}"
+                            _sess = LoginSession(
+                                session_id=_uuid.uuid4().hex[:12], target="", login_url="",
+                                cookies=_cookies, auth_headers=_hdrs, local_storage={},
+                                session_storage={}, indexeddb_snapshot={}, har_path="",
+                                recorder="config", recorded_at=_time.time(),
+                            )
+                            _auth_ctx = AuthSessionContext(_sess)
+                        except Exception as _ace:
+                            self._log(f"  Auth context build failed (non-fatal): {_ace}")
                     _recon = AdaptiveReconEngine(
                         self.target,
                         depth="quick",
                         output_dir=str(self.output_dir),
-                        auth_context=self.auth_config if self.auth_config else None,
+                        auth_context=_auth_ctx,
                     ).run()
                     _seed_urls  = _recon.all_urls or None
                     _seed_hosts = _recon.alive_hosts or None

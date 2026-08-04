@@ -1133,7 +1133,8 @@ class UnifiedAdvancedScanner:
 
         try:
             scanner = GraphQLScanEngine(self.target)
-            findings = await scanner.run()
+            loop = asyncio.get_event_loop()
+            findings = await loop.run_in_executor(None, scanner.run)
             log.info(f"GraphQL testing complete: {len(findings)} findings")
             return ('graphql', [f.to_dict() if hasattr(f, 'to_dict') else f for f in findings])
         except Exception as e:
