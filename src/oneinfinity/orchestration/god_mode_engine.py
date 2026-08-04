@@ -1569,6 +1569,34 @@ class ChainsMission(Mission):
 
         chain_count = len(chains) if chains else 0
         log.info("[GOD MODE] ChainsMission complete — %d chains detected", chain_count)
+
+        # Persist chains to scan-specific JSON file so the /api/scan/{id}/chains
+        # endpoint can display them in the VulnChainGraph even when findings don't
+        # have chain_id set (ChainsMission runs after FullScanMission which already
+        # stored findings without chain_id).
+        if chains:
+            try:
+                import json as _jmod
+                _chains_dir = GOD_MODE_DIR / session.scan_id
+                _chains_dir.mkdir(parents=True, exist_ok=True)
+                _chains_file = _chains_dir / "chains_mission.json"
+                _chains_payload = []
+                for _ch in chains:
+                    _cd = _ch if isinstance(_ch, dict) else (_ch.__dict__ if hasattr(_ch, '__dict__') else {})
+                    _chains_payload.append({
+                        "chain_id":   str(_cd.get("chain_id", _cd.get("name", "chain"))),
+                        "chain_name": _cd.get("name", "exploit_chain"),
+                        "steps":      _cd.get("steps", []),
+                        "severity":   _cd.get("combined_severity", _cd.get("severity", "high")),
+                        "bounty":     _cd.get("estimated_bounty", 0),
+                        "target":     session.target,
+                        "scan_id":    session.scan_id,
+                    })
+                _chains_file.write_text(_jmod.dumps({"chains": _chains_payload}, indent=2))
+                log.info("[GOD MODE] ChainsMission: wrote %d chains to %s", chain_count, _chains_file)
+            except Exception as _cf_exc:
+                log.debug("[GOD MODE] ChainsMission: chains file write failed: %s", _cf_exc)
+
         self._result = {"chains": chain_count}
 
 

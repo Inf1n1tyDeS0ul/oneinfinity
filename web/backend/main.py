@@ -10924,6 +10924,9 @@ async def get_scan_chain_graph(scan_id: str):
         except Exception:
             pass
 
+    # ── 2b. Load chains_mission.json path (actual injection happens after chain_groups is defined)
+    _chains_file = _P.home() / ".oneinfinity" / scan_id / "chains_mission.json"
+
     # ── 3. Determine target label ─────────────────────────────────────────────
     scan_entry = SCANS.get(scan_id) or {}
     _state_f   = _P.home() / ".oneinfinity" / f"god-mode-{scan_id}.json"
@@ -10958,6 +10961,33 @@ async def get_scan_chain_graph(scan_id: str):
             chain_groups.setdefault(_cid, []).append(_f)
         else:
             unchained.append(_f)
+
+    # ── 5b. Inject ChainsMission results from chains_mission.json ────────────
+    # Adds detected chains as pre-formed groups with synthetic step findings.
+    # This ensures chain_count > 0 and VulnChainGraph shows chain nodes even
+    # when findings don't have chain_id set (pre-existing findings from DB).
+    if _chains_file.exists():
+        try:
+            _cm_data = _j.loads(_chains_file.read_text())
+            for _cm_chain in _cm_data.get("chains", []):
+                _cid = str(_cm_chain.get("chain_id", _cm_chain.get("chain_name", "chain")))
+                if _cid and _cid not in chain_groups:
+                    _steps = _cm_chain.get("steps", [])
+                    chain_groups[_cid] = [
+                        {
+                            "id": f"{_cid}_{i}",
+                            "finding_id": f"{_cid}_{i}",
+                            "vuln_type": _step,
+                            "title": _step.replace("_", " ").title(),
+                            "severity": _cm_chain.get("severity", "high"),
+                            "url": _cm_chain.get("target", ""),
+                            "chain_id": _cid,
+                            "data": {"chain_name": _cm_chain.get("chain_name", "")},
+                        }
+                        for i, _step in enumerate(_steps)
+                    ]
+        except Exception:
+            pass
 
     _sev_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
