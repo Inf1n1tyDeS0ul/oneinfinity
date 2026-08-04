@@ -323,13 +323,9 @@ class CrossTargetKnowledgeDistiller:
         vuln_stats: Dict[str, dict],
     ) -> int:
         """
-        Write vuln patterns to postgres knowledge_base table as a Neo4j fallback.
-
-        Stores one row per (tech_stack_key, vuln_type) pair with:
-          category = 'scan_pattern'
-          key      = '<tech_stack_key>:<vuln_type>'
-          value    = JSON with occurrence_count, avg_cvss, best_tool, last_scan_id
-        ON CONFLICT updates counters so rows accumulate across scans.
+        Write vuln patterns to the postgres knowledge_base table (data JSONB column).
+        Uses actual schema: (id UUID, category TEXT, key TEXT, data JSONB, created_at, updated_at).
+        ON CONFLICT (category, key) merges occurrence_count across scans.
         Returns count of rows written.
         """
         if not vuln_stats:
@@ -344,7 +340,7 @@ class CrossTargetKnowledgeDistiller:
                 return 0
             for vt, stats in vuln_stats.items():
                 kb_key = f"{tech_key}:{vt}"
-                value_json = _json.dumps({
+                data_json = _json.dumps({
                     "tech_stack":       tech_stack,
                     "vuln_type":        vt,
                     "occurrence_count": stats["count"],
@@ -353,33 +349,35 @@ class CrossTargetKnowledgeDistiller:
                     "confirmed":        stats.get("confirmed", 0),
                     "last_scan_id":     scan_id,
                     "target":           target,
+                    "source":           "knowledge_distiller",
                 })
                 try:
                     db.sync_pg_execute_write(
                         """
-                        INSERT INTO knowledge_base (category, key, value, source, created_at)
-                        VALUES (%s, %s, %s, 'knowledge_distiller', NOW())
+                        INSERT INTO knowledge_base (category, key, data, updated_at)
+                        VALUES (%s, %s, %s::jsonb, NOW())
                         ON CONFLICT (category, key) DO UPDATE SET
-                            value      = knowledge_base.value::jsonb ||
+                            data       = knowledge_base.data ||
                                          jsonb_build_object(
                                              'occurrence_count',
-                                             (COALESCE((knowledge_base.value::jsonb->>'occurrence_count')::int, 0)
-                                              + %s::int),
+                                             COALESCE((knowledge_base.data->>'occurrence_count')::int, 0)
+                                             + %s::int,
                                              'avg_cvss',
                                              ROUND((
-                                                 COALESCE((knowledge_base.value::jsonb->>'avg_cvss')::numeric, 0)
+                                                 COALESCE((knowledge_base.data->>'avg_cvss')::numeric, 0)
                                                  + %s::numeric
                                              ) / 2, 2),
-                                             'best_tool',   %s,
+                                             'best_tool',    %s,
                                              'confirmed',
-                                             (COALESCE((knowledge_base.value::jsonb->>'confirmed')::int, 0) + %s::int),
+                                             COALESCE((knowledge_base.data->>'confirmed')::int, 0)
+                                             + %s::int,
                                              'last_scan_id', %s,
                                              'target',       %s
                                          ),
-                            source     = 'knowledge_distiller'
+                            updated_at = NOW()
                         """,
                         (
-                            "scan_pattern", kb_key, value_json,
+                            "scan_pattern", kb_key, data_json,
                             stats["count"],
                             stats["avg_cvss"],
                             stats["best_tool"],
@@ -401,9 +399,8 @@ class CrossTargetKnowledgeDistiller:
         top_n: int = 10,
     ) -> List[dict]:
         """
-        Query postgres knowledge_base for most productive vuln types for a tech stack.
-        Used as fallback when Neo4j is unavailable.
-        Returns list of {vuln_type, avg_cvss, occurrence_count, best_tool}.
+        Query postgres knowledge_base (data JSONB column) for most productive
+        vuln types for a tech stack. Used as fallback when Neo4j is unavailable.
         """
         if not tech_stack:
             return []
@@ -411,22 +408,21 @@ class CrossTargetKnowledgeDistiller:
         results: List[dict] = []
         try:
             from oneinfinity.core.db_manager import get_db_manager_sync
-            import json as _json
             db = get_db_manager_sync()
             if db is None or db.mode not in ("distributed", "postgres"):
                 return []
             rows = db.sync_pg_execute_read(
                 """
-                SELECT key, value FROM knowledge_base
+                SELECT key, data FROM knowledge_base
                 WHERE category = 'scan_pattern' AND key LIKE %s
-                ORDER BY (value::jsonb->>'occurrence_count')::int DESC
+                ORDER BY COALESCE((data->>'occurrence_count')::int, 0) DESC
                 LIMIT %s
                 """,
                 (f"{tech_key}:%", top_n),
             )
             for row in rows:
                 try:
-                    v = _json.loads(row["value"]) if isinstance(row["value"], str) else row["value"]
+                    v = row["data"] if isinstance(row["data"], dict) else {}
                     results.append({
                         "vuln_type":        v.get("vuln_type", ""),
                         "avg_cvss":         float(v.get("avg_cvss", 0)),
