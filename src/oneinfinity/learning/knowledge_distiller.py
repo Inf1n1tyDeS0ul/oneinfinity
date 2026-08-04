@@ -395,21 +395,31 @@ class CrossTargetKnowledgeDistiller:
         """
         if not tech_stack:
             return []
-        tech_key = "|".join(sorted(tech_stack))
         results: List[dict] = []
         try:
             from oneinfinity.core.db_manager import get_db_manager_sync
+            import json as _json
             db = get_db_manager_sync()
             if db is None or db.mode not in ("distributed", "postgres"):
                 return []
+            # Use JSONB containment: data->'tech_stack' contains ALL requested techs.
+            # This correctly finds rows stored with a superset of the requested stack.
+            # Falls back to LIKE prefix match so rows without a tech_stack JSONB array
+            # (e.g. older entries keyed as "jwt|react:idor") are also picked up.
+            tech_arr = _json.dumps(sorted(tech_stack))  # e.g. '["jwt","react"]'
+            tech_key_prefix = "|".join(sorted(tech_stack))
             rows = db.sync_pg_execute_read(
                 """
                 SELECT key, data FROM knowledge_base
-                WHERE category = 'scan_pattern' AND key LIKE %s
+                WHERE category = 'scan_pattern'
+                  AND (
+                    data->'tech_stack' @> %s::jsonb
+                    OR key LIKE %s
+                  )
                 ORDER BY COALESCE((data->>'occurrence_count')::int, 0) DESC
                 LIMIT %s
                 """,
-                (f"{tech_key}:%", top_n),
+                (tech_arr, f"{tech_key_prefix}:%", top_n),
             )
             for row in rows:
                 try:
