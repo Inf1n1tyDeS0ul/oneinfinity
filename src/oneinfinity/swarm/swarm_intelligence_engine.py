@@ -302,22 +302,51 @@ class SwarmAgent(ABC):
     # ── Graph analysis ────────────────────────────────────────────────────────
 
     async def analyze_graph(self, target: str, context: Dict) -> List[Dict]:
-        """Collect relevant graph nodes + context endpoints into a unified list."""
+        """Collect relevant graph nodes + context endpoints into a unified list.
+        Only returns nodes whose label/url belongs to the current scan target host.
+        This prevents cross-scan contamination from the shared global attack graph.
+        """
         nodes: List[Dict] = []
+
+        # Derive the target host (with port) for filtering
+        try:
+            from urllib.parse import urlparse as _up
+            _t = _up(target)
+            _target_host = _t.netloc or _t.path.split("/")[0]  # host:port or bare host
+            _target_plain = _target_host.split(":")[0]          # host without port
+        except Exception:
+            _target_host = target
+            _target_plain = target
+
+        def _in_scope(label: str) -> bool:
+            """Return True if the node label belongs to the current target."""
+            if not label:
+                return False
+            try:
+                from urllib.parse import urlparse as _up2
+                _p = _up2(label)
+                _h = _p.netloc or _p.path.split("/")[0]
+                _host = _h.split(":")[0]
+            except Exception:
+                _host = label
+            return (_target_host in label or _target_plain == _host
+                    or label.startswith(_target_host)
+                    or label.startswith(_target_plain))
 
         if self.attack_graph and _GRAPH_AVAILABLE:
             try:
                 for ntype in self.RELEVANT_NODE_TYPES:
                     matches = self.attack_graph.find_nodes(node_type=ntype)
                     for n in matches:
-                        nodes.append({"id": n.id, "label": n.label,
-                                      "type": n.node_type, "props": n.properties})
+                        if _in_scope(n.label):
+                            nodes.append({"id": n.id, "label": n.label,
+                                          "type": n.node_type, "props": n.properties})
                 for keyword in self.RELEVANT_LABEL_KEYWORDS:
                     matches = self.attack_graph.find_nodes(label_contains=keyword)
                     for n in matches:
                         entry = {"id": n.id, "label": n.label,
                                  "type": n.node_type, "props": n.properties}
-                        if entry not in nodes:
+                        if _in_scope(n.label) and entry not in nodes:
                             nodes.append(entry)
             except Exception as exc:
                 logger.debug("[%s] Graph analysis: %s", self.name, exc)

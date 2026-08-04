@@ -309,12 +309,15 @@ async def scan_grpc(target: str) -> List[ScannerFinding]:
             body = response.get("body", "")
             
             result = check_grpc_soap(target, headers, body)
-            if result.confidence >= 0.60:
+            # Only emit when the check actually detected something (passive_finding=True).
+            # confidence>=0.60 on an empty result is NOT a finding.
+            if result.passive_finding and result.confidence >= 0.65:
+                sev = "high" if result.active_confirmed else "medium"
                 findings.append(ScannerFinding(
                     finding_id=hashlib.md5(f"grpc_{target}".encode()).hexdigest()[:16],
                     vuln_type="grpc_reflection",
-                    title="gRPC Reflection Enabled",
-                    severity="high",
+                    title="gRPC/SOAP Endpoint Exposed",
+                    severity=sev,
                     url=target,
                     evidence=result.evidence,
                     confidence=result.confidence,

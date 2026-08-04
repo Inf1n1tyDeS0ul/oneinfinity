@@ -673,6 +673,13 @@ class ResultIngestionEngine:
             if not host:
                 return True
             if host in ('localhost', '127.0.0.1', '::1'):
+                # When scan target has an explicit port, require the finding URL
+                # to use the same port — prevents cross-service contamination
+                # (e.g. DVWA:8888 scan should not absorb JuiceShop:9090 findings).
+                target_port = _up(scan_target).port
+                url_port = _up(url).port
+                if target_port and url_port and target_port != url_port:
+                    return False
                 return True
             raw_target = _up(scan_target).netloc.split(':')[0]
             if raw_target.startswith('www.'): raw_target = raw_target[4:]

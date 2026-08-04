@@ -40,9 +40,9 @@ log = logging.getLogger("oi.smuggling_engine")
 # Constants
 # ---------------------------------------------------------------------------
 
-_TIMING_THRESHOLD_S = 3.0   # Responses this much slower than baseline → likely smuggled
+_TIMING_THRESHOLD_S = 5.0   # Responses this much slower than baseline → likely smuggled
 _RECV_BUFSIZE = 8192
-_BASELINE_RETRIES = 2
+_BASELINE_RETRIES = 3
 
 
 # ---------------------------------------------------------------------------
@@ -240,13 +240,19 @@ class SmugglingEngine:
             resp_str = resp_bytes.decode("latin-1", errors="replace")[:500]
 
             if is_timing_hit or elapsed > baseline + _TIMING_THRESHOLD_S:
+                # Confirmation: send a second probe to rule out transient latency spikes
+                _, confirm_elapsed = self._send_raw(host, port, cl_te_payload, use_ssl)
+                if confirm_elapsed <= baseline + _TIMING_THRESHOLD_S:
+                    log.debug("CL.TE timing not reproducible at %s (probe=%.2fs confirm=%.2fs)",
+                              url, elapsed, confirm_elapsed)
+                    return None
                 return _make_finding(
                     vuln_type="http_request_smuggling",
                     url=url,
                     payload=cl_te_payload,
                     evidence=(
-                        f"CL.TE timing: probe took {elapsed:.2f}s vs baseline {baseline:.2f}s "
-                        f"(delta {elapsed - baseline:.2f}s). Response: {resp_str[:200]}"
+                        f"CL.TE timing confirmed: probe1={elapsed:.2f}s probe2={confirm_elapsed:.2f}s "
+                        f"vs baseline {baseline:.2f}s. Response: {resp_str[:200]}"
                     ),
                     confidence=0.75,
                     extra={"smuggling_type": "CL.TE"},
@@ -300,22 +306,20 @@ class SmugglingEngine:
             resp_bytes, elapsed = self._send_raw(host, port, te_cl_payload, use_ssl)
             is_timing_hit = self.detect_via_timing(url, te_cl_payload)
             resp_str = resp_bytes.decode("latin-1", errors="replace")[:500]
-
-            # TE.CL can also manifest as a 400 Bad Request from the back-end
-            status_line = resp_str.split("\r\n")[0] if resp_str else ""
-            unexpected_400 = "400" in status_line and elapsed < baseline + 1
-
-            if is_timing_hit or elapsed > baseline + _TIMING_THRESHOLD_S or unexpected_400:
-                confidence = 0.70 if unexpected_400 and not is_timing_hit else 0.80
+            # TE.CL: only flag on confirmed timing delay.
+            # A 400 alone is standard Apache/nginx behaviour for malformed chunked
+            # encoding and is NOT a smuggling signal.
+            status_line = resp_str.split(chr(13)+chr(10))[0] if resp_str else ""
+            if is_timing_hit or elapsed > baseline + _TIMING_THRESHOLD_S:
                 return _make_finding(
                     vuln_type="http_request_smuggling",
                     url=url,
                     payload=te_cl_payload,
                     evidence=(
-                        f"TE.CL timing: probe took {elapsed:.2f}s vs baseline {baseline:.2f}s. "
-                        f"Unexpected 400: {unexpected_400}. Status: {status_line}"
+                        f"TE.CL timing: probe took {elapsed:.2f}s vs baseline {baseline:.2f}s "
+                        f"(delta {elapsed - baseline:.2f}s). Status: {status_line}"
                     ),
-                    confidence=confidence,
+                    confidence=0.80,
                     extra={"smuggling_type": "TE.CL"},
                 )
         except Exception as exc:

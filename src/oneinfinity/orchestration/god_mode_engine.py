@@ -513,7 +513,34 @@ class FoundationMission(Mission):
         try:
             from oneinfinity.recon.adaptive_recon_engine import AdaptiveReconEngine
             recon_out = str(GOD_MODE_DIR / session.scan_id / "recon")
-            self.recon = AdaptiveReconEngine(session.target, output_dir=recon_out, depth="deep").run()
+            # Build auth_context for recon if session_cookie provided so
+            # authenticated pages (e.g. DVWA /vulnerabilities/*) are crawled.
+            _recon_auth_ctx = None
+            try:
+               _sc = (session.auth_config or {}).get("session_cookie", "")
+               if _sc:
+                   from oneinfinity.auth.auth_session_context import AuthSessionContext
+                   from oneinfinity.auth.session_manager import LoginSession
+                   import uuid as _uuid_r
+                   _cookies = []
+                   for _pair in _sc.split(";"):
+                       _pair = _pair.strip()
+                       if "=" in _pair:
+                           _n, _, _v = _pair.partition("=")
+                           _cookies.append({"name": _n.strip(), "value": _v.strip()})
+                   _ls = LoginSession(
+                       session_id=_uuid_r.uuid4().hex[:12],
+                       target=session.target, login_url=session.target,
+                       cookies=_cookies, auth_headers={},
+                       local_storage={}, session_storage={},
+                   )
+                   _recon_auth_ctx = AuthSessionContext(_ls)
+            except Exception as _rac_exc:
+               log.debug("[GOD MODE] Recon auth context build failed: %s", _rac_exc)
+            self.recon = AdaptiveReconEngine(
+               session.target, output_dir=recon_out, depth="deep",
+               auth_context=_recon_auth_ctx,
+            ).run()
             log.info("[GOD MODE] Recon complete — subdomains=%s apis=%s",
                      len(getattr(self.recon, "subdomains", []) or []),
                      len(getattr(getattr(self.recon, "api_map", None), "endpoints", []) or []))

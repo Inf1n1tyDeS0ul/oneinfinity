@@ -1447,6 +1447,7 @@ def _finding_to_api(f) -> dict:
         "title": f.get("title", ""),
         "severity": f.get("severity", "info"),
         "attack_type": f.get("vuln_type", f.get("attack_type", "")),
+        "vuln_type": f.get("vuln_type", f.get("attack_type", "")),
         "tool": f.get("tool", ""),
         "evidence": f.get("evidence", ""),
         "payload": f.get("payload", ""),
