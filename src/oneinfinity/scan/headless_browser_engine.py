@@ -825,8 +825,12 @@ class HeadlessBrowserEngine:
         # Scan loaded script files
         import requests, urllib3
         urllib3.disable_warnings()
+        _fetched_scripts: set = set()  # avoid re-fetching the same bundle
         for m in re.finditer(r'<script[^>]+src=["\']([^"\']+)["\']', html, re.I):
             script_url = urljoin(url, m.group(1))
+            if script_url in _fetched_scripts:
+                continue
+            _fetched_scripts.add(script_url)
             try:
                 resp = requests.get(script_url, timeout=8, verify=False,
                                     headers={"User-Agent": "OneInfinity/1.0"})
@@ -834,7 +838,22 @@ class HeadlessBrowserEngine:
             except Exception as exc:
                 log.debug("Failed to fetch script %s: %s", script_url, exc)
 
-        return findings
+        # Deduplicate: keep one finding per (pattern_name, script_url) combination.
+        # Minified bundles repeat the same credential string many times; we only
+        # need one representative finding per secret-per-file.
+        _seen_keys: set = set()
+        deduped: List[dict] = []
+        for f in findings:
+            # Extract pattern name from vuln_type (e.g. "js_secret:password_in_js")
+            _pat = f.get("vuln_type", "")
+            _src = f.get("url", "")
+            # Use first 30 chars of evidence as the match discriminator
+            _ev_key = str(f.get("evidence", ""))[:30]
+            _key = (_pat, _src, _ev_key)
+            if _key not in _seen_keys:
+                _seen_keys.add(_key)
+                deduped.append(f)
+        return deduped
 
     def _scan_text_for_secrets(self, text: str, source_url: str) -> List[dict]:
         """Run all secret regex patterns against *text* and return findings."""

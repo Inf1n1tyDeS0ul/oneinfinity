@@ -833,6 +833,47 @@ class FoundationMission(Mission):
             except Exception as exc:
                 log.warning("[GOD MODE] SecretIntelAgent failed (non-fatal): %s", exc, exc_info=True)
 
+
+        # ── Step 3f: JS Bundle Secret Scanner (always-on, lightweight) ───
+        # Fetches the target homepage + all linked JS bundles via plain HTTP,
+        # scans for hardcoded credentials/API keys without requiring Playwright.
+        # This is the primary detection path for client-side secrets (MQTT creds,
+        # REACT_APP_* passwords, env vars baked into webpack bundles, etc.).
+        # Runs BEFORE the parallel scan tasks to guarantee it fires every scan.
+        log.info("[GOD MODE] Foundation Step 3f: JS Bundle Secret Scanner")
+        try:
+            from oneinfinity.scan.headless_browser_engine import HeadlessBrowserEngine
+            from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine, RawResult
+            _jbs_engine = HeadlessBrowserEngine(target=session.target)
+            _jbs_secrets = _jbs_engine.extract_js_secrets(session.target)
+            # Deduplicate: same pattern+URL → keep one representative per (vuln_type, evidence[:40])
+            _jbs_seen: set = set()
+            _jbs_deduped = []
+            for _s in _jbs_secrets:
+                _key = (_s.get("vuln_type", ""), str(_s.get("evidence", ""))[:40])
+                if _key not in _jbs_seen:
+                    _jbs_seen.add(_key)
+                    _jbs_deduped.append(_s)
+            log.info("[GOD MODE] Step 3f: %d JS secrets found (%d after dedup) for %s",
+                     len(_jbs_secrets), len(_jbs_deduped), session.target)
+            _jbs_bus = get_ingestion_engine()
+            for _sec in _jbs_deduped:
+                if not isinstance(_sec, dict):
+                    continue
+                _sec.setdefault("scan_id", session.scan_id)
+                _sec.setdefault("target", session.target)
+                try:
+                    _jbs_bus.ingest(RawResult(
+                        source="js_bundle_scanner",
+                        raw=_sec,
+                        scan_id=session.scan_id,
+                    ))
+                except Exception as _ie:
+                    log.debug("[GOD MODE] Step 3f: ingest error: %s", _ie)
+            session.add_findings(len(_jbs_deduped))
+        except Exception as exc:
+            log.warning("[GOD MODE] Step 3f JS Bundle Scanner failed (non-fatal): %s", exc)
+
         # ── Step 4: WAF detection + bypass payload pre-generation ────────
         # Runs AFTER recon so we know the tech_profile (waf field).
         # Populates session.waf_vendor and session.waf_bypass_payloads so all
@@ -1516,8 +1557,9 @@ class ChainsMission(Mission):
         try:
             findings = get_ingestion_engine().get_findings(scan_id=session.scan_id) or []
             if not findings:
-                # Fall back to all findings for this target when scan_id filter returns nothing
-                findings = get_ingestion_engine().get_findings() or []
+                # Fallback: filter by target only — never load unscoped all-findings
+                # (loading all findings causes cross-scan contamination)
+                findings = get_ingestion_engine().get_findings(target=session.target) or []
         except Exception as exc:
             log.warning("[GOD MODE] ChainsMission: could not load findings: %s", exc, exc_info=True)
 
@@ -3087,7 +3129,8 @@ class GodModeConductor:
             found_types: list[str] = []
             try:
                 from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
-                findings = get_ingestion_engine().get_findings() or []
+                # Always scope to this scan — avoids convergence on other scans' findings
+                findings = get_ingestion_engine().get_findings(scan_id=session.scan_id) or []
                 found_types = [f.get("vuln_type", "") for f in findings if isinstance(f, dict)]
             except Exception:
                 pass
