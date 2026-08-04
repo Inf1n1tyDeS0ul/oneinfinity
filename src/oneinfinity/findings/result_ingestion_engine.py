@@ -342,6 +342,13 @@ _CANONICAL_VULN_MAP: dict = {
     # Secrets
     "secret_exposure": "Secret / Credential Exposure", "secret": "Secret / Credential Exposure",
     "credential_exposure": "Secret / Credential Exposure",
+    "hardcoded_password": "Secret / Credential Exposure",
+    "hardcoded_credential": "Secret / Credential Exposure",
+    "js_hardcoded_credential": "Secret / Credential Exposure",
+    "mqtt_credential_exposure": "Secret / Credential Exposure",
+    "hardcoded_mqtt_password": "Secret / Credential Exposure",
+    "client_side_secret": "Secret / Credential Exposure",
+    "exposed_mqtt_credentials": "Secret / Credential Exposure",
     # Cloud / Network
     "cloud_misconfig": "Cloud Storage Misconfiguration", "s3_misconfig": "Cloud Storage Misconfiguration",
     "open_port": "Exposed Network Service", "lateral_open_port": "Exposed Network Service",
@@ -410,7 +417,9 @@ def _canonicalize_vuln_type(vuln_type: str) -> str:
     if vl in _CANONICAL_VULN_MAP:
         return _CANONICAL_VULN_MAP[vl]
     # Prefix/substring fallback for families of tags
-    if vl.startswith("js_secret") or "password_in_js" in vl or "api_key" in vl or "aws_secret" in vl:
+    if (vl.startswith("js_secret") or "password_in_js" in vl or "api_key" in vl
+            or "aws_secret" in vl or "hardcoded" in vl or "mqtt_cred" in vl
+            or "client_side_secret" in vl):
         return "Secret / Credential Exposure"
     if "cors" in vl:
         return "CORS Misconfiguration"
@@ -497,6 +506,11 @@ def _parse_generic(raw: dict, scan_id: str, source: str) -> Optional[NormalizedF
         payload = raw.get("payload") or raw.get("poc") or ""
         cvss_map = {"critical": 9.5, "high": 7.5, "medium": 5.0, "low": 2.5, "info": 0.0}
         cvss = float(raw.get("cvss") or raw.get("cvss_score") or cvss_map.get(severity, 0.0))
+        # Cap confidence for unconfirmed 'potential' findings — they need validation
+        raw_vt = str(raw.get('vuln_type', '') or raw.get('type', '') or '')
+        conf = float(raw.get('confidence', 0.7))
+        if 'potential' in raw_vt.lower() or 'tentative' in raw_vt.lower():
+            conf = min(conf, 0.65)  # below _INFERRED_MIN; forces sync-validation path
         return NormalizedFinding(
             scan_id=scan_id,
             target=str(target),
@@ -507,7 +521,7 @@ def _parse_generic(raw: dict, scan_id: str, source: str) -> Optional[NormalizedF
             payload=str(payload),
             url=str(url),
             tool=source,
-            confidence=float(raw.get("confidence", 0.7)),
+            confidence=conf,
             cvss=cvss,
             raw=raw,
         )
@@ -552,11 +566,22 @@ class ResultIngestionEngine:
     # request) and has a high FP rate from tools that flag permissive-but-intentional wildcard
     # CORS policies as vulnerabilities without checking ACAC.
     _SYNC_VALIDATE_TYPES = frozenset({
-        "xss", "sqli", "ssti", "lfi", "open_redirect", "xxe",
-        "cors_origin_reflected", "cors_misconfiguration", "cors",
+        # canonical names (post _canonicalize_vuln_type) — must match AFTER normalization
+        "Cross-Site Scripting (XSS)",
+        "SQL Injection",
+        "Server-Side Template Injection (SSTI)",
+        "Local File Inclusion (LFI)",
+        "Open Redirect",
+        "XML External Entity (XXE)",
+        "CORS Misconfiguration",
     })
     # Async validation (fire-and-forget; too slow/risky to block ingest)
-    _ASYNC_VALIDATE_TYPES = frozenset({"ssrf", "cmdi", "rce", "auth_bypass", "idor"})
+    _ASYNC_VALIDATE_TYPES = frozenset({
+        "Server-Side Request Forgery (SSRF)",
+        "OS Command Injection",
+        "Broken Authentication",
+        "Insecure Direct Object Reference (IDOR)",
+    })
 
     def _normalize_url_for_dedup(self, url: str, vuln_type: str) -> str:
         """Path-template normalization for semantic dedup (MLR2).
@@ -641,15 +666,24 @@ class ResultIngestionEngine:
             return True   # no URL = network-level finding; always in-scope
         try:
             from urllib.parse import urlparse as _up
-            host = _up(url).netloc.split(':')[0].lstrip('www.')
+            raw_host = _up(url).netloc.split(':')[0]
+            if raw_host.startswith('www.'): raw_host = raw_host[4:]
+            if raw_host.startswith('m.'): raw_host = raw_host[2:]
+            host = raw_host
             if not host:
                 return True
             if host in ('localhost', '127.0.0.1', '::1'):
                 return True
-            target_host = _up(scan_target).netloc.split(':')[0].lstrip('www.')
+            raw_target = _up(scan_target).netloc.split(':')[0]
+            if raw_target.startswith('www.'): raw_target = raw_target[4:]
+            if raw_target.startswith('m.'): raw_target = raw_target[2:]
+            target_host = raw_target
             if not target_host:
                 # scan_target has no scheme — try as plain host
-                target_host = scan_target.split('/')[0].lstrip('www.')
+                plain = scan_target.split('/')[0]
+                if plain.startswith('www.'): plain = plain[4:]
+                if plain.startswith('m.'): plain = plain[2:]
+                target_host = plain
             if not target_host:
                 return True   # unknown target — don't filter
             # Match: exact or subdomain
