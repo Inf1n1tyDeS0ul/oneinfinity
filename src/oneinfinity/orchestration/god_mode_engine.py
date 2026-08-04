@@ -144,6 +144,12 @@ def _is_ai_target(target: str, app_context: str, recon) -> bool:
         "openai", "anthropic", "ollama", "gemini", "/inference",
         "/generate", "/ai/", "gpt", "claude",
     )
+    # Body-content LLM indicators (titles, page content, meta descriptions)
+    _AI_BODY_KEYWORDS = (
+        "llm", "language model", "chatbot", "chat with", "ai assistant",
+        "prompt injection", "prompt", "llm01", "llm02", "ai goat",
+        "damn vulnerable llm", "streamlit", "ollama", "generative ai",
+    )
     combined = (target + " " + app_context).lower()
     if any(k in combined for k in _AI_KEYWORDS):
         return True
@@ -151,6 +157,18 @@ def _is_ai_target(target: str, app_context: str, recon) -> bool:
         for ep in (getattr(recon.api_map, "endpoints", []) or []):
             if any(k in str(ep).lower() for k in _AI_KEYWORDS):
                 return True
+    # Check page body content for LLM indicators
+    try:
+        import urllib.request as _ur
+        _resp = _ur.urlopen(_ur.Request(target, method="GET"), timeout=5)
+        _body = _resp.read(8192).decode("utf-8", errors="replace").lower()
+        if any(k in _body for k in _AI_BODY_KEYWORDS):
+            import logging as _log
+            _log.getLogger("oneinfinity.orchestration.god_mode").info(
+                "[GOD MODE] _is_ai_target: LLM indicator in page body — enabling AIRedTeamMission for %s", target)
+            return True
+    except Exception:
+        pass
     return False
 
 
@@ -581,7 +599,16 @@ class FoundationMission(Mission):
             # Emit endpoints to bus
             try:
                 from oneinfinity.orchestration.event_bus import get_bus, EventType
+                from urllib.parse import urlparse as _up_parse
+                _scan_host = _up_parse(session.target).hostname or session.target.split("//")[-1].split("/")[0].split(":")[0]
                 for _dt in (_discovered_targets or []):
+                    _dt_host = str(_dt.domain).split("/")[0].split(":")[0].lstrip("*.")
+                    # Only publish if the discovered target belongs to the scan target host/domain
+                    # Prevents cross-scan contamination from prior graph entries
+                    if _scan_host not in _dt_host and _dt_host not in _scan_host:
+                        log.debug("[GOD MODE] TargetDiscovery: skipping off-scope endpoint %s (scan=%s)",
+                                  _dt.domain, _scan_host)
+                        continue
                     get_bus().publish(EventType.NEW_ENDPOINT, {
                         "url": _dt.domain,
                         "source": f"target_discovery/{_dt.source}",
@@ -1331,6 +1358,29 @@ class SwarmMission(Mission):
             log.info("[GOD MODE] SwarmMission: seeded %d endpoints from recon", len(_endpoints))
         else:
             log.warning("[GOD MODE] SwarmMission: no recon endpoints found — agents will probe root URL only")
+        # Populate auth_endpoints so rate-limit and brute-force agents know login URLs.
+        # If recon found no URLs, derive login candidates from common patterns.
+        _all_eps = _endpoints or [session.target]
+        _login_keywords = ["login", "signin", "auth", "token", "session", "account"]
+        _auth_eps = [u for u in _all_eps if any(k in u.lower() for k in _login_keywords)]
+        if not _auth_eps:
+            # Probe common login paths on the target
+            import urllib.request as _ur, urllib.error as _ue
+            _base = session.target.rstrip("/")
+            for _path in ["/login", "/signin", "/auth/login", "/api/login", "/api/v1/auth/login", "/user/login"]:
+                _cand = _base + _path
+                try:
+                    _r = _ur.urlopen(_ur.Request(_cand, method="HEAD"), timeout=3)
+                    if _r.status < 500:
+                        _auth_eps.append(_cand)
+                except _ue.HTTPError as _he:
+                    if _he.code < 500:
+                        _auth_eps.append(_cand)
+                except Exception:
+                    pass
+        if _auth_eps:
+            ctx["auth_endpoints"] = _auth_eps
+            log.info("[GOD MODE] SwarmMission: %d auth endpoints for rate-limit/brute-force agents", len(_auth_eps))
 
         # Partial output file so the coordinator can flush findings after each agent;
         # used for recovery when the 20-minute hard timeout fires.

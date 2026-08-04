@@ -2210,11 +2210,20 @@ async def get_scan_findings(scan_id: str, primary_only: bool = True):
             data = json.loads(fpath.read_text())
             items = data if isinstance(data, list) else data.get("findings", [])
             for raw in items:
-                if isinstance(raw, dict):
-                    raw.setdefault("scan_id", scan_id)
-                    raw.setdefault("target", raw.get("url", raw.get("endpoint", "")))
-                    raw.setdefault("title", raw.get("vulnerability", raw.get("vuln_type", raw.get("type", "Finding"))))
-                    raw_all.append(raw)
+                if not isinstance(raw, dict):
+                    continue
+                # Drop chain_suggestion stubs — speculative attack chains, not confirmed findings
+                if raw.get("source") == "chain_suggestion" or raw.get("source_type") == "chain_suggestion":
+                    continue
+                # Drop stub entries: no url AND no real vuln_type
+                _raw_url = str(raw.get("url", "") or "").strip()
+                _raw_vt = str(raw.get("vuln_type", "") or "").strip()
+                if (not _raw_url or _raw_url in ("://", "/", "")) and (not _raw_vt or _raw_vt in ("?", "unknown", "")):
+                    continue
+                raw.setdefault("scan_id", scan_id)
+                raw.setdefault("target", raw.get("url", raw.get("endpoint", "")))
+                raw.setdefault("title", raw.get("vulnerability", raw.get("vuln_type", raw.get("type", "Finding"))))
+                raw_all.append(raw)
         except Exception:
             continue
     vulns = []

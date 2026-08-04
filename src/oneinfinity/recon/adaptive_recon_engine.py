@@ -1487,6 +1487,44 @@ class AdaptiveReconEngine:
     def _phase_http_probe(self):
         _info(f"Phase 2: HTTP probing {len(self._subdomains)} hosts...")
         self._alive_hosts = _httpx_probe(self._subdomains, timeout=120)
+        # Fallback: httpx often fails on localhost/127.x SSH-tunnel targets.
+        # Directly probe any localhost subdomains that httpx missed.
+        if not self._alive_hosts:
+            import urllib.request as _ur, urllib.error as _ue
+            alive_urls_seen = {h.get("url","") for h in self._alive_hosts}
+            for sub in self._subdomains:
+                for scheme in ("http", "https"):
+                    candidate = f"{scheme}://{sub}" if not sub.startswith("http") else sub
+                    host = candidate.split("://",1)[1].split("/")[0].split(":")[0]
+                    if host not in ("localhost", "127.0.0.1", "::1") and not host.startswith("192.168.") and not host.startswith("10."):
+                        continue  # only apply fallback for internal/localhost targets
+                    if candidate in alive_urls_seen:
+                        continue
+                    try:
+                        req = _ur.Request(candidate, method="HEAD")
+                        resp = _ur.urlopen(req, timeout=5)
+                        self._alive_hosts.append({
+                            "url": candidate,
+                            "status_code": resp.status,
+                            "title": "",
+                            "tech": [],
+                        })
+                        alive_urls_seen.add(candidate)
+                        _info(f"Phase 2: localhost fallback probe alive: {candidate} ({resp.status})")
+                        break  # found on this scheme, skip https
+                    except _ue.HTTPError as he:
+                        # 4xx/5xx still means the server is alive
+                        self._alive_hosts.append({
+                            "url": candidate,
+                            "status_code": he.code,
+                            "title": "",
+                            "tech": [],
+                        })
+                        alive_urls_seen.add(candidate)
+                        _info(f"Phase 2: localhost fallback probe alive (HTTP {he.code}): {candidate}")
+                        break
+                    except Exception:
+                        continue
         (self.output_dir / "alive_hosts.json").write_text(
             json.dumps({"hosts": self._alive_hosts}, indent=2))
         _ok(f"Alive hosts: {len(self._alive_hosts)}")

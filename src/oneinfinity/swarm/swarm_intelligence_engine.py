@@ -670,6 +670,18 @@ class XSSAgent(SwarmAgent):
                         priority      = 0.32,
                     ))
 
+            # Security headers check — runs on every endpoint
+            hypotheses.append(Hypothesis(
+                hypothesis_id = uuid.uuid4().hex[:8],
+                agent_type    = self.agent_type,
+                target_node   = ep,
+                attack_vector = "missing_security_headers",
+                confidence    = 0.90,
+                payload       = "",
+                context       = {"endpoint": ep},
+                reasoning     = "Check missing security headers: CSP, X-Frame-Options, X-Content-Type-Options, cookies",
+                priority      = 0.85,
+            ))
             # postMessage probe — for all endpoints
             hypotheses.append(Hypothesis(
                 hypothesis_id = uuid.uuid4().hex[:8],
@@ -942,6 +954,51 @@ class XSSAgent(SwarmAgent):
                             remediation    = "Deploy a strict Content-Security-Policy header.",
                         ))
 
+                elif h.attack_vector == "missing_security_headers":
+                    result = await self._tool("http_request", url=h.target_node, method="GET", timeout=10)
+                    data = result.get("data") or {}
+                    hdrs = data.get("headers", {}) if isinstance(data, dict) else {}
+                    hdrs_lower = {k.lower(): v for k, v in hdrs.items()}
+                    sc = hdrs_lower.get("set-cookie", "")
+                    checks = [
+                        ("missing_csp", not hdrs_lower.get("content-security-policy"),
+                         "Content-Security-Policy header absent", "medium", 5.4),
+                        ("missing_x_frame_options",
+                         not hdrs_lower.get("x-frame-options") and
+                         "frame-ancestors" not in hdrs_lower.get("content-security-policy", "").lower(),
+                         "X-Frame-Options absent — clickjacking risk", "medium", 4.3),
+                        ("missing_x_content_type_options",
+                         not hdrs_lower.get("x-content-type-options"),
+                         "X-Content-Type-Options header absent", "low", 3.1),
+                        ("insecure_cookie_no_secure_flag",
+                         bool(sc) and "secure" not in sc.lower(),
+                         "Session cookie missing Secure flag", "medium", 4.8),
+                        ("insecure_cookie_no_httponly",
+                         bool(sc) and "httponly" not in sc.lower(),
+                         "Session cookie missing HttpOnly flag", "medium", 4.3),
+                    ]
+                    hdr_evidence = "Headers present: " + str(list(hdrs_lower.keys())[:8])
+                    for vt, condition, desc, sev, cvss_score in checks:
+                        if not condition:
+                            continue
+                        seen_key = vt + "|" + h.target_node
+                        if seen_key in seen:
+                            continue
+                        seen.add(seen_key)
+                        findings.append(self._finding(
+                            target         = h.target_node,
+                            vuln_type      = vt,
+                            severity       = sev,
+                            title          = desc,
+                            description    = desc,
+                            payload        = "",
+                            evidence       = hdr_evidence,
+                            cvss           = cvss_score,
+                            confidence     = 0.90,
+                            reproduced     = True,
+                            chain_potential= [],
+                            remediation    = "Add the missing HTTP security header to all responses.",
+                        ))
                 elif h.attack_vector == "postmessage_xss":
                     import re as _re
                     result = await self._tool("http_request", url=h.target_node, method="GET", timeout=10)
