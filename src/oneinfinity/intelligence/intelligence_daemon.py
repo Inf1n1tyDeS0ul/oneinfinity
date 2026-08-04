@@ -690,6 +690,23 @@ class SwarmWorker(WorkerEngine):
         for f in findings:
             self.state.findings += 1
             self._publish(EventType.NEW_VULNERABILITY, f, source="swarm_worker")
+        # Persist findings directly to the ingestion engine so they reach DB.
+        # Without this, XSS/SQLi swarm findings are published as events but
+        # never stored — they live only in shared_state and are lost.
+        if findings:
+            try:
+                from oneinfinity.findings.result_ingestion_engine import (
+                    get_ingestion_engine as _gie_sw, RawResult as _RR_sw,
+                )
+                _scan_id = event.data.get(scan_id) or self.config.get(scan_id, )
+                if _scan_id:
+                    _ie = _gie_sw()
+                    for _f in findings:
+                        _ie.ingest(_RR_sw(scan_id=_scan_id,
+                                         source="swarm-worker",
+                                         raw=_f))
+            except Exception as _sw_exc:
+                log.debug("[SwarmWorker] DB ingest failed: %s", _sw_exc)
 
         self.state.log(f"  → Swarm complete: {len(findings)} findings")
 
