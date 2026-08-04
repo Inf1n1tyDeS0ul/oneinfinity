@@ -1439,6 +1439,20 @@ class AdaptiveReconEngine:
 
     def _phase_subdomain_enum(self):
         _info("Phase 1: Subdomain enumeration...")
+        # Skip subdomain enum for localhost / IPs / .local — DNS wildcard = noise
+        import ipaddress as _ipaddress
+        _tgt = self.target.split(":")[0].lower()
+        _is_int = (_tgt == "localhost" or _tgt.endswith(".localhost") or
+                   any(_tgt.endswith(s) for s in (".local",".internal",".test",".example")))
+        try:
+            _ipaddress.ip_address(_tgt)
+            _is_int = True
+        except ValueError:
+            pass
+        if _is_int:
+            _info(f"Phase 1: Skipping subdomain enum — internal target: {self.target}")
+            self._subdomains = [self.target]
+            return
         subs: set[str] = {self.target}
 
         # subfinder

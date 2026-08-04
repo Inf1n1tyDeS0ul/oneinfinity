@@ -17,6 +17,27 @@ from dataclasses import dataclass, field
 from typing import Optional
 from pathlib import Path
 
+def _is_internal_domain(domain: str) -> bool:
+    """Return True if domain is localhost, an IP address, or a .local/.internal hostname.
+    These targets have wildcard DNS — subdomain enumeration produces only noise.
+    """
+    import ipaddress
+    d = domain.split(':')[0].lower().strip()
+    # Bare localhost or any *.localhost
+    if d == 'localhost' or d.endswith('.localhost'):
+        return True
+    # .local / .internal / .test / .example TLDs (RFC 2606 / RFC 6761)
+    if any(d.endswith(sfx) for sfx in ('.local', '.internal', '.test', '.example', '.invalid')):
+        return True
+    # IP address (v4 or v6)
+    try:
+        ipaddress.ip_address(d)
+        return True
+    except ValueError:
+        pass
+    return False
+
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -107,6 +128,9 @@ class TargetDiscoveryEngine:
         all_targets: list[DiscoveredTarget] = []
 
         for domain in seed_domains:
+            if _is_internal_domain(domain):
+                logger.info(f"[discovery] Skipping OSINT for internal/localhost target: {domain}")
+                continue
             logger.info(f"[discovery] Starting all OSINT methods for {domain}")
 
             # crt.sh certificate transparency
