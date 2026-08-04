@@ -183,6 +183,32 @@ class FindingJudge:
         """
         finding_id = finding.get("finding_id", "unknown")
         heuristic_confidence = float(finding.get("confidence", 0.5))
+        vuln_type = str(finding.get("vuln_type", "unknown") or "unknown").lower()
+
+        # ── HITL threshold lookup ─────────────────────────────────────────────
+        # When researchers have given ≥5 TP/FP verdicts for this vuln type, use
+        # the calibrated threshold from the HITL engine instead of the hardcoded
+        # _SKIP_THRESHOLD / _CONFIRMED_MIN.  This is the primary mechanism by
+        # which human feedback tightens or loosens the judge for each vuln class.
+        _effective_skip    = _SKIP_THRESHOLD
+        _effective_confirm = _CONFIRMED_MIN
+        try:
+            from oneinfinity.learning.hitl_rl_engine import get_hitl_engine as _get_hitl_e
+            _hitl = _get_hitl_e()
+            _tp, _fp = _hitl._get_counts(vuln_type)
+            if _tp + _fp >= 5:  # enough data to trust the calibration
+                _cal = _hitl.get_validation_threshold(vuln_type)
+                # Only tighten skip threshold when FP rate is high (threshold > 0.7)
+                # Never loosen it below the engineering floor of 0.35.
+                _effective_skip    = max(0.35, min(_SKIP_THRESHOLD, _cal - 0.30))
+                _effective_confirm = _cal
+                log.debug(
+                    "FindingJudge: HITL calibration applied [%s] threshold=%.2f "
+                    "skip=%.2f confirm=%.2f (tp=%d fp=%d)",
+                    vuln_type, _cal, _effective_skip, _effective_confirm, _tp, _fp,
+                )
+        except Exception:
+            pass  # always fall back to hardcoded constants
 
         # ── Scope guard ─────────────────────────────────────────────────────
         # Off-scope findings (URL belongs to a different domain than the scan
@@ -215,9 +241,9 @@ class FindingJudge:
             )
 
         # Fast path: skip LLM call for very low-confidence findings
-        if heuristic_confidence < _SKIP_THRESHOLD:
+        if heuristic_confidence < _effective_skip:
             log.debug("FindingJudge: skip LLM for %s (confidence=%.2f < %.2f)",
-                      finding_id, heuristic_confidence, _SKIP_THRESHOLD)
+                      finding_id, heuristic_confidence, _effective_skip)
             return self._heuristic_verdict(finding, TIER_CANDIDATE,
                                            reason="Heuristic confidence below skip threshold")
 
@@ -397,6 +423,18 @@ class FindingJudge:
         def _trunc(s: str, limit: int = 800) -> str:
             s = str(s)
             return s[:limit] + " [truncated]" if len(s) > limit else s
+
+        # Append HITL few-shot examples (researcher-confirmed TP/FP patterns).
+        # Only appended when examples exist — no performance cost when HITL is empty.
+        try:
+            from oneinfinity.learning.hitl_rl_engine import get_hitl_engine as _get_hitl
+            _few_shot = _get_hitl().build_few_shot_prompt_section(
+                finding.get("vuln_type", "unknown")
+            )
+            if _few_shot:
+                extra_context_parts.append(_few_shot)
+        except Exception:
+            pass
 
         return _USER_PROMPT_TEMPLATE.format(
             vuln_type=finding.get("vuln_type", "unknown"),

@@ -107,9 +107,15 @@ class CrossTargetKnowledgeDistiller:
                 reverse=True,
             )[:10]
         ]
-
-        # Write to Neo4j knowledge base
+        # Write to Neo4j knowledge base (primary path — no-op if Neo4j unavailable)
         result.patterns_written = self._write_to_neo4j(tech_stack, vuln_stats, target)
+
+        # Postgres fallback: write patterns to knowledge_base table when Neo4j returned 0.
+        # This ensures cross-scan learning accumulates even without Neo4j.
+        if result.patterns_written == 0:
+            result.patterns_written = self._write_to_postgres_kb(
+                scan_id, target, tech_stack, vuln_stats
+            )
 
         # Update tool_performance in postgres
         result.tool_records_updated = self._update_tool_performance(
@@ -153,7 +159,8 @@ class CrossTargetKnowledgeDistiller:
                 )
         except Exception as exc:
             log.debug("CrossTargetKnowledgeDistiller.get_scan_priorities failed: %s", exc)
-        return []
+        # Postgres fallback when Neo4j unavailable
+        return self.get_scan_priorities_pg(tech_stack, top_n=top_n)
 
     # ── Internal ─────────────────────────────────────────────────────────────
 
@@ -308,6 +315,130 @@ class CrossTargetKnowledgeDistiller:
         except Exception as exc:
             log.debug("_update_target_profile failed: %s", exc)
 
+    def _write_to_postgres_kb(
+        self,
+        scan_id: str,
+        target: str,
+        tech_stack: List[str],
+        vuln_stats: Dict[str, dict],
+    ) -> int:
+        """
+        Write vuln patterns to postgres knowledge_base table as a Neo4j fallback.
+
+        Stores one row per (tech_stack_key, vuln_type) pair with:
+          category = 'scan_pattern'
+          key      = '<tech_stack_key>:<vuln_type>'
+          value    = JSON with occurrence_count, avg_cvss, best_tool, last_scan_id
+        ON CONFLICT updates counters so rows accumulate across scans.
+        Returns count of rows written.
+        """
+        if not vuln_stats:
+            return 0
+        written = 0
+        tech_key = "|".join(sorted(tech_stack)) if tech_stack else "unknown"
+        try:
+            from oneinfinity.core.db_manager import get_db_manager_sync
+            import json as _json
+            db = get_db_manager_sync()
+            if db is None or db.mode not in ("distributed", "postgres"):
+                return 0
+            for vt, stats in vuln_stats.items():
+                kb_key = f"{tech_key}:{vt}"
+                value_json = _json.dumps({
+                    "tech_stack":       tech_stack,
+                    "vuln_type":        vt,
+                    "occurrence_count": stats["count"],
+                    "avg_cvss":         stats["avg_cvss"],
+                    "best_tool":        stats["best_tool"],
+                    "confirmed":        stats.get("confirmed", 0),
+                    "last_scan_id":     scan_id,
+                    "target":           target,
+                })
+                try:
+                    db.sync_pg_execute_write(
+                        """
+                        INSERT INTO knowledge_base (category, key, value, source, created_at)
+                        VALUES (%s, %s, %s, 'knowledge_distiller', NOW())
+                        ON CONFLICT (category, key) DO UPDATE SET
+                            value      = knowledge_base.value::jsonb ||
+                                         jsonb_build_object(
+                                             'occurrence_count',
+                                             (COALESCE((knowledge_base.value::jsonb->>'occurrence_count')::int, 0)
+                                              + %s::int),
+                                             'avg_cvss',
+                                             ROUND((
+                                                 COALESCE((knowledge_base.value::jsonb->>'avg_cvss')::numeric, 0)
+                                                 + %s::numeric
+                                             ) / 2, 2),
+                                             'best_tool',   %s,
+                                             'confirmed',
+                                             (COALESCE((knowledge_base.value::jsonb->>'confirmed')::int, 0) + %s::int),
+                                             'last_scan_id', %s,
+                                             'target',       %s
+                                         ),
+                            source     = 'knowledge_distiller'
+                        """,
+                        (
+                            "scan_pattern", kb_key, value_json,
+                            stats["count"],
+                            stats["avg_cvss"],
+                            stats["best_tool"],
+                            stats.get("confirmed", 0),
+                            scan_id,
+                            target,
+                        ),
+                    )
+                    written += 1
+                except Exception as exc:
+                    log.debug("_write_to_postgres_kb upsert failed [%s]: %s", vt, exc)
+        except Exception as exc:
+            log.debug("_write_to_postgres_kb failed: %s", exc)
+        return written
+
+    def get_scan_priorities_pg(
+        self,
+        tech_stack: List[str],
+        top_n: int = 10,
+    ) -> List[dict]:
+        """
+        Query postgres knowledge_base for most productive vuln types for a tech stack.
+        Used as fallback when Neo4j is unavailable.
+        Returns list of {vuln_type, avg_cvss, occurrence_count, best_tool}.
+        """
+        if not tech_stack:
+            return []
+        tech_key = "|".join(sorted(tech_stack))
+        results: List[dict] = []
+        try:
+            from oneinfinity.core.db_manager import get_db_manager_sync
+            import json as _json
+            db = get_db_manager_sync()
+            if db is None or db.mode not in ("distributed", "postgres"):
+                return []
+            rows = db.sync_pg_execute_read(
+                """
+                SELECT key, value FROM knowledge_base
+                WHERE category = 'scan_pattern' AND key LIKE %s
+                ORDER BY (value::jsonb->>'occurrence_count')::int DESC
+                LIMIT %s
+                """,
+                (f"{tech_key}:%", top_n),
+            )
+            for row in rows:
+                try:
+                    v = _json.loads(row["value"]) if isinstance(row["value"], str) else row["value"]
+                    results.append({
+                        "vuln_type":        v.get("vuln_type", ""),
+                        "avg_cvss":         float(v.get("avg_cvss", 0)),
+                        "occurrence_count": int(v.get("occurrence_count", 0)),
+                        "best_tool":        v.get("best_tool", ""),
+                        "confirmed":        int(v.get("confirmed", 0)),
+                    })
+                except Exception:
+                    pass
+        except Exception as exc:
+            log.debug("get_scan_priorities_pg failed: %s", exc)
+        return results
 
 # ── Module-level API ──────────────────────────────────────────────────────────
 

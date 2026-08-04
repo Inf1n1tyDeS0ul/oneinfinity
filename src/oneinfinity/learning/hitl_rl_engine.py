@@ -132,6 +132,25 @@ class HITLRLEngine:
                 conn.executescript(_SCHEMA)
         except Exception as exc:
             log.warning("[HITL] DB init failed: %s", exc)
+        # Explicit migration: add prompt_strategies if an older DB was missing it.
+        # executescript() above handles fresh DBs; this covers existing ones.
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS prompt_strategies ("
+                    "  id              TEXT PRIMARY KEY,"
+                    "  vuln_type       TEXT NOT NULL,"
+                    "  tech_stack_key  TEXT NOT NULL DEFAULT '',"
+                    "  strategy_hint   TEXT NOT NULL,"
+                    "  tp_rate         REAL DEFAULT 0.0,"
+                    "  sample_count    INTEGER DEFAULT 0,"
+                    "  updated_at      REAL NOT NULL,"
+                    "  UNIQUE(vuln_type, tech_stack_key)"
+                    ")"
+                )
+                conn.commit()
+        except Exception as exc:
+            log.debug("[HITL] prompt_strategies migration failed: %s", exc)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self._db_path), timeout=10)

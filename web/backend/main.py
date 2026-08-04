@@ -4159,7 +4159,17 @@ async def submit_finding_feedback(finding_id: str, body: Dict[str, Any]):
             except Exception as _fe:
                 log.warning("[HITL] Finding load failed: %s", _fe)
         if not finding:
-            finding = {"id": finding_id, "vuln_type": "unknown"}
+            # Body may carry vuln_type/severity/url from the UI (the researcher already sees
+            # the finding details). Use those rather than defaulting everything to "unknown".
+            finding = {
+                "id": finding_id,
+                "finding_id": finding_id,
+                "vuln_type": str(body.get("vuln_type", "") or "unknown").lower(),
+                "severity":  str(body.get("severity",  "medium")),
+                "url":       str(body.get("url",       "")),
+                "confidence": float(body.get("confidence", 0.5)),
+                "tech_stack": body.get("tech_stack", []),
+            }
         # Record in HITL engine
         from oneinfinity.learning.hitl_rl_engine import get_hitl_engine
         hitl = get_hitl_engine()

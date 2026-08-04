@@ -2417,6 +2417,24 @@ class ReportMission(Mission):
         except Exception as exc:
             log.warning("[GOD MODE] Report: knowledge distillation failed (non-fatal): %s", exc)
 
+        # Step 6: Persist PersistentMemory (payload/pattern intelligence across scans).
+        # UnifiedScanEngine calls save_memory() inside its run loop, but the God Mode
+        # canonical pipeline bypasses that path when running subprocess mode.
+        # Explicitly saving here guarantees the JSON survives the scan regardless of
+        # which pipeline path was used.
+        try:
+            from oneinfinity.learning.persistent_memory import get_memory as _get_pm, save_memory as _save_pm
+            _pm = _get_pm()
+            _pm.record_run(
+                total_findings=session.finding_count,
+                confirmed=sum(1 for f in validated if f.get("confirmed_tier") == "CONFIRMED"),
+                targets=1,
+            )
+            _save_pm()
+            log.info("[GOD MODE] Report: PersistentMemory saved (%d total runs)",
+                     _pm._data["stats"]["total_runs"])
+        except Exception as _pm_exc:
+            log.debug("[GOD MODE] Report: PersistentMemory save non-fatal: %s", _pm_exc)
 
         session.phases_complete.append("report")
         self._result = {"validated_findings": len(validated)}
