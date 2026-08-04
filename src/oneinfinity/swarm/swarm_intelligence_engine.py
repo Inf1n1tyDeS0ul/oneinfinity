@@ -789,9 +789,13 @@ class XSSAgent(SwarmAgent):
         canary = f"XSSCANARY{uuid.uuid4().hex[:8]}"
         seen: set = set()
 
+        _XSS_ATTACK_VECTORS = {"reflected_xss", "stored_xss", "dom_xss", "csp_bypass", "mxss", "postmessage_xss", "blind_xss"}
         for h in hypotheses:
             if self._stop_event.is_set():
                 break
+            # Skip non-XSS attack vectors in the generic XSS probe loop
+            if h.attack_vector not in _XSS_ATTACK_VECTORS:
+                continue
             dedup_key = f"{h.target_node}:{h.context.get('param', '')}:{h.attack_vector}"
             if dedup_key in seen:
                 await asyncio.sleep(0.02)
