@@ -1398,6 +1398,36 @@ def _broadcast_forensic_signal(signal_type: str, payload: str, appId: str = "", 
                 lambda e=entry: asyncio.ensure_future(_broadcast_log(e), loop=_event_loop)
             )
 
+def _target_domain(target_str: str) -> str:
+    """Extract registered domain from a scan target URL for scope filtering."""
+    try:
+        from urllib.parse import urlparse
+        h = urlparse(target_str).netloc or target_str.split('/')[0]
+        h = h.split(':')[0]  # strip port
+        for pfx in ('www.', 'm.', 'api.'):
+            if h.startswith(pfx):
+                h = h[len(pfx):]
+        return h.lower()
+    except Exception:
+        return ''
+
+def _is_finding_in_scope(finding: dict, target_domain: str) -> bool:
+    """Return True if finding URL belongs to target_domain or its subdomains."""
+    if not target_domain:
+        return True
+    url = finding.get('url') or finding.get('target') or ''
+    if not url:
+        return True  # network-level finding — keep
+    try:
+        from urllib.parse import urlparse
+        h = urlparse(url).netloc.split(':')[0].lower()
+        for pfx in ('www.', 'm.', 'api.'):
+            if h.startswith(pfx):
+                h = h[len(pfx):]
+        return h == target_domain or h.endswith('.' + target_domain)
+    except Exception:
+        return True
+
 def _finding_to_api(f) -> dict:
     """Convert NormalizedFinding dataclass or dict to API dict with full PoC."""
     if hasattr(f, '__dict__'):
@@ -2134,13 +2164,18 @@ async def get_scan(scan_id: str):
     return _scan_response(entry)
 
 @app.get("/api/scans/{scan_id}/findings", dependencies=[Depends(_require_auth)])
-async def get_scan_findings(scan_id: str):
+async def get_scan_findings(scan_id: str, primary_only: bool = True):
     """Return findings for a specific scan, prioritizing DB over local files."""
     mgr = await get_mgr()
+    # Resolve primary target domain once for all filtering paths
+    _scan_entry = SCANS.get(scan_id) or {}
+    _ptarget = _target_domain(_scan_entry.get('target', '')) if primary_only else ''
     try:
         # Primary: Fetch from DB for centralized management
         db_results = await mgr.get_findings(scan_id=scan_id)
         if db_results:
+            if primary_only and _ptarget:
+                db_results = [f for f in db_results if _is_finding_in_scope(f if isinstance(f, dict) else (f.__dict__ if hasattr(f, '__dict__') else {}), _ptarget)]
             return sorted(
                 [_finding_to_api(f) for f in db_results],
                 key=lambda v: {"critical":0,"high":1,"medium":2,"low":3,"info":4}.get(v.get("severity","info"),5)
@@ -2159,6 +2194,8 @@ async def get_scan_findings(scan_id: str):
             vulns = [_finding_to_api(f) for f in raw]
         except Exception:
             vulns = [v for v in VULNERABILITIES.values() if v.get("scan_id") == scan_id]
+        if primary_only and _ptarget:
+            vulns = [v for v in vulns if _is_finding_in_scope(v, _ptarget)]
         return sorted(vulns, key=lambda v: {"critical":0,"high":1,"medium":2,"low":3,"info":4}.get(v.get("severity","info"),5))
 
     # Read all *_findings.json files, deduplicate, then convert to API format
@@ -2185,6 +2222,8 @@ async def get_scan_findings(scan_id: str):
         v = _finding_to_api(deduped)
         v["id"] = fid
         vulns.append(v)
+    if primary_only and _ptarget:
+        vulns = [v for v in vulns if _is_finding_in_scope(v, _ptarget)]
     return sorted(vulns, key=lambda v: {"critical":0,"high":1,"medium":2,"low":3,"info":4}.get(v.get("severity","info"),5))
 
 @app.post("/api/scans", dependencies=[Depends(_require_auth)])
@@ -10942,6 +10981,11 @@ async def get_scan_chain_graph(scan_id: str):
         or (findings[0].get("target") if findings else None)
         or scan_id
     )
+
+    # ── 3b. Filter findings to primary target to prevent cross-scan contamination ──
+    _ptarget_chain = _target_domain(scan_entry.get('target', '') or target_label)
+    if _ptarget_chain:
+        findings = [f for f in findings if _is_finding_in_scope(f, _ptarget_chain)]
 
     # ── 4. Root (target) node ─────────────────────────────────────────────────
     root_id = f"target_{scan_id}"
