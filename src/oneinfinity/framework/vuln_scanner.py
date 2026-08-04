@@ -505,13 +505,22 @@ class VulnScanner:
                     missing.append(h)
 
             if missing:
-                candidates.append(VulnCandidate(
-                    vuln_type="Missing Security Headers",
-                    host=host,
-                    endpoint=url,
-                    evidence=f"Missing: {', '.join(missing)}",
-                    confidence="low",
-                ))
+                _header_to_vuln = {
+                    "Content-Security-Policy": ("missing_csp", "medium"),
+                    "X-Frame-Options": ("missing_x_frame_options", "medium"),
+                    "X-Content-Type-Options": ("missing_x_content_type_options", "low"),
+                    "Strict-Transport-Security": ("missing_hsts", "medium"),
+                    "Referrer-Policy": ("missing_referrer_policy", "low"),
+                }
+                for _hdr in missing:
+                    _vt, _sev = _header_to_vuln.get(_hdr, ("missing_security_headers", "low"))
+                    candidates.append(VulnCandidate(
+                        vuln_type=_vt,
+                        host=host,
+                        endpoint=url,
+                        evidence="Missing HTTP security header: " + _hdr,
+                        confidence="medium",
+                    ))
 
             # Info leaking headers
             leaky = []
