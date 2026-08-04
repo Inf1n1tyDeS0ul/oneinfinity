@@ -340,51 +340,42 @@ class CrossTargetKnowledgeDistiller:
                 return 0
             for vt, stats in vuln_stats.items():
                 kb_key = f"{tech_key}:{vt}"
-                data_json = _json.dumps({
-                    "tech_stack":       tech_stack,
-                    "vuln_type":        vt,
-                    "occurrence_count": stats["count"],
-                    "avg_cvss":         stats["avg_cvss"],
-                    "best_tool":        stats["best_tool"],
-                    "confirmed":        stats.get("confirmed", 0),
-                    "last_scan_id":     scan_id,
-                    "target":           target,
-                    "source":           "knowledge_distiller",
-                })
                 try:
+                    # Use Python-side merge: read existing row, update counters, upsert.
+                    # Avoids postgres type-inference issues with jsonb_build_object params.
+                    existing = db.sync_pg_execute_read(
+                        "SELECT data FROM knowledge_base WHERE category = %s AND key = %s",
+                        ("scan_pattern", kb_key),
+                    )
+                    if existing and existing[0].get("data"):
+                        prev = existing[0]["data"] if isinstance(existing[0]["data"], dict) else {}
+                        merged = {
+                            **prev,
+                            "occurrence_count": int(prev.get("occurrence_count", 0)) + stats["count"],
+                            "avg_cvss":         round((float(prev.get("avg_cvss", 0)) + stats["avg_cvss"]) / 2, 2),
+                            "best_tool":        stats["best_tool"] or prev.get("best_tool", ""),
+                            "confirmed":        int(prev.get("confirmed", 0)) + stats.get("confirmed", 0),
+                            "last_scan_id":     scan_id,
+                            "target":           target,
+                        }
+                    else:
+                        merged = {
+                            "tech_stack":       tech_stack,
+                            "vuln_type":        vt,
+                            "occurrence_count": stats["count"],
+                            "avg_cvss":         stats["avg_cvss"],
+                            "best_tool":        stats["best_tool"],
+                            "confirmed":        stats.get("confirmed", 0),
+                            "last_scan_id":     scan_id,
+                            "target":           target,
+                            "source":           "knowledge_distiller",
+                        }
                     db.sync_pg_execute_write(
-                        """
-                        INSERT INTO knowledge_base (category, key, data, updated_at)
-                        VALUES (%s, %s, %s::jsonb, NOW())
-                        ON CONFLICT (category, key) DO UPDATE SET
-                            data       = knowledge_base.data ||
-                                         jsonb_build_object(
-                                             'occurrence_count',
-                                             COALESCE((knowledge_base.data->>'occurrence_count')::int, 0)
-                                             + %s::int,
-                                             'avg_cvss',
-                                             ROUND((
-                                                 COALESCE((knowledge_base.data->>'avg_cvss')::numeric, 0)
-                                                 + %s::numeric
-                                             ) / 2, 2),
-                                             'best_tool',    %s,
-                                             'confirmed',
-                                             COALESCE((knowledge_base.data->>'confirmed')::int, 0)
-                                             + %s::int,
-                                             'last_scan_id', %s,
-                                             'target',       %s
-                                         ),
-                            updated_at = NOW()
-                        """,
-                        (
-                            "scan_pattern", kb_key, data_json,
-                            stats["count"],
-                            stats["avg_cvss"],
-                            stats["best_tool"],
-                            stats.get("confirmed", 0),
-                            scan_id,
-                            target,
-                        ),
+                        "INSERT INTO knowledge_base (category, key, data, updated_at) "
+                        "VALUES (%s, %s, %s::jsonb, NOW()) "
+                        "ON CONFLICT (category, key) DO UPDATE SET "
+                        "data = %s::jsonb, updated_at = NOW()",
+                        ("scan_pattern", kb_key, _json.dumps(merged), _json.dumps(merged)),
                     )
                     written += 1
                 except Exception as exc:
