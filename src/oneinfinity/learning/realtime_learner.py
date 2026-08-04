@@ -78,6 +78,14 @@ class RealtimeLearner:
         self.adaptation_count = 0
         self.pattern_count = 0
 
+        # Cache Neo4jKnowledgeBase — avoids repeated connection attempts + warning spam
+        self._neo4j_kb = None
+        try:
+            from oneinfinity.learning.neo4j_knowledge_base import Neo4jKnowledgeBase
+            self._neo4j_kb = Neo4jKnowledgeBase()
+        except Exception:
+            pass  # unavailable — methods will no-op
+
         self._subscribe_to_events()
         log.info("RealtimeLearner initialized")
 
@@ -253,53 +261,35 @@ class RealtimeLearner:
 
     async def _update_graph_weights(self, vuln_type: str, confidence: float, success: bool):
         """Update Neo4j graph edge weights based on finding success."""
+        kb = self._neo4j_kb
+        if kb is None or not kb._available:
+            return
         try:
-            from oneinfinity.learning.neo4j_knowledge_base import Neo4jKnowledgeBase
-
-            kb = Neo4jKnowledgeBase()
-
-            # Weight adjustment based on confidence and success
             weight_delta = confidence * 0.1 if success else -confidence * 0.05
-
-            # Query for nodes with this vuln_type
             query = """
             MATCH (n {vuln_type: $vuln_type})
             SET n.weight = COALESCE(n.weight, 1.0) + $delta
             RETURN count(n) as updated
             """
-
-            result = await kb.execute_query(query, {
-                "vuln_type": vuln_type,
-                "delta": weight_delta
-            })
-
+            await kb.execute_query(query, {"vuln_type": vuln_type, "delta": weight_delta})
             log.debug(f"Updated graph weights for {vuln_type}: delta={weight_delta:.3f}")
-
         except Exception as e:
             log.debug(f"Graph weight update skipped: {e}")
 
     async def _strengthen_edge(self, src_node: str, dst_node: str, weight_delta: float):
         """Increase weight of attack graph edge (successful chain path)."""
+        kb = self._neo4j_kb
+        if kb is None or not kb._available:
+            return
         try:
-            from oneinfinity.learning.neo4j_knowledge_base import Neo4jKnowledgeBase
-
-            kb = Neo4jKnowledgeBase()
-
             query = """
             MATCH (a)-[r:ENABLES]->(b)
             WHERE a.node_id = $src AND b.node_id = $dst
             SET r.weight = COALESCE(r.weight, 1.0) + $delta
             RETURN r.weight as new_weight
             """
-
-            result = await kb.execute_query(query, {
-                "src": src_node,
-                "dst": dst_node,
-                "delta": weight_delta
-            })
-
+            await kb.execute_query(query, {"src": src_node, "dst": dst_node, "delta": weight_delta})
             log.debug(f"Strengthened edge {src_node} → {dst_node}: +{weight_delta:.2f}")
-
         except Exception as e:
             log.debug(f"Edge strengthen skipped: {e}")
 
