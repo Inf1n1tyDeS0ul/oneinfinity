@@ -716,10 +716,19 @@ class ResultIngestionEngine:
         # Root cause: agents concatenate empty scheme + target + path.
         # Must happen before dedup so the fixed URL is what gets stored/deduped.
         if _url.startswith('://') or _url == '://':
-            fixed = self._sanitize_url(_url, finding.target or result.scan_id or "")
+            fixed = self._sanitize_url(
+                _url,
+                finding.target or
+                (result.raw.get("target") if isinstance(result.raw, dict) else None) or
+                ""
+            )
             if fixed != _url:
                 log.debug("ingest: fixed malformed URL [%s] → [%s]", _url, fixed)
                 finding.url = fixed
+            # Drop finding if URL is still malformed after sanitization
+            if not finding.url or finding.url in ("://", "://://") or finding.url.startswith("://"):
+                log.debug("ingest: dropped unfixable malformed URL [%s] vuln_type=%s", _url, _vt)
+                return None
 
         # Mark whether this finding's URL is in-scope for the scan target.
         # Off-scope findings (e.g. sandbox.gimmeit.net.au when scanning vulnbank.org)
