@@ -324,7 +324,7 @@ _CANONICAL_VULN_MAP: dict = {
     "source_disclosure": "Exposed Sensitive Files",
     # Misconfig / Headers
     "misconfig": "Security Misconfiguration", "misconfiguration": "Security Misconfiguration",
-    "missing_security_headers": "Missing Security Headers", "missing_headers": "Missing Security Headers",
+    "missing_headers": "Missing Security Headers",  # missing_security_headers now passes through as-is
     # Info disclosure
     "info_leak": "Information Disclosure", "information_disclosure": "Information Disclosure",
     "sensitive_data_disclosure": "Information Disclosure",
