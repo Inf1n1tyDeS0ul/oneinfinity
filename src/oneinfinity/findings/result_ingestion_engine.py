@@ -725,6 +725,18 @@ class ResultIngestionEngine:
         if not _url and "Chain detected by ExploitChainEngine" in _ev:
             log.debug("ingest: dropping URL-less chain suggestion stub [%s]", _vt)
             return None
+        # When a real finding has no URL at all, set it to the scan target proactively.
+        # This prevents the :// generation that happens when empty URL + target are joined.
+        if not _url and _vt and _vt not in (result.source, "unknown", "god-mode-advanced-mission"):
+            _fallback_url = (
+                finding.target
+                or (result.raw.get("target") if isinstance(result.raw, dict) else None)
+                or ""
+            )
+            if _fallback_url:
+                finding.url = _fallback_url
+                _url = _fallback_url
+                log.debug("ingest: set empty URL to scan target [%s] for %s", _fallback_url, _vt)
 
         # Fix malformed agent-generated URLs (e.g. ://vulnbank.org/login)
         # Root cause: agents concatenate empty scheme + target + path.
@@ -739,10 +751,23 @@ class ResultIngestionEngine:
             if fixed != _url:
                 log.debug("ingest: fixed malformed URL [%s] → [%s]", _url, fixed)
                 finding.url = fixed
-            # Drop finding if URL is still malformed after sanitization
+            # Drop finding if URL is still malformed after sanitization.
             if not finding.url or finding.url in ("://", "://://") or finding.url.startswith("://"):
-                log.debug("ingest: dropped unfixable malformed URL [%s] vuln_type=%s", _url, _vt)
-                return None
+                # Rescue real findings (have evidence and non-stub vuln_type) with scan target.
+                _scan_target_url = (
+                    finding.target
+                    or (result.raw.get("target") if isinstance(result.raw, dict) else None)
+                    or ""
+                )
+                _is_stub_type = (
+                    not _vt or _vt in (result.source, "unknown", "god-mode-advanced-mission")
+                )
+                if not _is_stub_type and _scan_target_url and (finding.evidence or finding.payload):
+                    finding.url = _scan_target_url
+                    log.debug("ingest: rescued URL-less finding [%s] → %s", _vt, _scan_target_url)
+                else:
+                    log.debug("ingest: dropped malformed URL [%s] vuln_type=%s", _url, _vt)
+                    return None
 
         # Mark whether this finding's URL is in-scope for the scan target.
         # Off-scope findings (e.g. sandbox.gimmeit.net.au when scanning vulnbank.org)
