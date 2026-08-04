@@ -250,6 +250,10 @@ class TargetDiscoveryEngine:
         self, domain: str, wordlist: list[str] = None
     ) -> list[DiscoveredTarget]:
         """Brute-force common subdomain prefixes via DNS resolution."""
+        # Skip brute-force for internal/localhost domains (DNS wildcard = noise)
+        if _is_internal_domain(domain):
+            logger.info(f"[dns_brute] Skipping {domain} — internal/localhost target")
+            return []
         wordlist = wordlist or DNS_BRUTE_WORDLIST
         results: list[DiscoveredTarget] = []
 
