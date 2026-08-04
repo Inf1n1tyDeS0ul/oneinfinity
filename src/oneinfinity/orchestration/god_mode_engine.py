@@ -2469,7 +2469,7 @@ class ReportMission(Mission):
             _all_ingested = []
             try:
                 from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine as _gie2
-                _all_ingested = _gie2().get_findings() or []
+                _all_ingested = _gie2().get_findings(scan_id=session.scan_id) or []
             except Exception:
                 _all_ingested = validated  # fallback to validated slice
             found_types = list({
@@ -3565,7 +3565,7 @@ class GodModeConductor:
                 from oneinfinity.attack_graph_core.builder import AttackGraphBuilder
                 from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine as _sgie
                 import json as _sc_json
-                _sc_findings = _sgie().get_findings() or []
+                _sc_findings = _sgie().get_findings(scan_id=session.scan_id) or []
                 _sc_builder = AttackGraphBuilder(target=session.target)
                 for _scf in _sc_findings:
                     if isinstance(_scf, dict):
@@ -3595,7 +3595,7 @@ class GodModeConductor:
             # into a single deduped set before ReportMission.
             try:
                 from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
-                _all_findings = get_ingestion_engine().get_findings() or []
+                _all_findings = get_ingestion_engine().get_findings(scan_id=session.scan_id) or []
                 if _all_findings:
                     _all_findings = self._apply_findings_pipeline(
                         _all_findings, scan_id=session.scan_id

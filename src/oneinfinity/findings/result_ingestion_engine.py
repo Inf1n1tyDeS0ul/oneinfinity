@@ -718,6 +718,13 @@ class ResultIngestionEngine:
             log.debug("ingest: skipping empty finding stub (no vuln_type, no url) target=%s",
                       finding.target)
             return None
+        # Drop URL-less chain suggestion stubs from ExploitChainEngine.
+        # These are speculative attack paths, not confirmed findings. They have no
+        # real URL and pollute the findings list with :// rows.
+        _ev = (finding.evidence or "").strip()
+        if not _url and "Chain detected by ExploitChainEngine" in _ev:
+            log.debug("ingest: dropping URL-less chain suggestion stub [%s]", _vt)
+            return None
 
         # Fix malformed agent-generated URLs (e.g. ://vulnbank.org/login)
         # Root cause: agents concatenate empty scheme + target + path.
