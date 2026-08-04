@@ -4144,7 +4144,10 @@ async def submit_finding_feedback(finding_id: str, body: Dict[str, Any]):
     try:
         is_tp = bool(body.get("is_true_positive", True))
         notes = str(body.get("researcher_notes", ""))[:500]
-        # Load the finding — check in-memory cache first, then DB (no finding_id kwarg on get_findings)
+        # Load the finding — direct DB lookup by finding_id (fast, correct).
+        # The old approach scanned up to 10k rows and did a linear search, which
+        # still missed findings beyond the limit or in the VULNERABILITIES cache
+        # only by ID format mismatch.
         finding: Dict[str, Any] = {}
         _cached = VULNERABILITIES.get(finding_id)
         if _cached:
@@ -4152,12 +4155,23 @@ async def submit_finding_feedback(finding_id: str, body: Dict[str, Any]):
         if not finding:
             try:
                 mgr = await get_mgr()
-                if mgr:
-                    _all = mgr.sync_get_findings(limit=10000) if hasattr(mgr, "sync_get_findings") else []
-                    finding = next((r for r in _all if isinstance(r, dict) and
-                                    (r.get("finding_id") == finding_id or r.get("id") == finding_id)), {})
+                if mgr and hasattr(mgr, "sync_pg_execute_read"):
+                    _rows = mgr.sync_pg_execute_read(
+                        "SELECT finding_id, scan_id, target, title, severity, vuln_type, "
+                        "url, tool, confidence, cvss, status, source_type, data "
+                        "FROM findings WHERE finding_id = %s LIMIT 1",
+                        (finding_id,),
+                    )
+                    if _rows:
+                        _r = _rows[0]
+                        # Merge JSONB data column into top-level dict (same as get_findings)
+                        import json as _jmod
+                        _extra = _r.pop("data", None) or {}
+                        if isinstance(_extra, str):
+                            _extra = _jmod.loads(_extra)
+                        finding = {**_r, **_extra}
             except Exception as _fe:
-                log.warning("[HITL] Finding load failed: %s", _fe)
+                log.warning("[HITL] Finding DB lookup failed: %s", _fe)
         if not finding:
             # Body may carry vuln_type/severity/url from the UI (the researcher already sees
             # the finding details). Use those rather than defaulting everything to "unknown".
