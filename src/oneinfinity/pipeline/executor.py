@@ -3015,11 +3015,15 @@ class CanonicalExecutor:
             from oneinfinity.scan.unified_advanced_scanner import UnifiedAdvancedScanner
             probe_url = target if target.startswith("http") else f"https://{target}"
             scanner = UnifiedAdvancedScanner(target=probe_url)
+            _timeout = int(1800 * self.timeout_multiplier)
             scan_result = _asyncio_adv.run(
-                scanner.run_full_scan(
-                    account_configs=None,     # IDOR requires ≥2 accounts; skip by default
-                    source_filter=None,
-                    oob_domain=None,          # OOB callbacks require external listener
+                _asyncio_adv.wait_for(
+                    scanner.run_full_scan(
+                        account_configs=None,
+                        source_filter=None,
+                        oob_domain=None,
+                    ),
+                    timeout=_timeout,
                 )
             )
             raw = scan_result.to_dict()
