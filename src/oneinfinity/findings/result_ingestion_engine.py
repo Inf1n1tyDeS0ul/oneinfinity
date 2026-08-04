@@ -605,7 +605,8 @@ class ResultIngestionEngine:
         # Strip leading '://' garbage (1 or more times)
         cleaned = _re.sub(r'^(://)+', '', url)
         if not cleaned:
-            return url
+            # URL was purely '://' noise — use scan_target as the canonical URL
+            return scan_target if scan_target else url
         # If it now looks like a valid URL, return it
         if cleaned.startswith(('http://', 'https://')):
             return cleaned
