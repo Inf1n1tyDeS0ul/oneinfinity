@@ -227,29 +227,29 @@ class GraphChainDetector:
         return paths
 
     def _get_neighbors(self, node_id: str) -> List[str]:
-        """Get neighbor nodes connected by edges."""
+        """Get neighbor node IDs connected by outgoing edges."""
         neighbors = []
-
-        # Use adjacency list
-        edges = self.graph._adj.get(node_id, [])
-        for edge in edges:
-            neighbors.append(edge.dst)
-
+        # AttackGraphEngine stores edge IDs in _adj_out, not _adj.
+        # Each entry is an edge ID; look up the edge to get target_id.
+        for eid in self.graph._adj_out.get(node_id, []):
+            edge = self.graph._edges.get(eid)
+            if edge is not None:
+                neighbors.append(edge.target_id)
         return neighbors
 
     def _get_edge_confidence(self, from_node: str, to_node: str) -> float:
-        """Get confidence score for edge."""
-        edges = self.graph._adj.get(from_node, [])
-        for edge in edges:
-            if edge.dst == to_node:
-                # Try edge.confidence attribute first, then properties dict
-                conf_val = getattr(edge, "confidence", None) or edge.properties.get("confidence", 0.5)
-                # Handle string or float
+        """Get confidence score for edge between from_node and to_node."""
+        for eid in self.graph._adj_out.get(from_node, []):
+            edge = self.graph._edges.get(eid)
+            if edge is None:
+                continue
+            if edge.target_id == to_node:
+                # Try edge.probability first (used by AttackGraphEngine), then properties
+                conf_val = getattr(edge, "probability", None) or edge.properties.get("confidence", 0.5)
                 if isinstance(conf_val, str):
                     confidence_map = {"high": 0.9, "medium": 0.6, "low": 0.3}
                     return confidence_map.get(conf_val.lower(), 0.5)
                 return float(conf_val)
-
         return 0.0
 
     def _build_chain_from_path(self, path: List[str], objective: str) -> Optional[AttackChain]:

@@ -1507,26 +1507,56 @@ class ChainsMission(Mission):
         super().__init__("chains")
 
     def _run(self, session: GodModeSession) -> None:
-        from oneinfinity.attack.exploit_chain_engine import ExploitChainEngine
+        from oneinfinity.attack_graph_core.exploit_chain_engine import ExploitChainEngine
         from oneinfinity.findings.result_ingestion_engine import get_ingestion_engine
 
         log.info("[GOD MODE] ChainsMission: running chain analysis for %s", session.target)
 
         findings = []
         try:
-            findings = get_ingestion_engine().get_findings() or []
+            findings = get_ingestion_engine().get_findings(scan_id=session.scan_id) or []
+            if not findings:
+                # Fall back to all findings for this target when scan_id filter returns nothing
+                findings = get_ingestion_engine().get_findings() or []
         except Exception as exc:
             log.warning("[GOD MODE] ChainsMission: could not load findings: %s", exc, exc_info=True)
 
         engine = ExploitChainEngine()
+        chains = None
         try:
-            chains = engine.detect_chains(findings, session.target)
+            # detect_chains_from_findings() ingests findings into the graph then
+            # calls detect_chains(target) — correct API (previously called as
+            # detect_chains(findings, target) which passed findings as target arg).
+            chains = engine.detect_chains_from_findings(findings, session.target)
         except Exception as exc:
             log.warning("[GOD MODE] ChainsMission: chain detection failed: %s", exc, exc_info=True)
-            chains = None
         finally:
             session.phases_complete.append("chains")
-        # Emit insight for detected exploit chains into Intelligence Stream
+
+        # Publish CHAIN_DETECTED event to event bus for Intelligence Stream + RealtimeLearner
+        if chains:
+            try:
+                from oneinfinity.orchestration.event_bus import get_bus, EventType
+                _bus = get_bus()
+                for _ch in chains[:10]:
+                    _cd = _ch if isinstance(_ch, dict) else (_ch.__dict__ if hasattr(_ch, '__dict__') else {})
+                    _bus.publish(
+                        EventType.CHAIN_DETECTED,
+                        {
+                            "chain_name":  _cd.get("name", _cd.get("title", "exploit_chain")),
+                            "steps":       _cd.get("steps", []),
+                            "cvss":        _cd.get("cvss_combined", _cd.get("estimated_bounty", 0)),
+                            "target":      session.target,
+                            "scan_id":     session.scan_id,
+                            "severity":    _cd.get("severity", "high"),
+                        },
+                        source="chains-mission",
+                        correlation_id=session.scan_id,
+                    )
+            except Exception as _be:
+                log.debug("[GOD MODE] ChainsMission: event bus publish failed: %s", _be)
+
+        # Emit Intelligence Stream insights
         if chains:
             for _ch in chains[:5]:
                 _cd = _ch if isinstance(_ch, dict) else (_ch.__dict__ if hasattr(_ch, '__dict__') else {})

@@ -277,11 +277,15 @@ class AttackGraphBrain:
                 node = eng.get_node(node_id)
                 reward = float(node.properties.get("brain_reward", 1.0))
                 eng.update_node(node_id, properties={"brain_reward": reward * 1.5})
-                # Propagate some reward to parents
-                for parent_id in eng.get_edges_to(node_id):
-                    p_node = eng.get_node(parent_id)
+                # Propagate reward to parent nodes.
+                # get_edges_to() returns Edge objects; extract source_id to get the parent node.
+                for parent_edge in eng.get_edges_to(node_id):
+                    parent_node_id = parent_edge.source_id
+                    p_node = eng.get_node(parent_node_id)
+                    if p_node is None:
+                        continue
                     p_reward = float(p_node.properties.get("brain_reward", 1.0))
-                    eng.update_node(parent_id, properties={"brain_reward": p_reward * 1.2})
+                    eng.update_node(parent_node_id, properties={"brain_reward": p_reward * 1.2})
             except Exception: pass
             self.rescore_graph()
 
