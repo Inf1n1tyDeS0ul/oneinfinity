@@ -3436,6 +3436,61 @@ class GodModeConductor:
         """Stages 2-5: pipeline + event missions + convergence + report."""
 
         # ── Build mission list ─────────────────────────────────────────────
+        # E7: Form-based authentication for lab/app targets
+        # Runs when no Cognito auth is provided but form_auth_* fields are in auth_config
+        # or a known app profile is auto-detected
+        try:
+            _needs_form_auth = (
+                not (session.auth_config or {}).get("cognito_password") and
+                not (session.auth_config or {}).get("bearer_token") and
+                not (session.auth_config or {}).get("session_cookie")
+            )
+            if _needs_form_auth:
+                from oneinfinity.auth.form_auth import auth_from_scan_config
+                _form_result = auth_from_scan_config(session.auth_config or {}, session.target)
+                if _form_result and _form_result.success:
+                    if _form_result.session_cookie:
+                        session.auth_config["session_cookie"] = _form_result.session_cookie
+                        log.info("[GOD MODE] E7: form auth succeeded — session cookie acquired")
+                    elif _form_result.auth_header:
+                        session.auth_config["bearer_token"] = _form_result.auth_header
+                        log.info("[GOD MODE] E7: form auth succeeded — bearer token acquired")
+                # E8: Auto-detect scan profile and apply known paths + default auth
+                if not _form_result or not _form_result.success:
+                    try:
+                        from oneinfinity.recon.scan_profiles import detect_profile
+                        _base_url = session.target if session.target.startswith("http") else f"http://{session.target}"
+                        import urllib.request as _ur_p
+                        _resp_p = _ur_p.urlopen(
+                            _ur_p.Request(_base_url, headers={"User-Agent": "oneinfinity/1.0"}), timeout=8
+                        )
+                        _body_p = _resp_p.read(8192).decode("utf-8", errors="replace")
+                        _title_p = ""
+                        import re as _re_p
+                        _tm = _re_p.search(r'<title>([^<]{1,200})</title>', _body_p, _re_p.IGNORECASE)
+                        if _tm: _title_p = _tm.group(1)
+                        _profile_p = detect_profile(
+                            title=_title_p, body_snippet=_body_p, target_url=session.target
+                        )
+                        if _profile_p:
+                            log.info("[GOD MODE] E8: detected app profile: %s", _profile_p.name)
+                            session.add_insight("profile_detection", f"Detected {_profile_p.name}",
+                                                f"Apply known paths and vuln hints", "ok")
+                            # Merge default auth from profile if not already set
+                            if _profile_p.default_auth and _needs_form_auth:
+                                _merged = dict(_profile_p.default_auth)
+                                _merged.update(session.auth_config or {})
+                                _fa2 = auth_from_scan_config(_merged, session.target)
+                                if _fa2 and _fa2.success:
+                                    if _fa2.session_cookie:
+                                        session.auth_config["session_cookie"] = _fa2.session_cookie
+                                    elif _fa2.auth_header:
+                                        session.auth_config["bearer_token"] = _fa2.auth_header
+                                    log.info("[GOD MODE] E8: profile auth succeeded for %s", _profile_p.name)
+                    except Exception as _e8:
+                        log.debug("[GOD MODE] E8 profile detection: %s", _e8)
+        except Exception as _e7:
+            log.debug("[GOD MODE] E7/E8 form auth: %s", _e7)
         full_scan = FullScanMission(foundation, auth_config=session.auth_config,
                                     findings_pipeline_cb=self._apply_findings_pipeline)
         research = ResearchMission(self._convergence, foundation_recon=foundation.recon) if not no_research else None
