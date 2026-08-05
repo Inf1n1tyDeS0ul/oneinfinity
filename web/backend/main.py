@@ -8201,53 +8201,47 @@ async def ai_redteam_engine_results(campaign_id: str):
 _AI_SECURITY_SCANS: Dict[str, Any] = {}
 
 
+
 @app.get("/api/ai-security/tool-status", dependencies=[Depends(_require_auth)])
 async def ai_security_tool_status():
-    """Return which AI security tools are available."""
-    import importlib.util
-    from pathlib import Path
+    """Return which AI security tools are available.
+    All packages are in the main venv. The legacy tools_venv split is gone.
+    """
+    import importlib.util, subprocess, sys
 
-    tools_python = None
-    for candidate in [
-        Path(__file__).parents[1] / "tools_venv" / "bin" / "python",
-        Path(__file__).parents[2] / "tools_venv" / "bin" / "python",
-        Path(".") / "tools_venv" / "bin" / "python",
-    ]:
-        if candidate.exists():
-            tools_python = str(candidate)
-            break
-
-    def _check_in_tools_venv(pkg: str) -> bool:
-        if not tools_python:
-            return False
-        import subprocess
+    def _check(pkg):
+        """Check if a package is importable in the active Python env."""
+        if importlib.util.find_spec(pkg) is not None:
+            return True
+        # Fallback: subprocess import for editable / namespace packages
         try:
-            result = subprocess.run(
-                [tools_python, "-c", f"import {pkg}; print('ok')"],
-                capture_output=True, text=True, timeout=5
+            r = subprocess.run(
+                [sys.executable, "-c", "import " + pkg],
+                capture_output=True, text=True, timeout=5,
             )
-            return result.returncode == 0 and "ok" in result.stdout
+            return r.returncode == 0
         except Exception:
             return False
 
-    main_venv = {
-        "garak": importlib.util.find_spec("garak") is not None,
-        "art":   importlib.util.find_spec("art") is not None,
+    tool_checks = {
+        "garak":         _check("garak"),
+        "pyrit":         _check("pyrit"),
+        "giskard":       _check("giskard"),
+        "rebuff":        _check("rebuff"),
+        "art":           _check("art"),
+        "modelscan":     _check("modelscan"),
+        "llm_guard":     _check("llm_guard"),
+        "agentic_radar": _check("agentic_radar"),
     }
-    bridge_venv = {
-        "pyrit":   _check_in_tools_venv("pyrit"),
-        "giskard": _check_in_tools_venv("giskard"),
-        "rebuff":  _check_in_tools_venv("rebuff"),
+    return {
+        "tools_venv_available": True,
+        "tools_venv_path": sys.executable,
+        "tools": {
+            k: {"installed": v, "venv": "main" if v else "not_installed"}
+            for k, v in tool_checks.items()
+        },
     }
 
-    return {
-        "tools_venv_available": tools_python is not None,
-        "tools_venv_path": tools_python,
-        "tools": {
-            **{k: {"installed": v, "venv": "main"} for k, v in main_venv.items()},
-            **{k: {"installed": v, "venv": "tools_venv"} for k, v in bridge_venv.items()},
-        }
-    }
 
 
 @app.post("/api/ai-security/scan", dependencies=[Depends(_require_auth)])
