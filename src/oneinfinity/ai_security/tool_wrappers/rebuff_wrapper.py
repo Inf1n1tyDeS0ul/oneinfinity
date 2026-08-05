@@ -110,7 +110,7 @@ class RebuffWrapper:
             rb = Rebuff(openai_apikey=api_key, rebuff_api_url=rebuff_url)
 
             findings = []
-            for prompt, strategy, description in _REBUFF_BYPASS_ATTEMPTS:
+            for prompt, strategy, description in attempts:
                 is_injection, heuristic_score, vector_score, llm_score, output = (
                     rb.detect_injection(prompt)
                 )
@@ -158,13 +158,15 @@ class RebuffWrapper:
         findings = []
         loop = asyncio.get_event_loop()
 
-        log.info("[rebuff-builtin] Testing %d bypass strategies against %s",
-                 len(_REBUFF_BYPASS_ATTEMPTS), target)
+        n = config.get("num_prompts", len(_REBUFF_BYPASS_ATTEMPTS))
+        attempts = (_REBUFF_BYPASS_ATTEMPTS * ((n // len(_REBUFF_BYPASS_ATTEMPTS)) + 1))[:n]
+        log.info("[rebuff-builtin] Testing %d bypass strategies (num_prompts=%d) against %s",
+                 len(attempts), n, target)
 
         successful_bypasses: List[Tuple[str, str, str]] = []
         blocked_attempts: int = 0
 
-        for prompt, strategy, description in _REBUFF_BYPASS_ATTEMPTS:
+        for prompt, strategy, description in attempts:
             response = await loop.run_in_executor(
                 None, self._query, target, prompt, config
             )
@@ -206,7 +208,7 @@ class RebuffWrapper:
                 blocked_attempts += 1
 
         # Report on overall protection quality
-        total = len(_REBUFF_BYPASS_ATTEMPTS)
+        total = len(attempts)
         bypass_rate = len(successful_bypasses) / total
         if bypass_rate > 0.5:
             findings.append(AIVulnFinding(

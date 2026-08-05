@@ -167,12 +167,14 @@ class PyRITWrapper:
         auth = config.get("auth_header", "")
         model = config.get("model", "gpt-3.5-turbo")
 
+        n = config.get("num_prompts", len(_MULTI_TURN_ATTACKS))
+        attacks = (_MULTI_TURN_ATTACKS * ((n // len(_MULTI_TURN_ATTACKS)) + 1))[:n]
         findings = []
-        log.info("[pyrit-builtin] Running %d multi-turn attacks against %s",
-                 len(_MULTI_TURN_ATTACKS), target)
+        log.info("[pyrit-builtin] Running %d multi-turn attacks (num_prompts=%d) against %s",
+                 len(attacks), n, target)
 
         loop = asyncio.get_event_loop()
-        for setup_msgs, attack_msg, attack_type in _MULTI_TURN_ATTACKS:
+        for setup_msgs, attack_msg, attack_type in attacks:
             response = await loop.run_in_executor(
                 None,
                 self._send_multiturn,

@@ -112,10 +112,17 @@ class ARTWrapper:
         findings = []
         loop = asyncio.get_event_loop()
 
-        log.info("[art-builtin] Running adversarial robustness tests against %s", target)
+        _n_strats = len(_PERTURBATION_STRATEGIES[:4])
+        _n_req = config.get("num_prompts", len(_ROBUSTNESS_TESTS) * _n_strats)
+        n_base = max(1, _n_req // _n_strats)
+        robustness_tests = (_ROBUSTNESS_TESTS * ((n_base // len(_ROBUSTNESS_TESTS)) + 1))[:n_base]
+        log.info("[art-builtin] Running %d base prompts x %d perturbations = %d probes"
+                 " (num_prompts=%d) against %s",
+                 len(robustness_tests), _n_strats, len(robustness_tests) * _n_strats,
+                 _n_req, target)
 
         # 1. Robustness tests: perturb known-safe prompts to bypass safety
-        for original_prompt, attack_type in _ROBUSTNESS_TESTS:
+        for original_prompt, attack_type in robustness_tests:
             # Test original first
             original_response = await loop.run_in_executor(
                 None, self._query, target, original_prompt, config

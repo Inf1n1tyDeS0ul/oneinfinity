@@ -187,8 +187,10 @@ class GarakWrapper:
         from ..campaign_manager import CampaignConfig, CampaignMode, CampaignManager
         from ..prompt_generator import AdversarialPrompt
 
-        log.info("[garak-builtin] Running %d built-in probes against %s",
-                 len(_BUILTIN_PROBES), target)
+        n = config.get("num_prompts", len(_BUILTIN_PROBES))
+        probes = (_BUILTIN_PROBES * ((n // len(_BUILTIN_PROBES)) + 1))[:n]
+        log.info("[garak-builtin] Running %d probes (num_prompts=%d) against %s",
+                 len(probes), n, target)
 
         findings = []
         from ..vulnerability_detector import VulnerabilityDetector
@@ -198,7 +200,7 @@ class GarakWrapper:
         endpoint = config.get("endpoint_path", "/v1/chat/completions")
         auth = config.get("auth_header", "")
 
-        for attack_type, payload, confidence in _BUILTIN_PROBES:
+        for attack_type, payload, confidence in probes:
             response = self._probe_endpoint(target, payload, endpoint, auth, config.get("model", "gpt-3.5-turbo"))
             if response:
                 new_findings = detector.analyze(

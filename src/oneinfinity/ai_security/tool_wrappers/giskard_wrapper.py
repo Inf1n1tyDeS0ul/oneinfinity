@@ -200,11 +200,13 @@ class GiskardWrapper:
         endpoint = config.get("endpoint_path", "/v1/chat/completions")
         auth = config.get("auth_header", "")
 
-        log.info("[giskard-builtin] Running %d test cases against %s",
-                 len(_GISKARD_TEST_CASES), target)
+        n = config.get("num_prompts", len(_GISKARD_TEST_CASES))
+        test_cases = (_GISKARD_TEST_CASES * ((n // len(_GISKARD_TEST_CASES)) + 1))[:n]
+        log.info("[giskard-builtin] Running %d test cases (num_prompts=%d) against %s",
+                 len(test_cases), n, target)
 
         loop = asyncio.get_event_loop()
-        for category, prompt, expected_behavior, attack_type, severity in _GISKARD_TEST_CASES:
+        for category, prompt, expected_behavior, attack_type, severity in test_cases:
             response = await loop.run_in_executor(
                 None, self._query_target, target, prompt, config
             )
