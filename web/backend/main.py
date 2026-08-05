@@ -8150,14 +8150,11 @@ async def ai_redteam_schedules_list():
     return {"schedules": []}
 
 
-@app.get("/api/ai-redteam/behavior/{target_enc}", dependencies=[Depends(_require_auth)])
-async def ai_redteam_behavior_profile(target_enc: str):
-    """
-    Retrieve the persistent AI_BEHAVIOR profile for a target.
-    target_enc is URL-encoded target URL.
-    """
-    import urllib.parse
-    target = urllib.parse.unquote(target_enc)
+@app.get("/api/ai-redteam/behavior", dependencies=[Depends(_require_auth)], response_class=JSONResponse)
+async def ai_redteam_behavior_profile(target: str = ""):
+    """Retrieve the persistent AI_BEHAVIOR profile for a target (query param: ?target=URL)."""
+    profile = {}
+    source = "none"
     # Try Neo4j first
     try:
         from oneinfinity.core.db_manager import get_db_manager_sync
@@ -8170,16 +8167,18 @@ async def ai_redteam_behavior_profile(target_enc: str):
                     target=target
                 ).single()
                 if rec:
-                    node = rec["b"]
-                    return {"target": target, "profile": dict(node), "source": "neo4j"}
+                    profile = dict(rec["b"])
+                    source = "neo4j"
     except Exception:
         pass
-    # Fallback: look in recent campaign results
-    matching = [c for c in AI_CAMPAIGNS.values() if c.get("target") == target and c.get("behavior_profile")]
-    if matching:
-        latest = max(matching, key=lambda c: c.get("started_at", 0))
-        return {"target": target, "profile": latest["behavior_profile"], "source": "campaign_cache"}
-    return {"target": target, "profile": {}, "source": "none"}
+    # Fallback: recent campaign results
+    if source == "none":
+        matching = [c for c in AI_CAMPAIGNS.values() if c.get("target") == target and c.get("behavior_profile")]
+        if matching:
+            latest = max(matching, key=lambda c: c.get("started_at", 0))
+            profile = latest["behavior_profile"]
+            source = "campaign_cache"
+    return JSONResponse({"target": target, "profile": profile, "source": source})
 
 
 @app.get("/api/ai-redteam/campaigns/{campaign_id}/engine-results", dependencies=[Depends(_require_auth)])

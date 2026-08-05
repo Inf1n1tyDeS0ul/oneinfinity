@@ -348,7 +348,7 @@ export const endpoints = {
   aiRedteamWatchStart: (data) => api.post('/ai-redteam/watch', data),
   aiRedteamWatchStop:  (watchId) => api.delete(`/ai-redteam/watch/${watchId}`),
   aiRedteamSchedules:  () => api.get('/ai-redteam/schedules'),
-  aiRedteamBehavior:   (target) => api.get(`/ai-redteam/behavior/${encodeURIComponent(target)}`),
+  aiRedteamBehavior:   (target) => api.get(`/ai-redteam/behavior?target=${encodeURIComponent(target)}`),
 
   aiPromptTest:        (data) => api.post('/ai-prompt-test', data),
 
