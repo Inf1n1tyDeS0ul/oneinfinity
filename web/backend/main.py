@@ -2203,6 +2203,17 @@ async def get_scan(scan_id: str):
     resp = _scan_response(entry)
     resp["scan_health"] = _scan_health
     resp["scan_quality"] = _scan_quality
+    # E9: Override findings_count with actual DB row count for accuracy.
+    # The session state file carries a pre-filter estimate; DB is the ground truth.
+    try:
+        _mgr_e9 = await get_mgr()
+        if _mgr_e9 is not None:
+            _db_rows_e9 = await _mgr_e9.get_findings(scan_id=scan_id)
+            if _db_rows_e9 is not None:
+                resp["finding_count"] = len(_db_rows_e9)
+                resp["findings_count"] = len(_db_rows_e9)
+    except Exception:
+        pass
     return resp
 
 @app.get("/api/scans/{scan_id}/findings", dependencies=[Depends(_require_auth)])
