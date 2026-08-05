@@ -1578,6 +1578,22 @@ class AdaptiveReconEngine:
         if gau_urls:
             _ok(f"gau: {len(gau_urls)} URLs")
 
+        # E4: For local targets, run katana directly without requiring alive_hosts
+        try:
+            from oneinfinity.recon.target_classifier import is_local_target, classify
+            _profile = classify(self.target)
+            if is_local_target(_profile) and not self._alive_hosts:
+                _direct_url = self.target if self.target.startswith("http") else f"http://{self.target}"
+                _info(f"E4: Local target — running katana directly on {_direct_url}")
+                _direct_urls = _katana_crawl(_direct_url, depth=3, timeout=90)
+                if _direct_urls:
+                    all_urls.update(_direct_urls)
+                    _ok(f"E4: katana direct crawl: {len(_direct_urls)} URLs")
+                # Also add target to alive_hosts so downstream phases work
+                if not self._alive_hosts:
+                    self._alive_hosts = [{"url": _direct_url, "status_code": 200, "title": "", "tech": []}]
+        except Exception as _e4:
+            _warn(f"E4: direct katana failed: {_e4}")
         # Active crawl (first alive host)
         if self._alive_hosts:
             primary = self._alive_hosts[0].get("url", f"https://{self.target}")
@@ -1587,6 +1603,15 @@ class AdaptiveReconEngine:
             all_urls.update(katana_urls)
             if katana_urls:
                 _ok(f"katana: {len(katana_urls)} URLs")
+        # E6: Extract endpoints from first alive host response
+        if self._alive_hosts:
+            _e6_primary = self._alive_hosts[0].get("url", f"https://{self.target}")
+            _e6_urls = self._extract_from_response(_e6_primary)
+            if _e6_urls:
+                _new_e6 = [u for u in _e6_urls if u not in all_urls]
+                all_urls.update(_e6_urls)
+                _ok(f"E6: response extraction: {len(_e6_urls)} URLs ({len(_new_e6)} new)")
+
 
         # Phase B: authenticated Playwright crawl when auth_context is provided
         # This discovers auth-gated endpoints, lazy-loaded SPA routes, and
@@ -1656,10 +1681,96 @@ class AdaptiveReconEngine:
             if fallback_urls:
                 _ok(f"python-crawl: {len(fallback_urls)} URLs")
 
+        # E5: Wordlist probe when URL discovery is sparse
         self._all_urls = self._filter_urls(sorted(all_urls))
+        if len(self._all_urls) < 10:
+            self._phase_wordlist_probe()
         (self.output_dir / "urls.json").write_text(
             json.dumps(self._all_urls, indent=2))
         _ok(f"Total URLs: {len(self._all_urls)}")
+
+    def _phase_wordlist_probe(self):
+        """E5: Probe common paths when crawl data is sparse.
+        Covers DVWA, Juice Shop, AI Goat, WordPress, Rails, Django, generic APIs.
+        """
+        import urllib.request as _ur, urllib.error as _ue
+        _base = self.target if self.target.startswith("http") else f"http://{self.target}"
+        _base = _base.rstrip("/")
+
+        COMMON_PATHS = [
+            # Auth
+            "/login", "/login.php", "/signin", "/register", "/logout", "/signup",
+            "/auth/login", "/auth/register", "/user/login", "/account/login",
+            # Admin
+            "/admin", "/admin/login", "/admin/dashboard", "/administrator",
+            "/wp-admin", "/wp-login.php", "/manager", "/dashboard",
+            # APIs
+            "/api", "/api/v1", "/api/v2", "/api/v3", "/rest", "/graphql",
+            "/api/users", "/api/v1/users", "/api/products", "/api/v1/products",
+            "/api/login", "/api/v1/login", "/api/v1/auth", "/api/v1/auth/login",
+            "/rest/user/login", "/rest/user/register", "/rest/Products",
+            # Vulnerable app paths (DVWA, Juice Shop, WebGoat, AI Goat)
+            "/setup.php", "/setup", "/install",
+            "/vulnerabilities", "/vulnerabilities/sqli", "/vulnerabilities/xss_r",
+            "/vulnerabilities/xss_s", "/vulnerabilities/csrf", "/vulnerabilities/upload",
+            "/vulnerabilities/exec", "/vulnerabilities/idor",
+            "/api/v1/challenges", "/api/v1/users", "/api/v1/flags",
+            "/challenges", "/scoreboard", "/notifications",
+            # Debug / info endpoints
+            "/phpinfo.php", "/info.php", "/server-status", "/server-info",
+            "/.env", "/.git/HEAD", "/robots.txt", "/sitemap.xml",
+            "/health", "/healthz", "/ping", "/status", "/version", "/info",
+            "/swagger", "/swagger-ui", "/swagger.json", "/openapi.json", "/api-docs",
+            # Config / backup
+            "/config", "/config.php", "/backup", "/backup.zip",
+            "/wp-config.php", "/web.config", "/application.yml",
+        ]
+
+        found = []
+        for path in COMMON_PATHS:
+            url = _base + path
+            if url in self._all_urls:
+                continue
+            try:
+                _req = _ur.Request(url, method="HEAD")
+                _req.add_header("User-Agent", "oneinfinity-scanner/1.0")
+                _resp = _ur.urlopen(_req, timeout=3)
+                if _resp.status < 500:
+                    found.append(url)
+            except _ue.HTTPError as _he:
+                if _he.code < 500 and _he.code != 404:
+                    found.append(url)
+            except Exception:
+                pass
+
+        if found:
+            self._all_urls.extend(u for u in found if u not in self._all_urls)
+            _ok(f"E5: wordlist probe found {len(found)} paths")
+        else:
+            _info("E5: wordlist probe — no additional paths found")
+
+    def _extract_from_response(self, url: str) -> list:
+        """E6: Extract endpoints from first HTTP response without katana."""
+        import urllib.request as _ur, urllib.error as _ue, re as _re
+        discovered = []
+        try:
+            _req = _ur.Request(url, method="GET")
+            _req.add_header("User-Agent", "oneinfinity-scanner/1.0")
+            _resp = _ur.urlopen(_req, timeout=10)
+            body = _resp.read(1024 * 64).decode("utf-8", errors="replace")  # 64KB max
+            base = url.rstrip("/")
+            # Extract href, src, action attributes
+            for attr in _re.findall(r'(?:href|src|action)=["\']([ ^"\'\s>]+)["\']', body, _re.IGNORECASE):
+                if attr.startswith(("http", "/")) and not attr.startswith(("//", "javascript:", "mailto:", "#")):
+                    full = attr if attr.startswith("http") else base + attr
+                    discovered.append(full)
+            # Extract fetch/axios URL patterns from inline JS
+            for js_url in _re.findall(r'(?:fetch|axios\.(?:get|post))\s*\(["\'\`](/?[a-zA-Z0-9/_-]{2,80})["\'\`]', body):
+                full = js_url if js_url.startswith("http") else base + js_url
+                discovered.append(full)
+        except Exception:
+            pass
+        return list(dict.fromkeys(discovered))  # dedup preserving order
 
     def _phase_tech_detection(self):
         _info("Phase 4: Technology detection...")
