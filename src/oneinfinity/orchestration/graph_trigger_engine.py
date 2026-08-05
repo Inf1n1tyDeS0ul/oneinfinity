@@ -294,6 +294,39 @@ def _build_builtin_triggers() -> List[TriggerRule]:
             once=False, cooldown_s=120.0,
             tags=["high_risk"],
         ),
+        # AI / LLM surface triggers (Phase 2)
+        TriggerRule(
+            name="ai_endpoint_detected",
+            description="AI/LLM endpoint discovered -> trigger ai_redteam",
+            condition=_label_matches(
+                r"(?i)(llm|ai.endpoint|chat.completion|/v1/chat|ollama|anthropic|openai|gemini|gpt|claude)"
+            ),
+            agents=["ai_redteam"],
+            priority=9.0,
+            once=True, cooldown_s=3600.0,
+            tags=["ai_redteam", "llm"],
+        ),
+        TriggerRule(
+            name="ai_model_identified",
+            description="AI model fingerprint found -> deepen extraction",
+            condition=_label_matches(r"(?i)(gpt-|claude-|gemini|llama|mistral|phi-|falcon)"),
+            agents=["ai_redteam", "recon"],
+            priority=8.5,
+            once=True, cooldown_s=7200.0,
+            tags=["ai_redteam", "model_extraction"],
+        ),
+        TriggerRule(
+            name="ai_behavior_drift",
+            description="AI behavior node risk changed -> re-scan",
+            condition=_and(
+                _node_type_is("AI_BEHAVIOR"),
+                _props_contain("risk_score_delta", "high", "critical"),
+            ),
+            agents=["ai_redteam"],
+            priority=8.8,
+            once=False, cooldown_s=1800.0,
+            tags=["ai_redteam", "behavior_drift"],
+        ),
     ]
 
 

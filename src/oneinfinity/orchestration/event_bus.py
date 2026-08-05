@@ -87,6 +87,20 @@ class EventType(str, Enum):
     # Payload: {auth_tier: int, target: str, scan_id: str, endpoints_found: int}
     # Emitted when a new auth tier completes its scoped recon run
 
+    # ── AI Red-Team events (Phase 2) ──────────────────────────────────────────
+    AI_ENDPOINT_DISCOVERED = "AI_ENDPOINT_DISCOVERED"
+    # Payload: {target, endpoint, campaign_id}
+    # Emitted when an AI/LLM endpoint is discovered or confirmed
+
+    AI_MODEL_IDENTIFIED   = "AI_MODEL_IDENTIFIED"
+    # Payload: {target, model_hints, findings, campaign_id}
+    # Emitted when model fingerprinting identifies a model / architecture
+
+    AI_BEHAVIOR_DRIFTED   = "AI_BEHAVIOR_DRIFTED"
+    # Payload: {target, previous_risk_score, current_risk_score, delta, campaign_id}
+    # Emitted when a subsequent scan shows behavioral change vs baseline
+
+
 
 class Priority(int, Enum):
     HIGH   = 0

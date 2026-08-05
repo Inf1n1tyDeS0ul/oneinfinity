@@ -343,6 +343,13 @@ export const endpoints = {
   aiRedteamStart:      (data) => api.post('/ai-redteam/start', data),
   aiRedteamList:       () => api.get('/ai-redteam/campaigns'),
   aiRedteamGet:        (campaignId) => api.get(`/ai-redteam/campaigns/${campaignId}`),
+  aiRedteamEngineResults: (campaignId) => api.get(`/ai-redteam/campaigns/${campaignId}/engine-results`),
+  aiRedteamProbe:      (data) => api.post('/ai-redteam/probe', data),
+  aiRedteamWatchStart: (data) => api.post('/ai-redteam/watch', data),
+  aiRedteamWatchStop:  (watchId) => api.delete(`/ai-redteam/watch/${watchId}`),
+  aiRedteamSchedules:  () => api.get('/ai-redteam/schedules'),
+  aiRedteamBehavior:   (target) => api.get(`/ai-redteam/behavior/${encodeURIComponent(target)}`),
+
   aiPromptTest:        (data) => api.post('/ai-prompt-test', data),
 
   // AI Security Engine (multi-tool)

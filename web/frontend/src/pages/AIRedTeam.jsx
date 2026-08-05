@@ -50,6 +50,24 @@ export default function AIRedTeam() {
   const [secScans, setSecScans] = useState([])
   const [selectedScan, setSelectedScan] = useState(null)
 
+  // Orchestrator engine flags
+  const [enableMultiTurn, setEnableMultiTurn] = useState(true)
+  const [enableRagPoison, setEnableRagPoison] = useState(true)
+  const [enableModelExtraction, setEnableModelExtraction] = useState(true)
+  const [enableIndirectInj, setEnableIndirectInj] = useState(true)
+  const [enableAiSecurity, setEnableAiSecurity] = useState(true)
+  const [enableDos, setEnableDos] = useState(false)
+  const [useShadowBoxer, setUseShadowBoxer] = useState(true)
+  // Watch / schedule state
+  const [watchInterval, setWatchInterval] = useState(60)
+  const [watchId, setWatchId] = useState(null)
+  const [schedules, setSchedules] = useState([])
+  const [showEnginePanel, setShowEnginePanel] = useState(true)
+  const [showSwimlane, setShowSwimlane] = useState(false)
+  const [swimlaneData, setSwimlanData] = useState(null)
+  // Genome explorer
+  const [showGenome, setShowGenome] = useState(false)
+  const [behaviorProfile, setBehaviorProfile] = useState(null)
   // Single-probe state
   const [probeTarget, setProbeTarget] = useState('')
   const [probePrompt, setProbePrompt] = useState('')
@@ -75,6 +93,58 @@ export default function AIRedTeam() {
       const r = await endpoints.aiSecToolStatus()
       setToolStatus(r.data)
     } catch (e) { /* non-critical */ }
+  }
+
+  const loadSchedules = async () => {
+    try {
+      const r = await endpoints.aiRedteamSchedules()
+      setSchedules(r.data?.schedules || [])
+    } catch (e) { /* non-critical */ }
+  }
+
+  const loadBehaviorProfile = async (tgt) => {
+    try {
+      const r = await endpoints.aiRedteamBehavior(tgt || target)
+      setBehaviorProfile(r.data?.profile || null)
+    } catch (e) { /* non-critical */ }
+  }
+
+  const loadSwimlane = async (campaignId) => {
+    try {
+      const r = await endpoints.aiRedteamEngineResults(campaignId)
+      setSwimlanData(r.data || null)
+      setShowSwimlane(true)
+    } catch (e) { /* non-critical */ }
+  }
+
+  const handleWatchStart = async () => {
+    if (!target.trim()) return addNotification('Enter target URL', 'error')
+    try {
+      const r = await endpoints.aiRedteamWatchStart({
+        target: target.trim(),
+        interval_min: watchInterval,
+        auth_header: authHeader,
+        endpoint_path: endpointPath,
+        model,
+      })
+      setWatchId(r.data?.watch_id || null)
+      addNotification(`Watch started — every ${watchInterval}min`, 'success')
+      loadSchedules()
+    } catch (e) {
+      addNotification('Watch start failed: ' + e.message, 'error')
+    }
+  }
+
+  const handleWatchStop = async () => {
+    if (!watchId) return
+    try {
+      await endpoints.aiRedteamWatchStop(watchId)
+      setWatchId(null)
+      addNotification('Watch stopped', 'success')
+      loadSchedules()
+    } catch (e) {
+      addNotification('Watch stop failed', 'error')
+    }
   }
 
   const loadSecScans = async () => {
@@ -127,6 +197,7 @@ export default function AIRedTeam() {
     loadCampaigns()
     loadToolStatus()
     loadSecScans()
+    loadSchedules()
     const id = setInterval(() => { loadCampaigns(); loadSecScans() }, 5000)
     return () => clearInterval(id)
   }, [])
@@ -145,6 +216,13 @@ export default function AIRedTeam() {
         model,
         endpoint_path: endpointPath,
         context,
+        enable_multi_turn: enableMultiTurn,
+        enable_rag_poison: enableRagPoison,
+        enable_model_extraction: enableModelExtraction,
+        enable_indirect_injection: enableIndirectInj,
+        enable_ai_security: enableAiSecurity,
+        enable_dos: enableDos,
+        use_shadow_boxer: useShadowBoxer,
       })
       addNotification('AI Red Team campaign started!', 'success')
       setTarget('')
@@ -848,6 +926,283 @@ export default function AIRedTeam() {
         )}
       </div>
 
+
+      {/* Engine Selection Panel */}
+      <div className="bg-slate-800 rounded-lg overflow-hidden">
+        <button
+          onClick={() => setShowEnginePanel(v => !v)}
+          className="w-full flex items-center justify-between px-6 py-4 hover:bg-slate-750"
+        >
+          <div className="flex items-center gap-3">
+            <Cpu className="w-5 h-5 text-cyan-400" />
+            <span className="font-semibold">Engine Configuration</span>
+            <span className="text-xs text-slate-400 font-normal">— select which attack engines to run</span>
+          </div>
+          {showEnginePanel ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+        </button>
+        {showEnginePanel && (
+          <div className="px-6 pb-6 pt-2 border-t border-slate-700 space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {/* Tier 0 */}
+              <div className="bg-slate-900 rounded-lg p-3 border border-slate-700">
+                <div className="text-xs font-bold text-cyan-400 mb-2 uppercase tracking-wider">Tier 0 — Fingerprint</div>
+                {[
+                  { label: 'Model Extraction', desc: 'Identify model arch, version, system prompt', val: enableModelExtraction, set: setEnableModelExtraction },
+                ].map(({ label, desc, val, set }) => (
+                  <label key={label} className="flex items-start gap-2 cursor-pointer group mb-2">
+                    <input type="checkbox" checked={val} onChange={e => set(e.target.checked)} className="mt-0.5 accent-cyan-500" />
+                    <div><div className="text-sm font-medium group-hover:text-white">{label}</div><div className="text-xs text-slate-500">{desc}</div></div>
+                  </label>
+                ))}
+              </div>
+              {/* Tier 1 */}
+              <div className="bg-slate-900 rounded-lg p-3 border border-slate-700">
+                <div className="text-xs font-bold text-green-400 mb-2 uppercase tracking-wider">Tier 1 — Fast Stateless</div>
+                {[
+                  { label: 'Indirect Injection Mapper', desc: 'Test data-source injection via agent fetch', val: enableIndirectInj, set: setEnableIndirectInj },
+                  { label: 'AI Security Engine', desc: 'Garak + PyRIT + Giskard + Rebuff', val: enableAiSecurity, set: setEnableAiSecurity },
+                ].map(({ label, desc, val, set }) => (
+                  <label key={label} className="flex items-start gap-2 cursor-pointer group mb-2">
+                    <input type="checkbox" checked={val} onChange={e => set(e.target.checked)} className="mt-0.5 accent-green-500" />
+                    <div><div className="text-sm font-medium group-hover:text-white">{label}</div><div className="text-xs text-slate-500">{desc}</div></div>
+                  </label>
+                ))}
+              </div>
+              {/* Tier 2 */}
+              <div className="bg-slate-900 rounded-lg p-3 border border-slate-700">
+                <div className="text-xs font-bold text-orange-400 mb-2 uppercase tracking-wider">Tier 2 — Stateful</div>
+                {[
+                  { label: 'Multi-Turn Chainer', desc: '6 chain strategies (roleplay, DAN, authority…)', val: enableMultiTurn, set: setEnableMultiTurn },
+                  { label: 'RAG Poisoning Engine', desc: 'Document injection + knowledge poisoning', val: enableRagPoison, set: setEnableRagPoison },
+                ].map(({ label, desc, val, set }) => (
+                  <label key={label} className="flex items-start gap-2 cursor-pointer group mb-2">
+                    <input type="checkbox" checked={val} onChange={e => set(e.target.checked)} className="mt-0.5 accent-orange-500" />
+                    <div><div className="text-sm font-medium group-hover:text-white">{label}</div><div className="text-xs text-slate-500">{desc}</div></div>
+                  </label>
+                ))}
+                <label className="flex items-start gap-2 cursor-pointer group mt-3 pt-3 border-t border-slate-700">
+                  <input type="checkbox" checked={enableDos} onChange={e => setEnableDos(e.target.checked)} className="mt-0.5 accent-red-500" />
+                  <div>
+                    <div className="text-sm font-medium text-red-400 group-hover:text-red-300">LLM DoS Engine ⚠</div>
+                    <div className="text-xs text-red-500/70">DESTRUCTIVE — may crash the target. Explicit opt-in only.</div>
+                  </div>
+                </label>
+              </div>
+            </div>
+            {/* ShadowBoxer toggle */}
+            <label className="flex items-center gap-2 cursor-pointer text-sm">
+              <input type="checkbox" checked={useShadowBoxer} onChange={e => setUseShadowBoxer(e.target.checked)} className="accent-purple-500" />
+              <span className="font-medium text-purple-300">ShadowBoxer Pre-filter</span>
+              <span className="text-slate-400 text-xs">— test prompts against local Ollama before sending to target</span>
+            </label>
+          </div>
+        )}
+      </div>
+
+      {/* Swimlane Dashboard */}
+      {showSwimlane && swimlaneData && (
+        <div className="bg-slate-800 rounded-lg p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold flex items-center gap-2">
+              <Activity className="w-5 h-5 text-cyan-400" />
+              Engine Swimlane — {swimlaneData.campaign_id}
+            </h2>
+            <button onClick={() => setShowSwimlane(false)} className="text-slate-400 hover:text-white text-xs">Close</button>
+          </div>
+          <div className="space-y-2">
+            {(swimlaneData.engine_results || []).map((er, i) => (
+              <div key={i} className="flex items-center gap-3 bg-slate-900 rounded p-3">
+                <div className={clsx('w-2 h-2 rounded-full flex-shrink-0',
+                  er.error ? 'bg-red-500' : er.findings > 0 ? 'bg-orange-400' : 'bg-green-500'
+                )} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={clsx('text-xs font-bold px-1.5 py-0.5 rounded',
+                      er.tier === 0 ? 'bg-cyan-900/50 text-cyan-300' :
+                      er.tier === 1 ? 'bg-green-900/50 text-green-300' :
+                      er.tier === 2 ? 'bg-orange-900/50 text-orange-300' :
+                      'bg-purple-900/50 text-purple-300'
+                    )}>T{er.tier}</span>
+                    <span className="text-sm font-mono font-medium">{er.engine}</span>
+                    <span className="text-xs text-slate-400">{er.duration_s}s</span>
+                  </div>
+                  {er.error && <p className="text-xs text-red-400 mt-0.5">{er.error}</p>}
+                </div>
+                <div className={clsx('text-sm font-bold flex-shrink-0',
+                  er.findings > 0 ? 'text-orange-400' : 'text-slate-500'
+                )}>{er.findings} findings</div>
+              </div>
+            ))}
+          </div>
+          {swimlaneData.oob_url && (
+            <div className="text-xs text-slate-400 font-mono bg-slate-900 rounded p-2">
+              OOB URL: <span className="text-green-400">{swimlaneData.oob_url}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Behavior Profile */}
+      {behaviorProfile && Object.keys(behaviorProfile).length > 0 && (
+        <div className="bg-slate-800 rounded-lg p-6 space-y-3">
+          <h2 className="text-lg font-semibold flex items-center gap-2">
+            <Shield className="w-5 h-5 text-indigo-400" />
+            AI Behavior Profile — {behaviorProfile.target || target}
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            <div className="bg-slate-900 rounded p-3">
+              <div className="text-slate-400 text-xs">Risk Score</div>
+              <div className={clsx('text-2xl font-bold',
+                (behaviorProfile.risk_score || 0) >= 7 ? 'text-red-400' :
+                (behaviorProfile.risk_score || 0) >= 4 ? 'text-orange-400' : 'text-green-400'
+              )}>{behaviorProfile.risk_score || 0} <span className="text-xs text-slate-500">/ 10</span></div>
+            </div>
+            <div className="bg-slate-900 rounded p-3">
+              <div className="text-slate-400 text-xs">Total Findings</div>
+              <div className="text-2xl font-bold text-white">{behaviorProfile.total_findings || 0}</div>
+            </div>
+            <div className="bg-slate-900 rounded p-3">
+              <div className="text-slate-400 text-xs">Engines Tested</div>
+              <div className="text-xs font-mono text-slate-300 mt-1">{(behaviorProfile.engines_tested || []).join(', ') || '—'}</div>
+            </div>
+            <div className="bg-slate-900 rounded p-3">
+              <div className="text-slate-400 text-xs">Attack Surface</div>
+              <div className="flex flex-wrap gap-1 mt-1">
+                {(behaviorProfile.attack_surface || []).slice(0, 4).map(a => (
+                  <span key={a} className="text-xs bg-slate-700 rounded px-1 py-0.5">{a}</span>
+                ))}
+              </div>
+            </div>
+          </div>
+          {behaviorProfile.severity_distribution && (
+            <div className="flex gap-3 flex-wrap">
+              {Object.entries(behaviorProfile.severity_distribution).map(([sev, cnt]) => (
+                <span key={sev} className={clsx('text-xs font-bold px-2 py-1 rounded', SEV_BG[sev] || SEV_BG.info)}>
+                  {sev.toUpperCase()}: {cnt}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Continuous Watch Mode */}
+      <div className="bg-slate-800 rounded-lg p-6 space-y-4">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <Activity className="w-5 h-5 text-blue-400" />
+          Continuous Watch Mode
+          <span className="text-sm font-normal text-slate-400">— run a quick probe every N minutes and detect behavioral drift</span>
+        </h2>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+          <div>
+            <label className="block text-sm mb-2 text-slate-300">Target URL</label>
+            <input type="text" value={target} onChange={e => setTarget(e.target.value)}
+              placeholder="https://chatbot.example.com"
+              className="w-full bg-slate-700 rounded px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="block text-sm mb-2 text-slate-300">Probe Interval (minutes)</label>
+            <input type="number" value={watchInterval} onChange={e => setWatchInterval(parseInt(e.target.value))}
+              min={5} max={1440}
+              className="w-full bg-slate-700 rounded px-3 py-2 text-sm" />
+          </div>
+          <div className="flex gap-2">
+            {!watchId ? (
+              <button onClick={handleWatchStart}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 rounded px-4 py-2 text-sm font-semibold flex items-center justify-center gap-2">
+                <Activity className="w-4 h-4" /> Start Watch
+              </button>
+            ) : (
+              <button onClick={handleWatchStop}
+                className="flex-1 bg-red-600 hover:bg-red-700 rounded px-4 py-2 text-sm font-semibold flex items-center justify-center gap-2">
+                <Shield className="w-4 h-4" /> Stop Watch
+              </button>
+            )}
+            <button onClick={loadSchedules}
+              className="bg-slate-700 hover:bg-slate-600 rounded px-3 py-2">
+              <RefreshCw className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+        {watchId && (
+          <div className="text-xs bg-blue-900/20 border border-blue-700/30 rounded p-2 font-mono text-blue-300">
+            Watch active: {watchId} — probing every {watchInterval}min
+          </div>
+        )}
+        {schedules.length > 0 && (
+          <div className="space-y-2">
+            <div className="text-sm text-slate-400 font-semibold">Active Schedules</div>
+            {schedules.map(s => (
+              <div key={s.schedule_id} className="flex items-center gap-3 bg-slate-900 rounded p-2 text-xs">
+                <div className={clsx('w-2 h-2 rounded-full', s.status === 'active' ? 'bg-green-400' : 'bg-slate-500')} />
+                <span className="font-mono flex-1">{s.target}</span>
+                <span className="text-slate-400">every {s.interval_min}min</span>
+                <span className={clsx('font-bold', s.status === 'active' ? 'text-green-400' : 'text-slate-400')}>{s.status}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Prompt Mutation Genome Explorer */}
+      <div className="bg-slate-800 rounded-lg overflow-hidden">
+        <button
+          onClick={() => { setShowGenome(v => !v); if (!showGenome && target) loadBehaviorProfile(target) }}
+          className="w-full flex items-center justify-between px-6 py-4 hover:bg-slate-750"
+        >
+          <div className="flex items-center gap-3">
+            <Zap className="w-5 h-5 text-yellow-400" />
+            <span className="font-semibold">Prompt Mutation Genome Explorer</span>
+            <span className="text-xs text-slate-400 font-normal">— view evolved attack prompts and behavioral fingerprint</span>
+          </div>
+          {showGenome ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+        </button>
+        {showGenome && (
+          <div className="px-6 pb-6 pt-2 border-t border-slate-700 space-y-4">
+            <div className="text-xs text-slate-400 bg-slate-900 rounded p-3">
+              The Genome Explorer visualises how attack prompts evolve across campaign generations.
+              Each successful prompt from Tier 1/2 seeds the Tier 3 evolution corpus.
+              Run a campaign to populate this view.
+            </div>
+            {/* Campaign winning prompts from most recent campaign */}
+            {campaigns.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-sm font-semibold text-slate-300">Recent Campaign Seeds</div>
+                {campaigns.slice(0, 3).map(c => (
+                  <div key={c.campaign_id} className="bg-slate-900 rounded p-3">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="font-mono text-xs text-cyan-400">{c.campaign_id}</span>
+                      <span className={clsx('text-xs px-1.5 py-0.5 rounded font-bold',
+                        c.status === 'completed' ? 'bg-green-900/50 text-green-400' :
+                        c.status === 'running' ? 'bg-yellow-900/50 text-yellow-400' : 'bg-red-900/50 text-red-400'
+                      )}>{c.status}</span>
+                      <span className="text-xs text-slate-500 ml-auto">{c.mode}</span>
+                    </div>
+                    <div className="flex items-center gap-4 text-xs">
+                      <span className="text-slate-400">Findings: <span className="text-white font-bold">{c.findings?.length || 0}</span></span>
+                      <span className="text-slate-400">Engines: <span className="text-white">{(c.engines_run || []).length || '—'}</span></span>
+                      {c.behavior_profile?.risk_score > 0 && (
+                        <span className="text-slate-400">Risk: <span className={clsx('font-bold',
+                          c.behavior_profile.risk_score >= 7 ? 'text-red-400' : 'text-orange-400'
+                        )}>{c.behavior_profile.risk_score}</span></span>
+                      )}
+                    </div>
+                    {c.engine_results?.length > 0 && (
+                      <button
+                        onClick={() => loadSwimlane(c.campaign_id)}
+                        className="mt-2 text-xs text-cyan-400 hover:text-cyan-300 underline"
+                      >
+                        View engine swimlane →
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Campaign Details Modal */}
       {selectedCampaign && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setSelectedCampaign(null)}>
@@ -881,6 +1236,27 @@ export default function AIRedTeam() {
                 )}
               </div>
 
+              {/* Engine Results */}
+              {selectedCampaign.engine_results?.length > 0 && (
+                <div>
+                  <h3 className="font-semibold mb-2 flex items-center gap-2">
+                    <Cpu className="w-4 h-4 text-cyan-400" />
+                    Engine Results ({selectedCampaign.engine_results.length})
+                  </h3>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                    {selectedCampaign.engine_results.map((er, i) => (
+                      <div key={i} className="bg-slate-700 rounded p-2 text-xs">
+                        <div className={clsx("text-xs font-bold mb-1",
+                          er.tier === 0 ? "text-cyan-400" : er.tier === 1 ? "text-green-400" : er.tier === 2 ? "text-orange-400" : "text-purple-400"
+                        )}>T{er.tier}</div>
+                        <div className="font-mono truncate">{er.engine}</div>
+                        <div className="text-slate-400 mt-1">{er.findings} findings · {er.duration_s}s</div>
+                        {er.error && <div className="text-red-400 truncate">{er.error}</div>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               {/* Findings */}
               <div>
                 <h3 className="font-semibold mb-2 flex items-center gap-2">
