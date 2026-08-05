@@ -1902,6 +1902,43 @@ class AIRedTeamMission(Mission):
                 log.debug("[GOD MODE] AIRedTeamMission: ParallelModelRacer not available")
             except Exception as _pre:
                 log.debug("[GOD MODE] AIRedTeamMission: ParallelModelRacer error: %s", _pre)
+            # 6. AISecurityEngine — garak + pyrit + giskard (if AI target, run full battery)
+            try:
+                from oneinfinity.ai.ai_security_engine import AISecurityEngine, AISecurityScanConfig
+                _ai_cfg = AISecurityScanConfig(
+                    target=target,
+                    output_dir="/tmp/oneinfinity_ai_sec",
+                    tools=None,  # runs all available: garak, pyrit, giskard, rebuff
+                    timeout=90,
+                    endpoint_path="/v1/chat/completions",
+                    auth_header=auth,
+                    model="gpt-3.5-turbo",
+                )
+                _ai_engine = AISecurityEngine()
+                _ai_result = await _asyncio.wait_for(
+                    _ai_engine.scan(_ai_cfg), timeout=180
+                )
+                for _af in (_ai_result.findings or []):
+                    _af_dict = _af.__dict__ if hasattr(_af, "__dict__") else {}
+                    _results.append({
+                        "vuln_type": _af_dict.get("vuln_type", "ai_security"),
+                        "severity": _af_dict.get("severity", "medium"),
+                        "endpoint": target,
+                        "payload": str(_af_dict.get("payload", ""))[:500],
+                        "evidence": str(_af_dict.get("evidence", ""))[:1000],
+                        "confidence": float(_af_dict.get("confidence", 0.7)),
+                        "source_type": "ai_security_engine",
+                        "tool": _af_dict.get("tool", "ai_security_engine"),
+                        "title": _af_dict.get("title", _af_dict.get("vuln_type", "AI Vulnerability")),
+                    })
+                log.info("[GOD MODE] AISecurityEngine (garak/pyrit/giskard): %d findings", len(_ai_result.findings or []))
+            except _asyncio.TimeoutError:
+                log.debug("[GOD MODE] AIRedTeamMission: AISecurityEngine timed out")
+            except ImportError:
+                log.debug("[GOD MODE] AIRedTeamMission: AISecurityEngine not available")
+            except Exception as _ase:
+                log.debug("[GOD MODE] AIRedTeamMission: AISecurityEngine error: %s", _ase)
+
             return _results
 
         # Run async engines via asyncio.run()
