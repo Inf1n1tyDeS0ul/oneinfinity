@@ -8007,7 +8007,10 @@ async def ai_redteam_start(background_tasks: BackgroundTasks, req: dict):
                 use_oob=req.get("use_oob", True),
             )
             result = await orch.run(cfg)
+            _t_done = time.time()
             campaign["status"] = "completed"
+            campaign["completed_at"] = _t_done
+            campaign["duration"] = round(_t_done - campaign["started_at"], 1)
             campaign["prompts_sent"] = result.finding_count
             campaign["engines_run"] = result.engines_run()
             campaign["engine_results"] = [
@@ -8251,6 +8254,7 @@ async def ai_security_tool_status():
         "modelscan":     _check("modelscan"),
         "llm_guard":     _check("llm_guard"),
         "agentic_radar": _check("agentic_radar"),
+        "airt":          _check("oneinfinity.scan.ai_red_teamer"),
     }
     return {
         "tools_venv_available": True,
@@ -8291,6 +8295,9 @@ async def ai_security_scan(background_tasks: BackgroundTasks, req: dict):
         "findings": [],
         "tools_run": [],
         "error_log": [],
+        "completed_at": None,
+        "duration": None,
+        "num_prompts": req.get("num_prompts", 20),
     }
     _AI_SECURITY_SCANS[scan_id] = scan
 
@@ -8311,7 +8318,10 @@ async def ai_security_scan(background_tasks: BackgroundTasks, req: dict):
                 num_prompts=req.get("num_prompts", 20),
             )
             result = await engine.scan(config)
+            _t_done = time.time()
             scan["status"] = "completed"
+            scan["completed_at"] = _t_done
+            scan["duration"] = round(_t_done - scan["started_at"], 1)
             scan["tools_run"] = result.tools_run
             scan["error_log"] = result.error_log
             findings_dicts = []
@@ -8395,7 +8405,7 @@ async def ai_security_scans_list():
     return {"scans": list(_AI_SECURITY_SCANS.values())}
 
 
-@app.get("/api/ai-security/scans/{scan_id}")
+@app.get("/api/ai-security/scans/{scan_id}", dependencies=[Depends(_require_auth)])
 async def ai_security_scan_get(scan_id: str):
     scan = _AI_SECURITY_SCANS.get(scan_id)
     if not scan:
