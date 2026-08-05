@@ -548,6 +548,7 @@ class ResultIngestionEngine:
 
     def __init__(self) -> None:
         self._broadcast_cb: Optional[Callable[[dict], None]] = None
+        self._on_finding_stored: Optional[callable] = None  # E9: callback for accurate count
 
     def _init_db(self) -> None:
         """No-op: PG schema is managed by DBManager._ensure_schema(). Kept for backwards compatibility."""
@@ -787,6 +788,27 @@ class ResultIngestionEngine:
             # The LLM judge will still run and may upgrade if evidence is conclusive.
             finding.confidence = min(finding.confidence, 0.59)  # below _INFERRED_MIN (0.60)
 
+        # E10: Chain suggestions are attack path hypotheses, not confirmed findings.
+        # Route them to suggested_chains, never to main findings or finding_count.
+        _source = getattr(result, 'source', '') or ''
+        if 'chain_suggestion' in _source or (finding.vuln_type or '').startswith('chain:'):
+            log.debug("ingest: routing chain suggestion [%s] to chains store, not findings", finding.vuln_type)
+            try:
+                self._store_chain_suggestion(finding, result.scan_id)
+            except Exception:
+                pass
+            return None  # do NOT count as finding
+
+        # E12: For local/lab targets, raise confidence threshold to 0.7 to reduce noise.
+        # Local targets don't have CDN/WAF false positives requiring low thresholds.
+        try:
+            from oneinfinity.recon.target_classifier import is_local_target, classify
+            _tgt_for_profile = finding.target or (result.scan_entry.get('target', '') if hasattr(result, 'scan_entry') else (finding.target or ''))
+            if _tgt_for_profile and is_local_target(classify(_tgt_for_profile)):
+                confidence_threshold = max(confidence_threshold, 0.65)
+        except Exception:
+            pass
+
         # 1. Confidence Filtering (Noise Reduction)
         if finding.confidence < confidence_threshold:
             log.info("ingest: suppressing low-confidence finding (%.2f < %.2f) [%s]",
@@ -905,11 +927,40 @@ class ResultIngestionEngine:
             daemon=True,
             name=f"judge-{finding.finding_id[:8]}",
         ).start()
+        # E9: notify caller of successfully stored finding (accurate count)
+        if self._on_finding_stored:
+            try:
+                self._on_finding_stored(finding)
+            except Exception:
+                pass
         return finding
 
     def _check_and_store(self, finding: NormalizedFinding) -> bool:
         """Atomically check for duplicate and store if new via PostgreSQL."""
         return _require_pg().sync_check_and_save_finding(finding.to_dict())
+
+    def _store_chain_suggestion(self, finding: NormalizedFinding, scan_id: str) -> None:
+        """E10: Persist chain suggestion as metadata, not a finding."""
+        try:
+            import json as _json, pathlib as _pathlib
+            chains_dir = _pathlib.Path.home() / ".oneinfinity" / "scans" / scan_id
+            chains_dir.mkdir(parents=True, exist_ok=True)
+            chains_file = chains_dir / "suggested_chains.json"
+            existing = []
+            if chains_file.exists():
+                try: existing = _json.loads(chains_file.read_text())
+                except Exception: pass
+            existing.append({
+                "vuln_type": finding.vuln_type,
+                "url": finding.url,
+                "severity": finding.severity,
+                "confidence": finding.confidence,
+                "evidence": (finding.evidence or "")[:500],
+                "timestamp": __import__('time').time(),
+            })
+            chains_file.write_text(_json.dumps(existing, indent=2))
+        except Exception:
+            pass
 
     def ingest_batch(self, results: List[RawResult]) -> List[NormalizedFinding]:
         """Ingest a list of RawResults; returns list of successfully parsed findings."""

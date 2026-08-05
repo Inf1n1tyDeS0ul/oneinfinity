@@ -2162,7 +2162,48 @@ async def get_scan(scan_id: str):
     entry = await _get_or_refresh_scan(scan_id)   # PG authoritative read
     if not entry:
         raise HTTPException(404, "Scan not found")
-    return _scan_response(entry)
+    # E13: Scan health report
+    _scan_health = {
+        "recon_urls_discovered": 0,
+        "alive_hosts": 0,
+        "endpoints_tested": 0,
+        "warnings": [],
+    }
+    # E14: Scan quality assessment
+    _scan_quality = "UNKNOWN"
+    try:
+        import json as _json14, pathlib as _pl14, os as _os14
+        _scan_dir14 = _pl14.Path.home() / ".oneinfinity" / "scans" / scan_id
+        _gm_dir14 = _pl14.Path.home() / ".oneinfinity" / scan_id
+        for _rf in ["recon/adaptive_recon.json", "full_scan/adaptive_recon.json"]:
+            _rp = _scan_dir14 / _rf
+            if not _rp.exists():
+                _rp = _gm_dir14 / _rf
+            if _rp.exists():
+                _rd = _json14.loads(_rp.read_text())
+                _scan_health["recon_urls_discovered"] = len(_rd.get("all_urls") or [])
+                _alive = _rd.get("alive_hosts") or []
+                _scan_health["alive_hosts"] = len(_alive) if isinstance(_alive, list) else 0
+                break
+        _urls = _scan_health["recon_urls_discovered"]
+        _hosts = _scan_health["alive_hosts"]
+        if _urls > 50:
+            _scan_quality = "FULL_COVERAGE"
+        elif _urls > 10:
+            _scan_quality = "PARTIAL_COVERAGE"
+        elif _urls > 0 or _hosts > 0:
+            _scan_quality = "MINIMAL_COVERAGE"
+        else:
+            _scan_quality = "NO_COVERAGE"
+            _scan_health["warnings"].append(
+                "Zero URLs discovered in recon — target may be unreachable or requires authentication"
+            )
+    except Exception:
+        pass
+    resp = _scan_response(entry)
+    resp["scan_health"] = _scan_health
+    resp["scan_quality"] = _scan_quality
+    return resp
 
 @app.get("/api/scans/{scan_id}/findings", dependencies=[Depends(_require_auth)])
 async def get_scan_findings(scan_id: str, primary_only: bool = True):
