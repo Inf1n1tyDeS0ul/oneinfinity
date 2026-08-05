@@ -49,6 +49,13 @@ export default function AIRedTeam() {
   const [secScanning, setSecScanning] = useState(false)
   const [secScans, setSecScans] = useState([])
   const [selectedScan, setSelectedScan] = useState(null)
+  const [secModel, setSecModel] = useState('llama-3.1-8b-instant')
+  const [secAuth, setSecAuth] = useState('')
+  const [secCookieHeader, setSecCookieHeader] = useState('')
+  const [secEndpointPath, setSecEndpointPath] = useState('/v1/chat/completions')
+  const [secMode, setSecMode] = useState('full')
+  const [secNumPrompts, setSecNumPrompts] = useState(20)
+  const [showSecAdvanced, setShowSecAdvanced] = useState(false)
 
   // Orchestrator engine flags
   const [enableMultiTurn, setEnableMultiTurn] = useState(true)
@@ -162,11 +169,13 @@ export default function AIRedTeam() {
       await endpoints.aiSecScanStart({
         target: secTarget.trim(),
         tools: secTools,
-        auth_header: authHeader,
-        model,
-        endpoint_path: endpointPath,
+        auth_header: secAuth,
+        cookie_header: secCookieHeader,
+        model: secModel,
+        endpoint_path: secEndpointPath,
         context,
-        mode,
+        mode: secMode,
+        num_prompts: secNumPrompts,
       })
       addNotification('Multi-tool AI security scan started!', 'success')
       setSecTarget('')
@@ -751,6 +760,7 @@ export default function AIRedTeam() {
           </div>
         )}
 
+        {/* Row 1: Target + Tools */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm mb-2 text-slate-300">Target URL</label>
@@ -786,6 +796,102 @@ export default function AIRedTeam() {
               })}
             </div>
           </div>
+        </div>
+        {/* Row 2: Model + Endpoint Path */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm mb-2 text-slate-300">Model</label>
+            <input
+              type="text"
+              value={secModel}
+              onChange={(e) => setSecModel(e.target.value)}
+              placeholder="llama-3.1-8b-instant"
+              className="w-full bg-slate-700 rounded px-3 py-2 text-sm font-mono"
+            />
+            <div className="flex flex-wrap gap-1 mt-1">
+              {['llama-3.1-8b-instant','llama-3.3-70b-versatile','gpt-3.5-turbo','gpt-4o','claude-3-haiku-20240307','gemini-1.5-flash'].map(m => (
+                <button key={m} onClick={() => setSecModel(m)}
+                  className={clsx('px-2 py-0.5 rounded text-xs font-mono border transition-colors',
+                    secModel === m ? 'bg-cyan-600/30 border-cyan-500 text-cyan-300'
+                                   : 'bg-slate-700 border-slate-600 text-slate-400 hover:border-slate-500'
+                  )}>{m}</button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm mb-2 text-slate-300">Endpoint Path</label>
+            <input
+              type="text"
+              value={secEndpointPath}
+              onChange={(e) => setSecEndpointPath(e.target.value)}
+              placeholder="/v1/chat/completions"
+              className="w-full bg-slate-700 rounded px-3 py-2 text-sm font-mono"
+            />
+            <div className="flex flex-wrap gap-1 mt-1">
+              {['/v1/chat/completions','/openai/v1/chat/completions','/api/chat','/api/generate'].map(p => (
+                <button key={p} onClick={() => setSecEndpointPath(p)}
+                  className={clsx('px-2 py-0.5 rounded text-xs font-mono border transition-colors',
+                    secEndpointPath === p ? 'bg-cyan-600/30 border-cyan-500 text-cyan-300'
+                                          : 'bg-slate-700 border-slate-600 text-slate-400 hover:border-slate-500'
+                  )}>{p}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+        {/* Row 3: Auth + Mode + Num Prompts */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="md:col-span-1">
+            <label className="block text-sm mb-2 text-slate-300">Auth Header</label>
+            <input
+              type="password"
+              value={secAuth}
+              onChange={(e) => setSecAuth(e.target.value)}
+              placeholder="Bearer sk-..."
+              className="w-full bg-slate-700 rounded px-3 py-2 text-sm font-mono"
+            />
+          </div>
+          <div>
+            <label className="block text-sm mb-2 text-slate-300">Mode</label>
+            <select
+              value={secMode}
+              onChange={(e) => setSecMode(e.target.value)}
+              className="w-full bg-slate-700 rounded px-3 py-2 text-sm"
+            >
+              {MODES.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm mb-2 text-slate-300">Prompts per Tool</label>
+            <input
+              type="number"
+              value={secNumPrompts}
+              onChange={(e) => setSecNumPrompts(Number(e.target.value))}
+              min={1} max={500}
+              className="w-full bg-slate-700 rounded px-3 py-2 text-sm"
+            />
+          </div>
+        </div>
+        {/* Advanced: Cookie + Request Template toggle */}
+        <div>
+          <button
+            onClick={() => setShowSecAdvanced(v => !v)}
+            className="text-xs text-slate-400 hover:text-slate-300 flex items-center gap-1"
+          >
+            {showSecAdvanced ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            Advanced options
+          </button>
+          {showSecAdvanced && (
+            <div className="mt-2">
+              <label className="block text-sm mb-1 text-slate-300">Cookie Header</label>
+              <input
+                type="text"
+                value={secCookieHeader}
+                onChange={(e) => setSecCookieHeader(e.target.value)}
+                placeholder="session=abc123; token=xyz"
+                className="w-full bg-slate-700 rounded px-3 py-2 text-sm font-mono"
+              />
+            </div>
+          )}
         </div>
 
         <button

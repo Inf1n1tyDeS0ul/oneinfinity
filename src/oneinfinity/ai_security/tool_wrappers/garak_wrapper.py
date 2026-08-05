@@ -199,7 +199,7 @@ class GarakWrapper:
         auth = config.get("auth_header", "")
 
         for attack_type, payload, confidence in _BUILTIN_PROBES:
-            response = self._probe_endpoint(target, payload, endpoint, auth)
+            response = self._probe_endpoint(target, payload, endpoint, auth, config.get("model", "gpt-3.5-turbo"))
             if response:
                 new_findings = detector.analyze(
                     target=target,
@@ -225,14 +225,14 @@ class GarakWrapper:
 
     @staticmethod
     def _probe_endpoint(
-        target: str, payload: str, endpoint: str, auth: str
+        target: str, payload: str, endpoint: str, auth: str, model: str = "gpt-3.5-turbo"
     ) -> Optional[str]:
         import urllib.request, urllib.error, json
         if not target.startswith(("http://", "https://")):
             target = "https://" + target
         url = target.rstrip("/") + endpoint
         body = json.dumps({
-            "model": "gpt-3.5-turbo",
+            "model": model,
             "messages": [{"role": "user", "content": payload}],
             "max_tokens": 300,
         }).encode()

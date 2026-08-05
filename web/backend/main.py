@@ -8275,7 +8275,7 @@ async def ai_security_scan(background_tasks: BackgroundTasks, req: dict):
     auth_header = req.get("auth_header", "")
     cookie_header = req.get("cookie_header", "")
     request_template = req.get("request_template", "")
-    model = req.get("model", "gpt-3.5-turbo")
+    model = req.get("model", "llama-3.1-8b-instant")
     endpoint_path = req.get("endpoint_path", "/v1/chat/completions")
     context = req.get("context", "")
     mode = req.get("mode", "full")
@@ -8472,7 +8472,7 @@ async def ai_security_probe_endpoint(req: dict):
     """
     target = req.get("target", "")
     auth_header = req.get("auth_header", "")
-    model = req.get("model", "gpt-4")
+    model = req.get("model", "llama-3.1-8b-instant")
 
     if not target:
         raise HTTPException(400, "target required")
