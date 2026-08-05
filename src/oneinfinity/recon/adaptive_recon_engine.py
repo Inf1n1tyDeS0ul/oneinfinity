@@ -1210,6 +1210,30 @@ class AdaptiveReconEngine:
         from concurrent.futures import ThreadPoolExecutor, wait as _fut_wait, FIRST_EXCEPTION
         t0 = time.time()
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        # E1: HTTP-first connectivity verification — before any OSINT tools.
+        # This catches unreachable targets immediately with a clear error.
+        try:
+            import urllib.request as _ur, urllib.error as _ue
+            _target_url = self.target if self.target.startswith("http") else f"http://{self.target}"
+            _req = _ur.Request(_target_url, method="HEAD")
+            _req.add_header("User-Agent", "oneinfinity-scanner/1.0")
+            try:
+                _resp = _ur.urlopen(_req, timeout=10)
+                _info(f"E1: Target reachable — HTTP {_resp.status} {_target_url}")
+            except _ue.HTTPError as _he:
+                _info(f"E1: Target reachable (HTTP {_he.code}) — {_target_url}")
+            except _ue.URLError as _ue_err:
+                # Try GET as fallback (some servers reject HEAD)
+                try:
+                    _req2 = _ur.Request(_target_url, method="GET")
+                    _req2.add_header("User-Agent", "oneinfinity-scanner/1.0")
+                    _resp2 = _ur.urlopen(_req2, timeout=10)
+                    _info(f"E1: Target reachable (GET fallback) — HTTP {_resp2.status} {_target_url}")
+                except Exception:
+                    _warn(f"E1: Target appears unreachable: {_target_url} — {_ue_err}")
+                    # Do NOT abort here — let caller decide based on profile
+        except Exception as _e1_exc:
+            _warn(f"E1: HTTP probe failed: {_e1_exc}")
         _info(f"Adaptive Recon Intelligence — {self.target} [{self.depth}]")
 
         # Wave 0: load cache

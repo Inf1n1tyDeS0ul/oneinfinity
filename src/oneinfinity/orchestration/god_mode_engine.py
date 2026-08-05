@@ -264,6 +264,7 @@ class GodModeSession:
     max_time: int = 0
     max_findings: int = 0
     scan_tier: str = ""   # quick | standard | deep | marathon (empty = no tier, max_time applies directly)
+    target_profile: str = ""              # TargetProfile constant — set by E2 classifier
     # WAF bypass state — populated by FoundationMission Step 4, consumed by all missions
     waf_vendor: str = ""                              # "cloudflare"|"akamai"|"aws_waf"|...
     waf_bypass_payloads: dict = field(default_factory=dict)  # {vuln_type: [bypass_payloads]}
@@ -565,6 +566,24 @@ class FoundationMission(Mission):
         except Exception as exc:
             log.warning("[GOD MODE] Recon failed (non-fatal): %s — continuing with less intel", exc, exc_info=True)
             self.recon = None
+        # E3: Minimum viable recon threshold — circuit breaker for local/internal targets.
+        # If recon produced ZERO urls AND zero alive hosts for a local target, abort with
+        # a clear diagnostic instead of silently proceeding with empty attack surface.
+        try:
+            from oneinfinity.recon.target_classifier import is_local_target
+            _recon_urls = len(getattr(getattr(self, 'recon', None), 'all_urls', None) or [])
+            _recon_hosts = len(getattr(getattr(self, 'recon', None), 'alive_hosts', None) or [])
+            _profile = getattr(session, 'target_profile', '')
+            if is_local_target(_profile) and _recon_urls == 0 and _recon_hosts == 0:
+                raise FoundationError(
+                    f"Zero attack surface discovered for local target '{session.target}' "
+                    f"(profile={_profile}). HTTP probe failed or target is unreachable. "
+                    f"Verify the target is running and accessible before scanning."
+                )
+        except FoundationError:
+            raise
+        except Exception:
+            pass  # classifier unavailable — non-fatal
 
         # ── Step 3: analyze-app ───────────────────────────────────────────
         log.info("[GOD MODE] Foundation Step 3: analyze-app")
@@ -3305,6 +3324,13 @@ class GodModeConductor:
         self._session = session
         self._state_file = GodModeStateFile(scan_id)
         self._state_file.write(session)
+        # E2: Classify target for strategy selection
+        try:
+            from oneinfinity.recon.target_classifier import classify
+            session.target_profile = classify(target)
+            log.info("[GOD MODE] Target profile: %s → %s", target, session.target_profile)
+        except Exception:
+            session.target_profile = ""
 
         log.info("[GOD MODE] Session %s started — target=%s", scan_id, target)
         print(f"\n[*] GOD MODE — Session: {scan_id}")
