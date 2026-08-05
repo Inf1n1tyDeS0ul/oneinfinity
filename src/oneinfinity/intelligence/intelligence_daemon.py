@@ -171,7 +171,18 @@ class WorkerEngine(ABC):
         """Sync bridge called by the bus; schedules the async handler."""
         if not self._config.enabled:
             return
-        target = event.data.get("target", "")
+        target = event.data.get("target", event.data.get("url", ""))
+        # E11: Scan-scope guard — only process events for the active scan targets.
+        # Prevents prior-scan graph nodes from bleeding into current scan hypotheses.
+        if self._targets:
+            _event_host = target.split("//")[-1].split("/")[0].split(":")[0].lstrip("*.") if target else ""
+            _in_scope = any(
+                _event_host == _t.split("//")[-1].split("/")[0].split(":")[0].lstrip("*.") or
+                _event_host.endswith("." + _t.split("//")[-1].split("/")[0].split(":")[0].lstrip("*."))
+                for _t in self._targets if _t
+            )
+            if target and not _in_scope:
+                return  # silently drop out-of-scope events
         if self._throttled(target):
             return
         asyncio.run_coroutine_threadsafe(self._guarded_handle(event), self._loop)

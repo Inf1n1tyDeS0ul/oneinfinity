@@ -3569,8 +3569,12 @@ class GodModeConductor:
         try:
             from oneinfinity.intelligence.intelligence_daemon import IntelligenceDaemon
             _intel_daemon = IntelligenceDaemon()
+            # E11: pass scan_id as correlation_id so all worker events are tagged
+            # with the current scan session — prevents cross-scan contamination
+            _intel_daemon._correlation_id = session.scan_id
             _intel_daemon.start(target=session.target)
-            log.info("[GOD MODE] IntelligenceDaemon started — 9 autonomous OSINT workers active for %s", session.target)
+            log.info("[GOD MODE] IntelligenceDaemon started — 9 autonomous OSINT workers active for %s (scan=%s)",
+                     session.target, session.scan_id)
         except Exception as _id_exc:
             log.debug("[GOD MODE] IntelligenceDaemon start failed (non-fatal): %s", _id_exc)
 
