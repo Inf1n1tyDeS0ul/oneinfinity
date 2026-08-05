@@ -488,7 +488,7 @@ export default function AIRedTeam() {
         </h2>
 
         {/* Core fields */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div>
             <label className="block text-sm mb-2 text-slate-300">Target URL</label>
             <input
@@ -617,13 +617,23 @@ export default function AIRedTeam() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm mb-2 text-slate-300">Target URL</label>
+            <label className="block text-sm mb-2 text-slate-300">Target URL <span className="text-slate-500 text-xs">(host only)</span></label>
             <input
               type="text"
               value={probeTarget}
               onChange={(e) => setProbeTarget(e.target.value)}
-              placeholder="https://chatbot.example.com"
+              placeholder="https://api.groq.com"
               className="w-full bg-slate-700 rounded px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-sm mb-2 text-slate-300">Endpoint Path</label>
+            <input
+              type="text"
+              value={endpointPath}
+              onChange={(e) => setEndpointPath(e.target.value)}
+              placeholder="/openai/v1/chat/completions"
+              className="w-full bg-slate-700 rounded px-3 py-2 text-sm font-mono"
             />
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -674,12 +684,12 @@ export default function AIRedTeam() {
           <div className="space-y-3 pt-2 border-t border-slate-700">
             <div className="flex items-center gap-3">
               <span className={clsx('px-2 py-0.5 rounded text-xs font-semibold',
-                probeResult.vuln_found ? 'bg-red-500/20 text-red-400' : 'bg-green-500/20 text-green-400'
+                probeResult.vuln_found ? 'bg-red-500/20 text-red-400' : 'probeResult.status === error ? bg-orange-500/20 text-orange-400 : bg-green-500/20 text-green-400'
               )}>
-                {probeResult.vuln_found ? 'VULNERABLE' : probeResult.status === 'demo' ? 'DEMO MODE' : 'CLEAN'}
+                {probeResult.vuln_found ? 'VULNERABLE' : probeResult.status === 'error' ? 'ERROR' : probeResult.status === 'demo' ? 'DEMO' : 'CLEAN'}
               </span>
-              {probeResult.status === 'demo' && (
-                <span className="text-xs text-slate-500">Target unreachable — showing demo response</span>
+              {(probeResult.status === 'error' || probeResult.status === 'demo') && (
+                <span className="text-xs text-red-400">{probeResult.error || 'Target unreachable — check URL and auth'}</span>
               )}
             </div>
 

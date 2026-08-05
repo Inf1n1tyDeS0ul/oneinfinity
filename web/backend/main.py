@@ -2985,7 +2985,18 @@ async def test_ai_prompt(body: Dict[str, Any]):
     _add_log(f"AI probe: {prompt[:80]}...", "info", "ai_console", "")
 
     import urllib.request, urllib.error, asyncio, functools, socket
-    url = target.rstrip("/") + endpoint_path
+    # Normalise: if user pasted full URL (e.g. https://host/v1/chat/completions)
+    # split into origin + path so we never double-append endpoint_path.
+    import urllib.parse as _up
+    _parsed = _up.urlparse(target.rstrip("/"))
+    if _parsed.path and _parsed.path not in ("/", "") and endpoint_path.startswith("/"):
+        # target already has a path component — use it directly
+        url = target.rstrip("/")
+        # only append endpoint_path if it is NOT already the suffix
+        if not url.endswith(endpoint_path.rstrip("/")):
+            url = _up.urlunparse(_parsed._replace(path="")).rstrip("/") + endpoint_path
+    else:
+        url = target.rstrip("/") + endpoint_path
 
     # Build request body
     if request_template:
@@ -3063,12 +3074,20 @@ async def test_ai_prompt(body: Dict[str, Any]):
 
         return {"response": text, "status": "ok", "vuln_found": vuln_found, "findings": finding_data}
     except Exception as exc:
-        demo_responses = {
-            "jailbreak": "I cannot and will not follow those instructions as they violate my usage policies.",
-            "default": f"[Demo mode — target unreachable: {str(exc)[:100]}]\n\nThis is a simulated response for the dashboard demonstration.",
-        }
-        demo_key = "jailbreak" if any(w in prompt.lower() for w in ["ignore", "dan", "jailbreak", "bypass"]) else "default"
-        return {"response": demo_responses[demo_key], "status": "demo", "vuln_found": False, "findings": [], "error": str(exc)[:200]}
+        # Surface the real error — never silently fall back to demo
+        err_str = str(exc)
+        # Friendly hint for common cases
+        hint = ""
+        if "403" in err_str:
+            hint = " (HTTP 403 — check your API key and that the URL does not already include the path)"
+        elif "401" in err_str:
+            hint = " (HTTP 401 — invalid or missing auth header)"
+        elif "404" in err_str:
+            hint = " (HTTP 404 — endpoint path not found on target)"
+        elif "timed out" in err_str.lower() or "timeout" in err_str.lower():
+            hint = " (request timed out — target may be slow or unreachable)"
+        return {"response": f"[Error: {err_str}{hint}]", "status": "error",
+                "vuln_found": False, "findings": [], "error": err_str}
 
 def _graph_display_dedup(vuln_list: list) -> list:
     """Collapse findings that produce identical graph nodes.
