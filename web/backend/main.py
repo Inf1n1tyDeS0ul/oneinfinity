@@ -7929,7 +7929,7 @@ async def ai_redteam_start(background_tasks: BackgroundTasks, req: dict):
     auth_header = req.get("auth_header", "")
     cookie_header = req.get("cookie_header", "")
     request_template = req.get("request_template", "")
-    model = req.get("model", "gpt-3.5-turbo")
+    model = req.get("model", "llama-3.1-8b-instant")
     endpoint_path = req.get("endpoint_path", "/v1/chat/completions")
     context = req.get("context", "")
 
@@ -8057,7 +8057,7 @@ async def ai_redteam_probe(req: dict):
         raise HTTPException(status_code=400, detail="target required")
     endpoint_path = req.get("endpoint_path", "/v1/chat/completions")
     auth_header = req.get("auth_header", "")
-    model = req.get("model", "gpt-3.5-turbo")
+    model = req.get("model", "llama-3.1-8b-instant")
     try:
         from oneinfinity.ai_security.campaign_manager import CampaignConfig, CampaignManager, CampaignMode
         cfg = CampaignConfig(
@@ -8096,7 +8096,7 @@ async def ai_redteam_watch_start(background_tasks: BackgroundTasks, req: dict):
     interval_min = max(5, int(req.get("interval_min", 60)))
     auth_header = req.get("auth_header", "")
     endpoint_path = req.get("endpoint_path", "/v1/chat/completions")
-    model = req.get("model", "gpt-3.5-turbo")
+    model = req.get("model", "llama-3.1-8b-instant")
     watch_id = f"watch-{uuid.uuid4().hex[:8]}"
 
     # Persist to DB

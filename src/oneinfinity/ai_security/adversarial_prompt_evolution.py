@@ -151,7 +151,7 @@ class EvolutionDB:
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """, (
             result_id, prompt_id, target, response_hash,
-            int(success), score, attack_type, mutation_type, time.time()
+            bool(success), score, attack_type, mutation_type, time.time()
         ))
         mgr.sync_pg_execute_write("""
             INSERT INTO strategy_stats

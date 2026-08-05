@@ -19,7 +19,7 @@ export default function AIRedTeam() {
   const [authHeader, setAuthHeader] = useState('')
   const [cookieHeader, setCookieHeader] = useState('')
   const [requestTemplate, setRequestTemplate] = useState('')
-  const [model, setModel] = useState('gpt-3.5-turbo')
+  const [model, setModel] = useState('llama-3.1-8b-instant')
   const [endpointPath, setEndpointPath] = useState('/v1/chat/completions')
   const [context, setContext] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -72,7 +72,7 @@ export default function AIRedTeam() {
   const [probeTarget, setProbeTarget] = useState('')
   const [probePrompt, setProbePrompt] = useState('')
   const [probeAuth, setProbeAuth] = useState('')
-  const [probeModel, setProbeModel] = useState('gpt-3.5-turbo')
+  const [probeModel, setProbeModel] = useState('llama-3.1-8b-instant')
   const [probing, setProbing] = useState(false)
   const [probeResult, setProbeResult] = useState(null)
 
@@ -567,7 +567,7 @@ export default function AIRedTeam() {
                 type="text"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                placeholder="gpt-3.5-turbo"
+                placeholder="llama-3.1-8b-instant"
                 className="w-full bg-slate-700 rounded px-3 py-2 text-sm font-mono"
               />
             </div>
@@ -633,7 +633,7 @@ export default function AIRedTeam() {
                 type="text"
                 value={probeModel}
                 onChange={(e) => setProbeModel(e.target.value)}
-                placeholder="gpt-3.5-turbo"
+                placeholder="llama-3.1-8b-instant"
                 className="w-full bg-slate-700 rounded px-3 py-2 text-sm font-mono"
               />
             </div>
