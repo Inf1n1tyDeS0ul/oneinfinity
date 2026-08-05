@@ -332,7 +332,7 @@ class EmbeddingAttackEngine:
     def _embed_request(self, url: str, text: str) -> Optional[str]:
         import urllib.request
         body = json.dumps({"model": self.model, "input": text}).encode()
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "User-Agent": "curl/7.88.1"}
         if self.auth_header:
             headers["Authorization"] = self.auth_header
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
@@ -349,7 +349,7 @@ class EmbeddingAttackEngine:
             "messages": [{"role": "user", "content": text}],
             "max_tokens": 200,
         }).encode()
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "User-Agent": "curl/7.88.1"}
         if self.auth_header:
             headers["Authorization"] = self.auth_header
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
@@ -367,7 +367,7 @@ class EmbeddingAttackEngine:
     def _post_document(self, url: str, content: str) -> Optional[str]:
         import urllib.request
         body = json.dumps({"content": content, "text": content, "document": content}).encode()
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "User-Agent": "curl/7.88.1"}
         if self.auth_header:
             headers["Authorization"] = self.auth_header
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")

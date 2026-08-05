@@ -325,7 +325,7 @@ class CampaignManager:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "OneInfinity/ai-redteam",
+            "User-Agent": "curl/7.88.1",
         }
         if config.auth_header:
             headers["Authorization"] = config.auth_header

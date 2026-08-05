@@ -215,7 +215,7 @@ class PurpleLlamaWrapper:
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 500,
         }).encode()
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "User-Agent": "curl/7.88.1"}
         if auth := config.get("auth_header", ""):
             headers["Authorization"] = auth
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")

@@ -606,7 +606,7 @@ class MultiTurnChainer:
 
         try:
             import httpx
-            headers = {"Content-Type": "application/json"}
+            headers = {"Content-Type": "application/json", "User-Agent": "curl/7.88.1"}
             if self.auth_header:
                 if self.auth_header.startswith("Cookie:"):
                     headers["Cookie"] = self.auth_header[7:].strip()
@@ -1026,7 +1026,7 @@ class HallOfFameLauncher:
             sys_prompt = self._inject_query(combo["system_prompt"], query)
             user_msg = self._inject_query(combo["user_template"], query)
 
-            headers: dict[str, str] = {"Content-Type": "application/json"}
+            headers: dict[str, str] = {"Content-Type": "application/json", "User-Agent": "curl/7.88.1"}
             if use_openrouter:
                 headers["Authorization"] = f"Bearer {openrouter_key}"
             elif auth_header:
@@ -1138,7 +1138,7 @@ class HallOfFameLauncher:
             "[RESPONSE]. Provide an enhanced version."
         )
 
-        headers_dict: dict[str, str] = {"Content-Type": "application/json"}
+        headers_dict: dict[str, str] = {"Content-Type": "application/json", "User-Agent": "curl/7.88.1"}
         if auth_header:
             if auth_header.startswith("Cookie:"):
                 headers_dict["Cookie"] = auth_header[7:].strip()

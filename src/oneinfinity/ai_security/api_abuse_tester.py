@@ -311,7 +311,7 @@ class APIAbuseTester:
 
     @staticmethod
     def _post_graphql(url: str, query: str, auth: str) -> Optional[Dict]:
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "User-Agent": "curl/7.88.1"}
         if auth:
             headers["Authorization"] = auth
         req = urllib.request.Request(

@@ -169,7 +169,7 @@ class ModelExtractionEngine:
 
         try:
             import httpx
-            headers: Dict[str, str] = {"Content-Type": "application/json"}
+            headers: Dict[str, str] = {"Content-Type": "application/json", "User-Agent": "curl/7.88.1"}
             if self.auth_header:
                 stripped = self.auth_header.strip()
                 if stripped.lower().startswith("cookie:"):

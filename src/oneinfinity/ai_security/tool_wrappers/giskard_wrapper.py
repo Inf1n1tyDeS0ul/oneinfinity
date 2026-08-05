@@ -247,7 +247,7 @@ class GiskardWrapper:
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 300,
         }).encode()
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "User-Agent": "curl/7.88.1"}
         auth = config.get("auth_header", "")
         if auth:
             headers["Authorization"] = auth

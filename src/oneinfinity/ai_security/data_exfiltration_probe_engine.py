@@ -181,7 +181,7 @@ class DataExfiltrationProbeEngine:
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 300,
         }).encode()
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "User-Agent": "curl/7.88.1"}
         if self.auth_header:
             headers["Authorization"] = self.auth_header
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
