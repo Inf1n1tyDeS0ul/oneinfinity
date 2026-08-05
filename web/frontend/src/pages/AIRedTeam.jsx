@@ -245,7 +245,7 @@ export default function AIRedTeam() {
         enable_dos: enableDos,
         use_shadow_boxer: useShadowBoxer,
       })
-      addNotification('AI Red Team campaign started!', 'success')
+      addNotification('AI Red Team campaign started!', 'success'); if (authHeader && !secAuth) setSecAuth(authHeader)
       setTarget('')
       loadCampaigns()
     } catch (e) {
@@ -567,7 +567,7 @@ export default function AIRedTeam() {
               <input
                 type="password"
                 value={authHeader}
-                onChange={(e) => setAuthHeader(e.target.value)}
+                onChange={(e) => { setAuthHeader(e.target.value); if (!secAuth) setSecAuth(e.target.value); }}
                 placeholder="Bearer sk-..."
                 className="w-full bg-slate-700 rounded px-3 py-2 text-sm font-mono"
               />
@@ -857,7 +857,7 @@ export default function AIRedTeam() {
             <input
               type="password"
               value={secAuth}
-              onChange={(e) => setSecAuth(e.target.value)}
+              onChange={(e) => { setSecAuth(e.target.value); if (!authHeader) setAuthHeader(e.target.value); }}
               placeholder="Bearer sk-..."
               className="w-full bg-slate-700 rounded px-3 py-2 text-sm font-mono"
             />
@@ -1048,7 +1048,20 @@ export default function AIRedTeam() {
                       )}>{c.findings?.length || 0}</span></span>
                       {c.model && <span>Model: <span className="text-slate-300 font-mono">{c.model}</span></span>}
                       <span>{relativeTime(c.started_at * 1000)}</span>
+                      {c.behavior_profile?.risk_score > 0 && (
+                        <span className={clsx('font-semibold', c.behavior_profile.risk_score >= 7 ? 'text-red-400' : 'text-orange-400')}>
+                          Risk: {c.behavior_profile.risk_score}/10
+                        </span>
+                      )}
                     </div>
+                    {c.engine_results?.length > 0 && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); loadSwimlane(c.campaign_id); setTimeout(() => { document.getElementById('swimlane-section')?.scrollIntoView({behavior:'smooth',block:'start'}); }, 300); }}
+                        className="mt-2 text-xs text-cyan-400 hover:text-cyan-300 underline"
+                      >
+                        View engine swimlane ({c.engine_results.length} engines) →
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1132,7 +1145,7 @@ export default function AIRedTeam() {
 
       {/* Swimlane Dashboard */}
       {showSwimlane && swimlaneData && (
-        <div className="bg-slate-800 rounded-lg p-6 space-y-4">
+        <div id="swimlane-section" className="bg-slate-800 rounded-lg p-6 space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold flex items-center gap-2">
               <Activity className="w-5 h-5 text-cyan-400" />
@@ -1386,6 +1399,14 @@ export default function AIRedTeam() {
                       </div>
                     ))}
                   </div>
+                  {/* Swimlane launch button inside modal */}
+                  <button
+                    onClick={() => { setSelectedCampaign(null); loadSwimlane(selectedCampaign.campaign_id); setTimeout(() => { document.querySelector('[class*="swimlane"],[id*="swimlane"]')?.scrollIntoView({behavior:"smooth",block:"start"}); }, 300); }}
+                    className="mt-3 text-xs bg-cyan-900/30 hover:bg-cyan-900/60 border border-cyan-700/40 text-cyan-400 rounded px-3 py-1.5 flex items-center gap-1"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+                    View Engine Swimlane
+                  </button>
                 </div>
               )}
               {/* Findings */}
@@ -1433,6 +1454,35 @@ export default function AIRedTeam() {
                   </div>
                 )}
               </div>
+              {/* Behavior Profile Summary */}
+              {selectedCampaign.behavior_profile?.risk_score > 0 && (
+                <div className="bg-slate-700/50 rounded-lg p-3 border border-slate-600">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-semibold text-slate-300 flex items-center gap-1">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+                      Behavior Profile
+                    </span>
+                    <span className={clsx('text-lg font-bold', selectedCampaign.behavior_profile.risk_score >= 7 ? 'text-red-400' : selectedCampaign.behavior_profile.risk_score >= 4 ? 'text-orange-400' : 'text-green-400')}>
+                      Risk: {selectedCampaign.behavior_profile.risk_score}/10
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                    {Object.entries(selectedCampaign.behavior_profile.severity_distribution || {}).map(([k,v]) => (
+                      <div key={k} className="bg-slate-800 rounded p-2">
+                        <div className={clsx('font-bold uppercase', k==='critical'?'text-red-400':k==='high'?'text-orange-400':k==='medium'?'text-yellow-400':'text-blue-400')}>{k}</div>
+                        <div className="text-white text-lg font-mono">{v}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {(selectedCampaign.behavior_profile.attack_surface || []).length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {selectedCampaign.behavior_profile.attack_surface.slice(0,6).map(a => (
+                        <span key={a} className="text-xs bg-purple-900/30 text-purple-300 rounded px-2 py-0.5">{a}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
