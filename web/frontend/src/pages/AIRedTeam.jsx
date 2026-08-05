@@ -166,20 +166,32 @@ export default function AIRedTeam() {
     if (secTools.length === 0) return addNotification('Select at least one tool', 'error')
     setSecScanning(true)
     try {
-      await endpoints.aiSecScanStart({
+      const resp = await endpoints.aiSecScanStart({
         target: secTarget.trim(),
         tools: secTools,
         auth_header: secAuth,
         cookie_header: secCookieHeader,
         model: secModel,
         endpoint_path: secEndpointPath,
-        context,
+        context: '',
         mode: secMode,
         num_prompts: secNumPrompts,
       })
       addNotification('Multi-tool AI security scan started!', 'success')
-      setSecTarget('')
       loadSecScans()
+      // Auto-open the new scan for live watching
+      if (resp?.data?.scan_id) {
+        setSelectedScan({ scan_id: resp.data.scan_id, target: secTarget.trim(),
+          status: 'running', tools_run: [], findings: [], error_log: [] })
+        // Poll until completed
+        const pollId = setInterval(async () => {
+          try {
+            const r = await endpoints.aiSecScanGet(resp.data.scan_id)
+            setSelectedScan(r.data)
+            if (r.data?.status !== 'running') clearInterval(pollId)
+          } catch (_) { clearInterval(pollId) }
+        }, 3000)
+      }
     } catch (e) {
       addNotification(`Scan failed: ${e.message}`, 'error')
     } finally {
@@ -948,7 +960,10 @@ export default function AIRedTeam() {
                   <span className={clsx('font-semibold',
                     selectedScan.status === 'completed' ? 'text-green-400' :
                     selectedScan.status === 'running'   ? 'text-yellow-400' : 'text-red-400'
-                  )}>{selectedScan.status}</span>
+                  )}>
+                    {selectedScan.status === 'running' && <RefreshCw className="w-3 h-3 inline mr-1 animate-spin" />}
+                    {selectedScan.status}
+                  </span>
                 </div>
                 <div><span className="text-slate-400">Tools run: </span>{(selectedScan.tools_run || []).join(', ') || '—'}</div>
               </div>

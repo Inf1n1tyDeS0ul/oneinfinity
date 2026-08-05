@@ -68,7 +68,12 @@ class AISecurityScanConfig:
     tools: List[str]                # which tools to run
     endpoint_path: str = "/v1/chat/completions"
     auth_header: str = ""
-    model: str = "gpt-3.5-turbo"
+    cookie_header: str = ""
+    request_template: str = ""
+    model: str = "llama-3.1-8b-instant"
+    context: str = ""
+    mode: str = "full"
+    num_prompts: int = 20
     extra_headers: Dict[str, str] = field(default_factory=dict)
     output_dir: str = "recon"
     platform: str = "hackerone"
@@ -176,7 +181,12 @@ class AISecurityEngine:
         tool_config = {
             "endpoint_path": config.endpoint_path,
             "auth_header": config.auth_header,
+            "cookie_header": config.cookie_header,
+            "request_template": config.request_template,
             "model": config.model,
+            "context": config.context,
+            "mode": config.mode,
+            "num_prompts": config.num_prompts,
         }
 
         print(f"\n[*] AI Security Engine — scanning {config.target}")

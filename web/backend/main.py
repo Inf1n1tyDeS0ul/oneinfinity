@@ -8306,10 +8306,10 @@ async def ai_security_scan(background_tasks: BackgroundTasks, req: dict):
                 cookie_header=cookie_header,
                 request_template=request_template,
                 model=model,
+                context=context,
+                mode=mode,
+                num_prompts=req.get("num_prompts", 20),
             )
-            config.context = context
-            config.mode = mode
-            config.num_prompts = req.get("num_prompts", 20)
             result = await engine.scan(config)
             scan["status"] = "completed"
             scan["tools_run"] = result.tools_run
@@ -8342,10 +8342,12 @@ async def ai_security_scan(background_tasks: BackgroundTasks, req: dict):
             # Phase 5 engines: DataExfiltration, ExcessiveAgency, EmbeddingAttack
             import asyncio as _asyncio
             _phase5_engines = []
-            if "data_exfil" in tools or "all" in tools or set(tools) == set(tools):
+            if "data_exfil" in tools or "all" in tools:
                 _phase5_engines.append(("data_exfil", "oneinfinity.ai_security.data_exfiltration_probe_engine", "DataExfiltrationProbeEngine"))
-            _phase5_engines.append(("excessive_agency", "oneinfinity.ai_security.excessive_agency_prober", "ExcessiveAgencyProber"))
-            _phase5_engines.append(("embedding_attack", "oneinfinity.ai_security.embedding_attack_engine", "EmbeddingAttackEngine"))
+            if "excessive_agency" in tools or "all" in tools:
+                _phase5_engines.append(("excessive_agency", "oneinfinity.ai_security.excessive_agency_prober", "ExcessiveAgencyProber"))
+            if "embedding_attack" in tools or "all" in tools:
+                _phase5_engines.append(("embedding_attack", "oneinfinity.ai_security.embedding_attack_engine", "EmbeddingAttackEngine"))
             for _eng_key, _mod_path, _cls_name in _phase5_engines:
                 try:
                     import importlib as _il
