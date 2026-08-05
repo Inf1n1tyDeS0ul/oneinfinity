@@ -65,16 +65,31 @@ def _form_post_auth(config: FormAuthConfig) -> FormAuthResult:
     cj = _cj.CookieJar()
     opener = _ur2.build_opener(_ur2.HTTPCookieProcessor(cj))
 
-    # First: GET the login page to pick up CSRF tokens / pre-auth cookies
+    # E7: GET login page first — extract CSRF hidden fields + pre-auth cookies
+    _hidden_fields: dict = {}
     try:
-        opener.open(_ur2.Request(config.login_url, headers={"User-Agent": "oneinfinity/1.0"}), timeout=10)
+        import re as _re_h
+        _pre_req = _ur2.Request(config.login_url, headers={"User-Agent": "oneinfinity/1.0"})
+        _pre_resp = opener.open(_pre_req, timeout=10)
+        _pre_body = _pre_resp.read(32768).decode("utf-8", errors="replace")
+        # Extract hidden <input> fields (CSRF nonces, user_token, etc.)
+        _inp_pat = _re_h.compile(r"<input([^>]*)>", _re_h.IGNORECASE)
+        _attr_pat = _re_h.compile(r"""([\w-]+)=['"](.*?)['"]""", _re_h.IGNORECASE)
+        for _inp in _inp_pat.findall(_pre_body):
+            _attrs = dict(_attr_pat.findall(_inp))
+            if _attrs.get("type", "").lower() == "hidden" and "name" in _attrs:
+                _hidden_fields[_attrs["name"]] = _attrs.get("value", "")
     except Exception:
         pass  # best-effort
+
+    # Merge: live hidden fields fill blanks, explicit extra_fields override
+    _merged_extra = dict(_hidden_fields)
+    _merged_extra.update({k: v for k, v in config.extra_fields.items() if v != ""})
 
     post_data = {
         config.username_field: config.username,
         config.password_field: config.password,
-        **config.extra_fields,
+        **_merged_extra,
     }
     encoded = _up.urlencode(post_data).encode()
     req = _ur2.Request(
@@ -98,7 +113,6 @@ def _form_post_auth(config: FormAuthConfig) -> FormAuthResult:
 
     log.info("FormAuth: form POST auth successful for %s", config.login_url)
     return FormAuthResult(success=True, session_cookie=cookie_str)
-
 
 def _json_auth(config: FormAuthConfig) -> FormAuthResult:
     """JSON body POST authentication (Juice Shop, modern APIs)."""
