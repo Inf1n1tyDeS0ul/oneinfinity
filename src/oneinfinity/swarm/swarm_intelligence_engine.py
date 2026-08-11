@@ -2474,6 +2474,45 @@ class AuthAgent(SwarmAgent):
                     priority      = 0.55,
                 ))
 
+        # Double Set-Cookie / Session Fixation
+        hypotheses.append(Hypothesis(
+            hypothesis_id = uuid.uuid4().hex[:8],
+            agent_type    = self.agent_type,
+            target_node   = target,
+            attack_vector = "double_set_cookie_session_fixation",
+            confidence    = self.memory.rate("double_set_cookie_session_fixation", 0.65),
+            payload       = "",
+            context       = {"target": target},
+            reasoning     = "Check if server issues >1 Set-Cookie for same name per response — session fixation precondition",
+            priority      = 0.75,
+        ))
+
+        # Rate Limit Absent
+        hypotheses.append(Hypothesis(
+            hypothesis_id = uuid.uuid4().hex[:8],
+            agent_type    = self.agent_type,
+            target_node   = target,
+            attack_vector = "rate_limit_absent_auth",
+            confidence    = self.memory.rate("rate_limit_absent_auth", 0.70),
+            payload       = "",
+            context       = {"target": target},
+            reasoning     = "Send 30 rapid requests to auth endpoints; no 429 = no rate limiting",
+            priority      = 0.78,
+        ))
+
+        # Unauthenticated Admin Access
+        hypotheses.append(Hypothesis(
+            hypothesis_id = uuid.uuid4().hex[:8],
+            agent_type    = self.agent_type,
+            target_node   = target,
+            attack_vector = "unauth_admin_route_access",
+            confidence    = self.memory.rate("unauth_admin_route_access", 0.60),
+            payload       = "",
+            context       = {"target": target},
+            reasoning     = "Probe /admin, /admin/users, /admin/config without credentials — check for 200+HTML",
+            priority      = 0.72,
+        ))
+
         hypotheses.sort(key=lambda h: h.priority, reverse=True)
         return hypotheses[:50]
 
@@ -2662,6 +2701,66 @@ class AuthAgent(SwarmAgent):
                             reproduced     = True,
                             chain_potential= ["oauth_csrf_to_account_link"],
                             remediation    = "Enforce non-empty, cryptographically random state parameter; validate on callback.",
+                        ))
+
+                elif h.attack_vector == "double_set_cookie_session_fixation":
+                    result = await self._tool("session_security_test", base_url=target)
+                    data = result.get("data") or {}
+                    for f in data.get("findings", []):
+                        sev = f.get("severity", "high")
+                        findings.append(self._finding(
+                            target          = h.target_node,
+                            vuln_type       = "double_set_cookie_session_fixation",
+                            severity        = sev,
+                            title           = f.get("vulnerability", "Session Security Issue"),
+                            description     = "Server issues duplicate Set-Cookie headers — session fixation precondition.",
+                            payload         = "",
+                            evidence        = str(f.get("extra", f.get("evidence", "")))[:400],
+                            cvss            = 7.5,
+                            confidence      = 0.80,
+                            reproduced      = True,
+                            chain_potential = ["session_fixation_to_account_takeover"],
+                            remediation     = "Issue exactly one Set-Cookie per session name; regenerate session ID post-auth.",
+                        ))
+
+                elif h.attack_vector == "rate_limit_absent_auth":
+                    result = await self._tool("rate_limit_test", base_url=target)
+                    data = result.get("data") or {}
+                    for f in data.get("findings", []):
+                        sev = f.get("severity", "high")
+                        findings.append(self._finding(
+                            target          = h.target_node,
+                            vuln_type       = "rate_limit_absent_auth",
+                            severity        = sev,
+                            title           = f.get("vulnerability", "Missing Rate Limiting on Auth Endpoint"),
+                            description     = "No rate limiting detected on authentication endpoint — brute-force possible.",
+                            payload         = "",
+                            evidence        = str(f.get("extra", f.get("evidence", "")))[:400],
+                            cvss            = 7.5,
+                            confidence      = 0.82,
+                            reproduced      = True,
+                            chain_potential = ["rate_limit_bypass_to_brute_force"],
+                            remediation     = "Implement per-IP rate limiting (<=5 req/min) with 429 responses on auth endpoints.",
+                        ))
+
+                elif h.attack_vector == "unauth_admin_route_access":
+                    result = await self._tool("unauth_admin_test", base_url=target)
+                    data = result.get("data") or {}
+                    for f in data.get("findings", []):
+                        sev = f.get("severity", "high")
+                        findings.append(self._finding(
+                            target          = h.target_node,
+                            vuln_type       = "unauth_admin_route_access",
+                            severity        = sev,
+                            title           = f.get("vulnerability", "Unauthenticated Admin Route Access"),
+                            description     = "Admin route accessible without authentication — information disclosure or full admin access.",
+                            payload         = "",
+                            evidence        = str(f.get("extra", f.get("evidence", "")))[:400],
+                            cvss            = 9.1,
+                            confidence      = 0.88,
+                            reproduced      = True,
+                            chain_potential = ["unauth_admin_to_full_compromise"],
+                            remediation     = "Require authentication and admin role check on all /admin/* routes.",
                         ))
 
             except Exception as exc:
@@ -3783,7 +3882,28 @@ class OAuthAgent(SwarmAgent):
         from urllib.parse import urlparse
         parsed = urlparse(target if "://" in target else f"https://{target}")
         base = f"{parsed.scheme}://{parsed.netloc}"
-        return [Hypothesis(
+        hypotheses: List[Hypothesis] = []
+
+        # oauth_state_jwt_redirect_url: follow OAuth login redirect, decode state JWT, check redirect_url
+        login_urls = [
+            base.rstrip("/") + path
+            for path in ["/api/auth/login", "/auth/login", "/login"]
+        ]
+        for login_url in login_urls:
+            hypotheses.append(Hypothesis(
+                hypothesis_id = uuid.uuid4().hex[:8],
+                agent_type    = self.agent_type,
+                target_node   = login_url,
+                attack_vector = "oauth_state_jwt_redirect_url",
+                confidence    = self.memory.rate("oauth_state_jwt_redirect_url", 0.72),
+                payload       = login_url,
+                context       = {"login_url": login_url, "check": "follow_302_decode_state_jwt"},
+                reasoning     = "Follow OAuth login redirect, decode state JWT, check for controllable redirect_url field",
+                priority      = 0.85,
+            ))
+
+        # Generic OAuth flaw hypothesis
+        hypotheses.append(Hypothesis(
             hypothesis_id = uuid.uuid4().hex[:8],
             agent_type    = self.agent_type,
             target_node   = base,
@@ -3793,7 +3913,9 @@ class OAuthAgent(SwarmAgent):
             context       = {"target": base},
             reasoning     = "OAuth endpoints may lack state validation or allow open redirects",
             priority      = self.memory.rate("oauth_flaw", 0.32),
-        )]
+        ))
+
+        return hypotheses
 
     async def execute_tests(self, target, hypotheses, context) -> List[AgentFinding]:
         findings: List[AgentFinding] = []
@@ -3821,6 +3943,54 @@ class OAuthAgent(SwarmAgent):
                 ))
         except Exception as exc:
             logger.debug("[%s] OAuth test error: %s", self.name, exc)
+
+        # Dispatch per-hypothesis attacks
+        import json as _json_oauth, base64 as _b64_oauth
+        for h in hypotheses:
+            if self._stop_event.is_set():
+                break
+            try:
+                if h.attack_vector == "oauth_state_jwt_redirect_url":
+                    import importlib as _imp
+                    try:
+                        _req_mod = _imp.import_module("requests")
+                        r = _req_mod.get(h.payload, allow_redirects=False, timeout=8, verify=False)
+                        if r.status_code in (301, 302, 303, 307, 308):
+                            loc = r.headers.get("Location", "")
+                            from urllib.parse import urlparse as _up_o, parse_qs as _pqs_o
+                            qs = _pqs_o(_up_o(loc).query)
+                            state_vals = qs.get("state", [])
+                            for sv in state_vals:
+                                parts = sv.split(".")
+                                if len(parts) == 3:
+                                    try:
+                                        pad = lambda s: s + "=" * (-len(s) % 4)
+                                        payload_json = _json_oauth.loads(
+                                            _b64_oauth.urlsafe_b64decode(pad(parts[1]))
+                                        )
+                                        if "redirect_url" in payload_json:
+                                            findings.append(self._finding(
+                                                target          = h.payload,
+                                                vuln_type       = "oauth_state_jwt_redirect_url",
+                                                severity        = "critical",
+                                                title           = "OAuth State JWT Contains Controllable redirect_url — Post-Auth Open Redirect",
+                                                description     = "OAuth state parameter is a JWT with a redirect_url field that can be manipulated for open redirect / account takeover.",
+                                                payload         = _json_oauth.dumps(payload_json)[:200],
+                                                evidence        = f"state JWT payload: {_json_oauth.dumps(payload_json)[:200]}",
+                                                cvss            = 9.1,
+                                                confidence      = 0.88,
+                                                reproduced      = True,
+                                                chain_potential = ["open_redirect_to_ato", "oauth_state_manipulation"],
+                                                remediation     = "Use opaque random state tokens; derive redirect_url from server-side allowlist only",
+                                            ))
+                                    except Exception:
+                                        pass
+                    except Exception:
+                        pass
+            except Exception as exc:
+                logger.debug("[%s] OAuth hypothesis test error: %s", self.name, exc)
+            await asyncio.sleep(0.05)
+
         return findings
 
 

@@ -1277,6 +1277,7 @@ class CanonicalExecutor:
             run_file_upload_test, run_oauth_test, run_prototype_pollution_test,
             run_mfa_bypass_test, run_rate_limit_test, run_deserialization_test,
             run_websocket_test, run_pii_scanner, run_clickjacking_test,
+            run_session_security_test, run_unauth_admin_test, run_security_headers_test,
         )
 
         # Load discovered URLs for PII scanning
@@ -1301,6 +1302,9 @@ class CanonicalExecutor:
             ("WebSocket Security",     lambda: run_websocket_test(probe_target, headers=auth_headers)),
             ("PII Exposure",           lambda: run_pii_scanner(discovered_urls or [probe_target], headers=auth_headers)),
             ("Clickjacking",           lambda: run_clickjacking_test(probe_target, headers=auth_headers)),
+            ("Session Security",       lambda: run_session_security_test(probe_target, headers=auth_headers)),
+            ("Unauthenticated Admin",  lambda: run_unauth_admin_test(probe_target, headers=None)),
+            ("Security Headers",       lambda: run_security_headers_test(probe_target, headers=auth_headers)),
         ]
 
         for test_name, test_fn in extended_tests:
@@ -2169,6 +2173,30 @@ class CanonicalExecutor:
         except Exception as _go_cred_exc:
             log.debug("auth_session go-credential-spray failed (non-fatal): %s", _go_cred_exc)
 
+        # Capture OAuth state JWT from login redirect — feeds JWTAgent
+        _jwt_context: dict = {}
+        try:
+            import requests as _req_jwtcap, json as _json_jwtcap
+            from urllib.parse import urlparse as _up_jwtcap, parse_qs as _pqs_jwtcap
+            _login_url = probe_target_cred.rstrip("/") + "/api/auth/login"
+            _r = _req_jwtcap.get(_login_url, allow_redirects=False, timeout=8, verify=False)
+            if _r.status_code in (301, 302, 303, 307, 308):
+                _loc = _r.headers.get("Location", "")
+                _qs = _pqs_jwtcap(_up_jwtcap(_loc).query)
+                for _sv in _qs.get("state", []):
+                    if len(_sv.split(".")) == 3:  # looks like JWT
+                        _jwt_context.setdefault("jwt_tokens", []).append(_sv)
+                        log.info("[auth_session] captured OAuth state JWT from %s", _login_url)
+        except Exception as _jwtcap_exc:
+            log.debug("[auth_session] OAuth state JWT capture failed: %s", _jwtcap_exc)
+        if _jwt_context.get("jwt_tokens"):
+            try:
+                (out / "jwt_context.json").write_text(
+                    _json_jwtcap.dumps(_jwt_context, indent=2)
+                )
+            except Exception:
+                pass
+
         (out / "auth_findings.json").write_text(
             json.dumps({"findings": findings}, indent=2)
         )
@@ -2961,6 +2989,33 @@ class CanonicalExecutor:
             all_raw_findings: list = []
             for gql_target in list(dict.fromkeys(all_targets)):  # dedup preserve order
                 try:
+                    # ── Content-type + POST 404 guard: skip if endpoint is SPA catchall ──
+                    # GET returns text/html AND POST returns 404 empty → React Router, not GraphQL.
+                    try:
+                        import requests as _gql_req
+                        _gql_get = _gql_req.get(gql_target, timeout=5, verify=False,
+                                                 allow_redirects=False)
+                        _gql_post = _gql_req.post(gql_target,
+                                                  json={"query": "{__typename}"},
+                                                  timeout=5, verify=False,
+                                                  allow_redirects=False)
+                        _get_ct = _gql_get.headers.get("content-type", "").lower()
+                        _is_spa_gql = (
+                            "text/html" in _get_ct
+                            and _gql_post.status_code in (404, 405)
+                            and len(_gql_post.text.strip()) < 50
+                        )
+                        if _is_spa_gql:
+                            log.warning(
+                                "[graphql] %s returns text/html on GET and %d on POST — "
+                                "React Router SPA catchall, not a real GraphQL endpoint. "
+                                "Skipping GraphQL scan to avoid false positives.",
+                                gql_target, _gql_post.status_code,
+                            )
+                            continue
+                    except Exception as _gql_ct_exc:
+                        log.debug("[graphql] Content-type pre-check failed (non-fatal): %s", _gql_ct_exc)
+                    # ── End content-type guard ──────────────────────────────────────────────
                     # For the primary target, pass is_spa from waf_profile so path-guessing
                     # is suppressed on React SPAs. Additional GraphQL targets (AppSync subdomains
                     # from JS bundles) are real endpoints — never treat them as SPA.

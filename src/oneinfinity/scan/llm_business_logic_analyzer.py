@@ -507,6 +507,52 @@ class LLMBusinessLogicAnalyzer:
                 if len(param_patterns[param]) < 3:
                     param_patterns[param].append(str(value)[:50])
 
+        # ── Filter SPA noise from sample_requests ────────────────────────────
+        _SECURITY_RESPONSE_HEADERS = [
+            "set-cookie", "www-authenticate", "x-frame-options",
+            "content-security-policy", "strict-transport-security",
+            "x-content-type-options", "referrer-policy",
+            "access-control-allow-origin", "location", "authorization",
+        ]
+
+        seen_bodies: set = set()
+        filtered_requests: list = []
+        all_requests: list = []
+
+        for req_dict in sample_traffic:
+            resp = req_dict.get("response", {}) or {}
+            resp_headers = resp.get("headers", {}) or {}
+            content_type = ""
+            for k, v in resp_headers.items():
+                if k.lower() == "content-type":
+                    content_type = str(v).lower()
+                    break
+            body = resp.get("body", "") or ""
+            body_len = len(body) if isinstance(body, str) else 0
+            body_key = body[:500] if isinstance(body, str) else ""
+
+            # Build enriched entry with response_headers
+            entry = dict(req_dict)
+            entry["response_headers"] = {
+                k: v for k, v in resp_headers.items()
+                if k.lower() in _SECURITY_RESPONSE_HEADERS
+            }
+            all_requests.append(entry)
+
+            # Skip SPA noise: text/html + small body
+            is_spa_shell = ("text/html" in content_type and body_len < 2000)
+            # Skip duplicates
+            is_duplicate = (body_key in seen_bodies and body_key != "")
+
+            if not is_spa_shell and not is_duplicate:
+                seen_bodies.add(body_key)
+                filtered_requests.append(entry)
+                if len(filtered_requests) >= 10:
+                    break
+
+        # Fall back to any 5 if all are SPA
+        sample_requests = filtered_requests if filtered_requests else all_requests[:5]
+
         return {
             "target": target,
             "endpoint_count": len(endpoints),
@@ -520,15 +566,26 @@ class LLMBusinessLogicAnalyzer:
                 for w in workflows
             ],
             "param_patterns": param_patterns,
-            "sample_requests": sample_traffic[:10],
+            "sample_requests": sample_requests,
         }
 
     def _build_analysis_prompt(self, context: Dict, user_rules: str = "") -> str:
         """Build LLM analysis prompt."""
 
-        prompt = f"""You are an expert security researcher specializing in business logic vulnerabilities.
+        _SECURITY_HEADER_KEYS = [
+            "set-cookie", "www-authenticate", "x-frame-options",
+            "content-security-policy", "strict-transport-security",
+            "x-content-type-options", "referrer-policy",
+            "access-control-allow-origin", "location", "authorization",
+        ]
 
-Target: {context['target']}
+        prompt = (
+            "You are a senior application security engineer. Analyze ALL security categories below, "
+            "not just business logic. Pay special attention to: OAuth state parameter contents, "
+            "Set-Cookie header anomalies, missing security headers, and admin route access control.\n\n"
+        )
+
+        prompt += f"""Target: {context['target']}
 
 Application Profile:
 - {context['endpoint_count']} unique endpoints detected
@@ -546,6 +603,20 @@ Parameter Patterns:
 {json.dumps(context['param_patterns'], indent=2)[:500]}
 """
 
+        # Response headers section
+        sample_requests = context.get("sample_requests", [])
+        header_samples = []
+        for req_dict in sample_requests[:5]:
+            resp_hdrs = req_dict.get("response_headers", {})
+            filtered_hdrs = {k: v for k, v in resp_hdrs.items() if k.lower() in _SECURITY_HEADER_KEYS}
+            if filtered_hdrs:
+                ep = req_dict.get("path", req_dict.get("url", "?"))
+                header_samples.append(f"  {ep}: {json.dumps(filtered_hdrs)}")
+
+        if header_samples:
+            prompt += "\nObserved Response Headers (security-relevant):\n"
+            prompt += "\n".join(header_samples) + "\n"
+
         if user_rules:
             steps = [s.strip() for s in re.split(r'→|->|\n|;', user_rules) if s.strip()]
             prompt += "\nUser-Defined Business Rules (MUST test these explicitly):\n"
@@ -559,18 +630,21 @@ Parameter Patterns:
 
         prompt += """
 Task:
-Analyze this application for business logic vulnerabilities. Focus on:
+Analyze this application for ALL security vulnerabilities below:
 
 1. **Price Manipulation**: negative values, parameter tampering, overflow
 2. **Workflow Bypass**: step skipping, state manipulation, forced browsing
 3. **Race Conditions**: TOCTOU, parallel redemption, duplicate transactions
 4. **Mass Assignment**: role elevation, balance injection, hidden fields
-5. **Authentication Bypass**: JWT manipulation, session fixation, IDOR
-6. **Rate Limiting**: automated abuse, brute force, resource exhaustion
+5. **Authentication Bypass**: JWT none_alg, OAuth state forgery, alg:hs256_to_none, session fixation
+6. **Rate Limiting**: brute force, credential stuffing, OTP bypass, absence of 429 on auth endpoints
+7. **Session Security**: double Set-Cookie, SameSite absence, session fixation, cookie flags (Secure/HttpOnly)
+8. **Missing Security Headers**: CSP, HSTS, X-Frame-Options, Referrer-Policy, X-Content-Type-Options
+9. **Unauthenticated Admin Access**: admin routes returning 200 without credentials
 
 For each vulnerability found, provide:
 {
-  "category": "price_manipulation|workflow_bypass|...",
+  "category": "price_manipulation|workflow_bypass|race_condition|mass_assignment|auth_bypass|rate_limiting|session_security|missing_security_headers|unauth_admin_access",
   "severity": "critical|high|medium|low",
   "title": "Brief title",
   "description": "Detailed explanation",
@@ -591,28 +665,46 @@ Return JSON array of vulnerabilities. Be specific and actionable.
         prompt: str,
         context: Dict
     ) -> List[BusinessLogicVulnerability]:
-        """Analyze using Anthropic Claude."""
+        """Analyze using Anthropic Claude (direct), with Bedrock fallback."""
 
-        if not HAS_ANTHROPIC:
-            return []
+        # ── Primary: direct Anthropic client ─────────────────────────────────
+        if HAS_ANTHROPIC:
+            try:
+                client = anthropic.Anthropic(api_key=self.anthropic_key)
 
+                message = client.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=4096,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+
+                response_text = message.content[0].text
+
+                # Extract JSON
+                vulns = self._parse_llm_response(response_text, context)
+                return vulns
+
+            except Exception as e:
+                log.warning("Anthropic direct client failed, trying Bedrock fallback: %s", e)
+
+        # ── Fallback: AWS Bedrock ─────────────────────────────────────────────
         try:
-            client = anthropic.Anthropic(api_key=self.anthropic_key)
-
-            message = client.messages.create(
-                model="claude-3-5-sonnet-20241022",
-                max_tokens=4096,
-                messages=[{"role": "user", "content": prompt}]
+            import boto3
+            client = boto3.client(
+                "bedrock-runtime",
+                region_name=os.environ.get("AWS_REGION", "eu-central-1"),
             )
-
-            response_text = message.content[0].text
-
-            # Extract JSON
+            model_id = "eu.anthropic.claude-sonnet-4-6"
+            resp = client.converse(
+                modelId=model_id,
+                messages=[{"role": "user", "content": [{"text": prompt}]}],
+                inferenceConfig={"maxTokens": 4096},
+            )
+            response_text = resp["output"]["message"]["content"][0]["text"]
             vulns = self._parse_llm_response(response_text, context)
             return vulns
-
-        except Exception as e:
-            log.error(f"Anthropic API error: {e}")
+        except Exception as bedrock_err:
+            log.warning("LLM analyzer bedrock fallback failed: %s", bedrock_err)
             return []
 
     async def _analyze_with_openai(

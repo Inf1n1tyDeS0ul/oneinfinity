@@ -1083,6 +1083,42 @@ def run_sqlmap(url: str, params: str = "", data: str = "",
     import sys as _sys
     _check_scope(url)
     params = params or param  # accept either kwarg name
+    # ── Pre-flight: detect logic-blocked / static-response endpoints ──────────
+    # If the endpoint returns the same body for two completely different payloads
+    # (e.g. "Email login is disabled" for all inputs), sqlmap would run for
+    # minutes producing false positives.  Abort early.
+    try:
+        import requests as _pf_req
+        _probe_a = _pf_req.post(url, data={"email": "preflight_a@oi.test", "x": "1"},
+                                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                                timeout=6, verify=False, allow_redirects=False)
+        _probe_b = _pf_req.post(url, data={"email": "preflight_b@oi.test", "x": "99999"},
+                                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                                timeout=6, verify=False, allow_redirects=False)
+        _same_status  = _probe_a.status_code == _probe_b.status_code
+        _same_body    = abs(len(_probe_a.text) - len(_probe_b.text)) < 50
+        _not_html     = "text/html" not in _probe_a.headers.get("content-type", "")
+        if _same_status and _same_body and _not_html:
+            log.info("[sqlmap] Pre-flight: %s returns identical responses for different inputs — "
+                     "endpoint is logic-blocked (status=%d, body_len=%d). Skipping sqlmap.",
+                     url, _probe_a.status_code, len(_probe_a.text))
+            return ToolResult(
+                tool="sqlmap",
+                success=True,
+                data={
+                    "target": url,
+                    "vulnerable_parameters": [],
+                    "injection_types": [],
+                    "is_vulnerable": False,
+                    "skipped_reason": "logic_blocked_static_response",
+                    "preflight_status": _probe_a.status_code,
+                    "preflight_body_sample": _probe_a.text[:120],
+                },
+                count=0,
+            )
+    except Exception as _pf_exc:
+        log.debug("[sqlmap] Pre-flight probe failed (non-fatal): %s", _pf_exc)
+    # ── End pre-flight ──────────────────────────────────────────────────────────
     tmpdir = tempfile.mkdtemp(prefix="sqlmap_")
     import shutil as _shutil
     _sqlmap_bin = _shutil.which("sqlmap") or "sqlmap"
@@ -1870,6 +1906,7 @@ def run_oauth_test(
     oauth_paths = [
         "/oauth/authorize", "/oauth2/authorize", "/auth/oauth",
         "/connect/authorize", "/api/oauth/authorize",
+        "/api/auth/login", "/login", "/auth/login",
         "/.well-known/openid-configuration",
     ]
 
@@ -1891,7 +1928,8 @@ def run_oauth_test(
             }
             r2 = _req.get(url, params=params_no_state, headers=headers or {},
                           timeout=timeout, verify=False, allow_redirects=False)
-            if r2.status_code in (200, 302) and "state" not in r2.text.lower():
+            _r2_ct = r2.headers.get("content-type", "").lower()
+            if r2.status_code in (200, 302) and "state" not in r2.text.lower() and "text/html" not in _r2_ct:
                 findings.append({
                     "url": url,
                     "parameter": "state",
@@ -1938,6 +1976,73 @@ def run_oauth_test(
                         })
                 except Exception:
                     pass
+
+            # Test 4: Follow 302 redirect from login endpoint — inspect OAuth params
+            if r.status_code == 302:
+                loc = r.headers.get("Location", "")
+                if loc and ("oauth" in loc.lower() or "authorize" in loc.lower()
+                            or "client_id" in loc or "response_type" in loc):
+                    from urllib.parse import urlparse, parse_qs
+                    parsed_loc = urlparse(loc)
+                    qs = parse_qs(parsed_loc.query)
+                    # Flag exposed SSO provider and client_id
+                    sso_host = parsed_loc.netloc
+                    client_id = qs.get("client_id", [None])[0]
+                    scopes = qs.get("scope", ["unknown"])[0]
+                    redirect_uri = qs.get("redirect_uri", [None])[0]
+                    if sso_host:
+                        findings.append({
+                            "url": url,
+                            "parameter": "client_id",
+                            "vulnerability": f"OAuth Provider and client_id Exposed in Login Redirect",
+                            "severity": "medium",
+                            "source_tool": "oauth_test",
+                            "extra": {
+                                "sso_provider": sso_host,
+                                "client_id": client_id,
+                                "scopes_requested": scopes,
+                                "redirect_uri": redirect_uri,
+                                "full_location": loc[:300],
+                            },
+                        })
+                    # Test 5: Decode JWT state parameter — check for redirect_url field
+                    state_val = qs.get("state", [None])[0]
+                    if state_val and "." in state_val:
+                        try:
+                            import base64 as _b64
+                            import json as _json
+                            parts = state_val.split(".")
+                            if len(parts) >= 2:
+                                # Decode payload (middle segment), add padding
+                                payload_b64 = parts[1] + "=" * (4 - len(parts[1]) % 4)
+                                payload_bytes = _b64.urlsafe_b64decode(payload_b64)
+                                payload = _json.loads(payload_bytes)
+                                alg = None
+                                if len(parts[0]):
+                                    hdr_b64 = parts[0] + "=" * (4 - len(parts[0]) % 4)
+                                    hdr = _json.loads(_b64.urlsafe_b64decode(hdr_b64))
+                                    alg = hdr.get("alg", "unknown")
+                                redirect_url_in_state = payload.get("redirect_url") or payload.get("redirect") or payload.get("returnTo")
+                                if redirect_url_in_state:
+                                    findings.append({
+                                        "url": url,
+                                        "parameter": "state",
+                                        "vulnerability": "OAuth State JWT Contains Controllable redirect_url — Post-Auth Open Redirect Risk",
+                                        "severity": "high",
+                                        "source_tool": "oauth_test",
+                                        "extra": {
+                                            "jwt_algorithm": alg,
+                                            "redirect_url_in_state": redirect_url_in_state,
+                                            "state_payload": {k: v for k, v in payload.items() if k != "nonce"},
+                                            "attack": (
+                                                f"Forge state JWT with redirect_url=https://evil.com. "
+                                                f"If HS256 secret is weak or alg:none accepted at callback, "
+                                                f"post-SSO redirect goes to attacker domain with auth code."
+                                            ),
+                                        },
+                                    })
+                        except Exception as _jwt_exc:
+                            log.debug("[oauth_test] JWT state decode failed: %s", _jwt_exc)
 
         except Exception:
             continue
@@ -2228,6 +2333,8 @@ def run_rate_limit_test(
         ("/api/register", "POST", {"username": "test", "password": "test", "email": "t@t.com"}),
         ("/search", "GET", {}),
         ("/api/search", "GET", {}),
+        ("/api/auth/login", "POST", {"email": "test@test.com", "password": "x"}),
+        ("/api/auth/callback", "GET", {}),
     ]
 
     findings = []
@@ -2236,7 +2343,7 @@ def run_rate_limit_test(
         url = base_url.rstrip("/") + path
         try:
             statuses = []
-            for _ in range(15):
+            for _ in range(30):
                 try:
                     if method == "POST":
                         r = _req.post(url, json=body,
@@ -2251,10 +2358,17 @@ def run_rate_limit_test(
             if not statuses:
                 continue
 
-            has_rate_limit = any(s in (429, 423, 503) for s in statuses)
-            endpoint_exists = any(s not in (404, 410, 405) for s in statuses)
+            # Already rate-limited: all responses are 429/503 -> not vulnerable
+            all_rate_limited = all(s in (429, 503, 423) for s in statuses)
+            if all_rate_limited:
+                continue
 
-            if endpoint_exists and not has_rate_limit and len(statuses) >= 10:
+            has_rate_limit = any(s in (429, 423, 503) for s in statuses)
+            # 404 means endpoint exists but not found — still test rate limiting;
+            # only skip if truly no responses
+            has_responses = bool(statuses)
+
+            if has_responses and not has_rate_limit and len(statuses) >= 10:
                 findings.append({
                     "url": url,
                     "parameter": "",
@@ -2855,6 +2969,261 @@ def run_payment_tampering_test(
 #  TOOL REGISTRY — unified dispatcher
 # ============================================================================
 
+
+def run_session_security_test(
+    base_url: str,
+    headers: dict = None,
+    timeout: int = 30,
+) -> "ToolResult":
+    """
+    Session security checks:
+    a) Double Set-Cookie for same cookie name (session fixation precondition)
+    b) Cookie flags: Secure, HttpOnly, SameSite
+    c) HSTS header presence on HTTPS targets
+    """
+    try:
+        import requests as _req
+    except ImportError:
+        return ToolResult(tool="session_security_test", success=False, error="requests not installed")
+
+    findings = []
+    try:
+        _check_scope(base_url)
+        resp = _req.get(
+            base_url, headers=headers or {}, timeout=timeout,
+            verify=False, allow_redirects=True,
+        )
+    except Exception as exc:
+        return ToolResult(tool="session_security_test", success=True,
+                          data={"findings": []}, error=str(exc))
+
+    is_https = base_url.lower().startswith("https://")
+
+    # a) Double Set-Cookie detection
+    raw_set_cookie = resp.raw.headers.getlist("Set-Cookie") if hasattr(resp.raw, "headers") and hasattr(resp.raw.headers, "getlist") else []
+    if not raw_set_cookie:
+        # fallback: urllib3 stores multiple Set-Cookie differently
+        raw_set_cookie = [v for k, v in resp.raw.headers.items() if k.lower() == "set-cookie"] if hasattr(resp.raw, "headers") else []
+
+    cookie_name_count: dict = {}
+    for sc in raw_set_cookie:
+        cname = sc.split("=")[0].strip()
+        cookie_name_count[cname] = cookie_name_count.get(cname, 0) + 1
+
+    for cname, count in cookie_name_count.items():
+        if count > 1:
+            findings.append({
+                "vulnerability": "Double Set-Cookie Session Fixation Precondition",
+                "severity": "high",
+                "detail": f"Cookie '{cname}' set {count} times in a single response",
+                "source_tool": "session_security_test",
+            })
+
+    # b) Cookie flag inspection
+    for sc in raw_set_cookie:
+        parts = [p.strip().lower() for p in sc.split(";")]
+        cname = sc.split("=")[0].strip()
+        has_secure   = any(p == "secure" for p in parts)
+        has_httponly = any(p == "httponly" for p in parts)
+        samesite_val = next((p.split("=")[1].strip() if "=" in p else "" for p in parts if p.startswith("samesite")), None)
+
+        if is_https and not has_secure:
+            findings.append({
+                "vulnerability": f"Cookie '{cname}' Missing Secure Flag",
+                "severity": "high",
+                "detail": "Session cookie transmitted over HTTP is interceptable",
+                "source_tool": "session_security_test",
+            })
+        if not has_httponly:
+            findings.append({
+                "vulnerability": f"Cookie '{cname}' Missing HttpOnly Flag",
+                "severity": "medium",
+                "detail": "Cookie accessible via JavaScript — XSS can steal session",
+                "source_tool": "session_security_test",
+            })
+        if samesite_val is None:
+            findings.append({
+                "vulnerability": f"Cookie '{cname}' Missing SameSite Flag",
+                "severity": "high" if is_https else "medium",
+                "detail": "No SameSite attribute — CSRF risk",
+                "source_tool": "session_security_test",
+            })
+        elif samesite_val in ("lax", "none"):
+            findings.append({
+                "vulnerability": f"Cookie '{cname}' SameSite={samesite_val.title()} (weak)",
+                "severity": "medium",
+                "detail": f"SameSite={samesite_val.title()} provides limited CSRF protection",
+                "source_tool": "session_security_test",
+            })
+
+    # c) HSTS check
+    if is_https:
+        hsts = resp.headers.get("Strict-Transport-Security", "")
+        if not hsts:
+            findings.append({
+                "vulnerability": "Missing HSTS Header",
+                "severity": "medium",
+                "detail": "Strict-Transport-Security absent — downgrade attacks possible",
+                "source_tool": "session_security_test",
+            })
+
+    return ToolResult(
+        tool="session_security_test",
+        success=True,
+        data={"findings": findings},
+        count=len(findings),
+    )
+
+
+
+def run_unauth_admin_test(
+    base_url: str,
+    headers: dict = None,
+    timeout: int = 30,
+) -> "ToolResult":
+    """
+    Probe admin-like paths without authentication.
+    Detects unauthenticated access to admin routes (SPA shell or API data).
+    """
+    try:
+        import requests as _req
+    except ImportError:
+        return ToolResult(tool="unauth_admin_test", success=False, error="requests not installed")
+
+    admin_paths = [
+        "/admin", "/admin/users", "/admin/config", "/admin/dashboard",
+        "/api/admin", "/api/admin/users", "/api/v1/admin", "/dashboard/admin",
+        "/manage", "/management", "/console", "/superadmin",
+    ]
+
+    findings = []
+    summary: dict = {"total": len(admin_paths), "protected": 0, "redirects": 0, "exposed": 0, "errors": 0}
+
+    # Strip any provided auth headers — we test WITHOUT auth
+    probe_headers = {
+        k: v for k, v in (headers or {}).items()
+        if k.lower() not in ("authorization", "cookie", "x-auth-token", "x-api-key")
+    }
+
+    for path in admin_paths:
+        url = base_url.rstrip("/") + path
+        try:
+            _check_scope(url)
+            resp = _req.get(
+                url, headers=probe_headers, timeout=timeout,
+                verify=False, allow_redirects=False,
+            )
+            status = resp.status_code
+            ct = resp.headers.get("Content-Type", "").lower()
+            body = resp.text
+
+            if status == 200 and "application/json" in ct:
+                findings.append({
+                    "url": url,
+                    "vulnerability": "Admin API Returns Data Without Authentication",
+                    "severity": "critical",
+                    "detail": f"GET {path} → 200 JSON unauthenticated; body excerpt: {body[:200]}",
+                    "source_tool": "unauth_admin_test",
+                })
+                summary["exposed"] += 1
+            elif status == 200 and "text/html" in ct and "</html>" in body.lower():
+                findings.append({
+                    "url": url,
+                    "vulnerability": "Admin Route Returns 200 Unauthenticated (SPA Shell Exposed)",
+                    "severity": "high",
+                    "detail": f"GET {path} → 200 HTML unauthenticated — JS bundle / SPA shell served",
+                    "source_tool": "unauth_admin_test",
+                })
+                summary["exposed"] += 1
+            elif status == 302:
+                summary["redirects"] += 1
+            elif status in (401, 403):
+                summary["protected"] += 1
+        except Exception:
+            summary["errors"] += 1
+
+    return ToolResult(
+        tool="unauth_admin_test",
+        success=True,
+        data={"findings": findings, "summary": summary},
+        count=len(findings),
+    )
+
+
+
+def run_security_headers_test(
+    base_url: str,
+    headers: dict = None,
+    timeout: int = 30,
+) -> "ToolResult":
+    """
+    Check for missing or misconfigured security response headers.
+    """
+    try:
+        import requests as _req
+    except ImportError:
+        return ToolResult(tool="security_headers_test", success=False, error="requests not installed")
+
+    REQUIRED_HEADERS = {
+        "Strict-Transport-Security": ("high",   "HSTS missing — session cookies transmittable over HTTP"),
+        "X-Frame-Options":           ("medium",  "Clickjacking protection absent"),
+        "X-Content-Type-Options":    ("medium",  "MIME sniffing not blocked"),
+        "Content-Security-Policy":   ("medium",  "No CSP — XSS impact amplified"),
+        "Referrer-Policy":           ("low",     "Referrer leaks session tokens to third-party scripts"),
+        "Permissions-Policy":        ("low",     "Browser feature policy absent"),
+    }
+
+    findings = []
+    headers_present = []
+    headers_missing = []
+
+    try:
+        _check_scope(base_url)
+        resp = _req.get(
+            base_url, headers=headers or {}, timeout=timeout,
+            verify=False, allow_redirects=True,
+        )
+    except Exception as exc:
+        return ToolResult(tool="security_headers_test", success=True,
+                          data={"findings": [], "headers_present": [], "headers_missing": []},
+                          error=str(exc))
+
+    resp_hdrs_lower = {k.lower(): v for k, v in resp.headers.items()}
+
+    for hdr, (severity, message) in REQUIRED_HEADERS.items():
+        if hdr.lower() in resp_hdrs_lower:
+            headers_present.append(hdr)
+        else:
+            headers_missing.append(hdr)
+            findings.append({
+                "vulnerability": f"Missing Security Header: {hdr}",
+                "severity": severity,
+                "detail": message,
+                "source_tool": "security_headers_test",
+            })
+
+    # X-Frame-Options: ALLOWALL is effectively no protection
+    xfo = resp_hdrs_lower.get("x-frame-options", "")
+    if xfo.upper() == "ALLOWALL":
+        findings.append({
+            "vulnerability": "X-Frame-Options set to ALLOWALL",
+            "severity": "medium",
+            "detail": "ALLOWALL disables clickjacking protection entirely",
+            "source_tool": "security_headers_test",
+        })
+
+    return ToolResult(
+        tool="security_headers_test",
+        success=True,
+        data={
+            "findings": findings,
+            "headers_present": headers_present,
+            "headers_missing": headers_missing,
+        },
+        count=len(findings),
+    )
+
+
 TOOL_REGISTRY: dict[str, dict] = {
     # Subdomain enumeration
     "subfinder":    {"fn": run_subfinder,    "category": "subdomain",  "args": ["domain"]},
@@ -2928,6 +3297,9 @@ TOOL_REGISTRY: dict[str, dict] = {
     "clickjacking_test":       {"fn": run_clickjacking_test,       "category": "vuln", "args": ["url"],       "pure_python": True},
     "deserialization_test":    {"fn": run_deserialization_test,    "category": "vuln", "args": ["url"],       "pure_python": True},
     "payment_tampering_test":  {"fn": run_payment_tampering_test,  "category": "vuln", "args": ["base_url"],  "pure_python": True},
+    "session_security_test":   {"fn": run_session_security_test,   "category": "vuln", "args": ["base_url"],  "pure_python": True},
+    "unauth_admin_test":       {"fn": run_unauth_admin_test,       "category": "vuln", "args": ["base_url"],  "pure_python": True},
+    "security_headers_test":   {"fn": run_security_headers_test,   "category": "vuln", "args": ["url"],       "pure_python": True},
 }
 
 
@@ -2935,10 +3307,10 @@ class ToolRegistry:
     """Unified interface to run any registered tool."""
 
     def available_tools(self) -> list[str]:
-        return [name for name in TOOL_REGISTRY if is_available(name)]
+        return [name for name in TOOL_REGISTRY if TOOL_REGISTRY[name].get("pure_python") or is_available(name)]
 
     def missing_tools(self) -> list[str]:
-        return [name for name in TOOL_REGISTRY if not is_available(name)]
+        return [name for name in TOOL_REGISTRY if not (TOOL_REGISTRY[name].get("pure_python") or is_available(name))]
 
     def tools_by_category(self) -> dict[str, list[str]]:
         cats: dict[str, list[str]] = {}
