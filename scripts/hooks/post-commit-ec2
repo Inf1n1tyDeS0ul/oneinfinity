@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# ── OneInfinity 3-way sync: EC2 → GitHub ────────────────────────────────────
+# Runs automatically after every `git commit` on the EC2 host.
+# Installed via scripts/install-git-hooks.sh (copied to .git/hooks/post-commit
+# because git never tracks .git/hooks/* itself).
+#
+# EC2 has direct internet access to GitHub, so it only ever needs to push.
+# The laptop's hook (scripts/hooks/post-commit-local) is the one that hops
+# EC2 → laptop by pulling; this file MUST NOT ssh back to itself.
+set -euo pipefail
+
+BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "main")
+LOGFILE="$HOME/.oneinfinity/sync.log"
+mkdir -p "$(dirname "$LOGFILE")"
+TS=$(date '+%Y-%m-%d %H:%M:%S')
+
+log() { echo "[$TS] $*" | tee -a "$LOGFILE"; }
+
+log "▶ post-commit (ec2): branch=$BRANCH"
+
+# ── DATA ISOLATION GUARD ─────────────────────────────────────────────────────
+# Abort if any staged file looks like findings/DB data — CODE ONLY syncs.
+DATA_PATTERNS='findings.*\.json|\.jsonl|\.db$|\.sqlite|god-mode-.*\.json|unified_findings|swarm_partial|attack_graph|chains\.json|validation_results|auth_findings|browser_findings|advanced_findings'
+STAGED_DATA=$(git diff --cached --name-only 2>/dev/null | grep -E "$DATA_PATTERNS" || true)
+if [ -n "$STAGED_DATA" ]; then
+    log "  ✗ BLOCKED: data/findings files detected in commit — DATA ISOLATION VIOLATED"
+    log "  ✗ Files: $STAGED_DATA"
+    log "  ✗ Findings and DB data must NEVER be committed. Add to .gitignore."
+    exit 1
+fi
+
+# ── Push to GitHub ────────────────────────────────────────────────────────────
+log "  → pushing to GitHub..."
+if git push origin "$BRANCH" 2>&1 | tee -a "$LOGFILE"; then
+    log "  ✓ GitHub push OK"
+else
+    log "  ✗ GitHub push FAILED (see above)"
+fi
+
+log "▶ post-commit (ec2) done"
+exit 0

@@ -688,8 +688,10 @@ Never leave uncommitted working changes on EC2 overnight.
     fetch:  https://github.com/Inf1n1tyDeS0ul/oneinfinity.git
     push:   git@github-oneinfinity:Inf1n1tyDeS0ul/oneinfinity.git
 
-  EC2 post-commit hook auto-pushes to GitHub on every commit.
-  Local pushes via HTTPS (token auth).
+  Both sides run a post-commit hook (scripts/hooks/post-commit-*) that pushes
+  to GitHub automatically. The laptop's hook also ssh-pulls into EC2; a
+  background watcher (scripts/sync-watch.sh) catches up whatever the hooks
+  missed the instant VPN/SSH reconnects. See "Automatic sync" below.
 ```
 
 ### Start-of-session checklist (always run first)
@@ -744,6 +746,46 @@ bash scripts/sync.sh "feat(scan): add new IDOR detection module"
 # From EC2 — commits staged changes, pushes to GitHub:
 bash scripts/sync.sh "fix(scanner): headless browser timeout fix"
 ```
+
+### Automatic sync (real-time hooks + reconnect watcher)
+
+Sync is automatic in both directions — no manual `git push`/`pull` needed in
+the common case:
+
+1. **`git commit` on either machine → push to GitHub, then tell the other
+   machine to pull** — via post-commit hooks. `.git/hooks/*` is never
+   tracked by git, so the hooks live as templates under `scripts/hooks/` and
+   are installed with:
+   ```bash
+   bash scripts/install-git-hooks.sh          # auto-detects local vs ec2
+   ```
+   - `scripts/hooks/post-commit-local` (laptop): pushes to GitHub, then
+     ssh's into EC2 and fast-forward-pulls (stashing any EC2 WIP first so
+     it's never clobbered). If EC2 is unreachable, the pull is queued in
+     `~/.oneinfinity/sync_pending_local` for the watcher to finish later.
+   - `scripts/hooks/post-commit-ec2`: pushes to GitHub only — EC2 has direct
+     internet access, so it never needs to ssh anywhere (it must never ssh
+     back to itself).
+
+2. **VPN/SSH reconnects → catch-up sync** — `scripts/sync-watch.sh` runs as
+   a macOS LaunchAgent on the laptop, polling EC2:22 every 15s. On the
+   down→up transition it fast-forward-pulls/pushes both the laptop and EC2
+   against `origin/main` (skips the local side if the laptop's tree is
+   dirty — it never auto-commits WIP) and restarts the EC2 backend if
+   `web/backend/main.py` moved. This is what makes "EC2 committed something
+   while the laptop's VPN was down" show up locally the moment VPN comes
+   back, and vice versa.
+   ```bash
+   bash scripts/install-sync-watch.sh            # install + start at login
+   bash scripts/sync-watch.sh --once             # run one catch-up manually
+   bash scripts/install-sync-watch.sh uninstall  # stop
+   tail -f ~/.oneinfinity/sync-watch.log          # watch it work
+   tail -f ~/.oneinfinity/sync.log                # hook activity (both machines)
+   ```
+
+`scripts/sync.sh` remains available for an explicit one-shot sync with
+quality gates baked in (useful before ending a session).
+
 
 ### Commit message format
 

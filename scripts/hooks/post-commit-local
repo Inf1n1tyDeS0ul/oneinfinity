@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# ── OneInfinity 3-way sync: laptop → GitHub → EC2 ──────────────────────────
+# Runs automatically after every `git commit` on the LOCAL laptop.
+# Installed via scripts/install-git-hooks.sh (copied to .git/hooks/post-commit
+# because git never tracks .git/hooks/* itself).
+#
+# Mirrors scripts/hooks/post-commit-ec2 in the opposite direction:
+#   - EC2's hook only needs to push (EC2 has no further hop).
+#   - This hook pushes to GitHub AND tells EC2 to pull, so a commit made on
+#     the laptop shows up on EC2 within seconds whenever VPN is up.
+#   - If EC2 is unreachable (VPN down), the pull is queued and picked up by
+#     scripts/sync-watch.sh the moment VPN/SSH reconnects.
+set -euo pipefail
+
+BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "main")
+EC2_HOST="oneinfinity-ec2"          # alias in ~/.ssh/config
+EC2_REPO="/home/ubuntu/oneinfinity"
+LOGFILE="$HOME/.oneinfinity/sync.log"
+PENDING_FILE="$HOME/.oneinfinity/sync_pending_local"
+mkdir -p "$(dirname "$LOGFILE")"
+TS=$(date '+%Y-%m-%d %H:%M:%S')
+
+log() { echo "[$TS] $*" | tee -a "$LOGFILE"; }
+
+log "▶ post-commit (local): branch=$BRANCH"
+
+# ── DATA ISOLATION GUARD ─────────────────────────────────────────────────────
+# Abort if any staged file looks like findings/DB data — CODE ONLY syncs.
+DATA_PATTERNS='findings.*\.json|\.jsonl|\.db$|\.sqlite|god-mode-.*\.json|unified_findings|swarm_partial|attack_graph|chains\.json|validation_results|auth_findings|browser_findings|advanced_findings'
+STAGED_DATA=$(git diff --cached --name-only 2>/dev/null | grep -E "$DATA_PATTERNS" || true)
+if [ -n "$STAGED_DATA" ]; then
+    log "  ✗ BLOCKED: data/findings files detected in commit — DATA ISOLATION VIOLATED"
+    log "  ✗ Files: $STAGED_DATA"
+    log "  ✗ Findings and DB data must NEVER be committed. Add to .gitignore."
+    exit 1
+fi
+
+# ── 1. Push to GitHub ────────────────────────────────────────────────────────
+log "  → pushing to GitHub..."
+if git push origin "$BRANCH" 2>&1 | tee -a "$LOGFILE"; then
+    log "  ✓ GitHub push OK"
+else
+    log "  ✗ GitHub push FAILED (see above)"
+fi
+
+# ── 2. Tell EC2 to pull (requires VPN) ───────────────────────────────────────
+log "  → syncing EC2 ($EC2_HOST)..."
+if ssh -o ConnectTimeout=8 -o BatchMode=yes "$EC2_HOST" "
+    set -e
+    cd $EC2_REPO
+    STASHED=0
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+        git stash push -m 'auto-stash before sync' --include-untracked 2>/dev/null && STASHED=1
+    fi
+    git fetch origin 2>&1
+    git checkout $BRANCH 2>/dev/null || true
+    git pull --ff-only origin $BRANCH 2>&1
+    if [ \$STASHED -eq 1 ]; then
+        git stash pop 2>/dev/null || true
+    fi
+    echo 'EC2_PULL_OK'
+" 2>&1 | tee -a "$LOGFILE" | grep -q "EC2_PULL_OK"; then
+    log "  ✓ EC2 sync OK"
+    rm -f "$PENDING_FILE"
+else
+    echo "$BRANCH $(date +%s)" >> "$PENDING_FILE"
+    log "  ⚠ EC2 unreachable (VPN off?) — queued in $PENDING_FILE"
+fi
+
+log "▶ post-commit (local) done"
+exit 0
